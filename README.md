@@ -8,6 +8,19 @@ Small Go SDK for FerricStore Flow commands plus DBOS-style throughput benchmark.
 go get github.com/ferricstore/ferricstore-go
 ```
 
+## Toolchain
+
+This repo pins Go with mise:
+
+```bash
+brew install mise
+mise trust ./mise.toml
+$(mise which go) version
+```
+
+If your shell has mise activated, plain `go` works. In non-activated shells, use
+`$(mise which go)` or the resolved path from `mise which go`.
+
 ## Basic Usage
 
 ```go
@@ -35,7 +48,7 @@ jobs, _ := client.ClaimDue(ctx, ferricstore.ClaimDueOptions{
 ## Benchmark
 
 ```bash
-go run ./cmd/dbos-style-benchmark \
+$(mise which go) run ./cmd/dbos-style-benchmark \
   --mode queued \
   --transport pipeline \
   --flows 10000 \

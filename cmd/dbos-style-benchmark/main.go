@@ -22,38 +22,38 @@ const (
 )
 
 type config struct {
-	addr             string
-	mode             string
-	flows            int
-	workers          int
-	producers        int
-	partitions        int
-	claimBatchSize   int
-	createBatchSize  int
-	transport        string
-	payloadBytes     int
-	workCommand      string
-	idleSleepMS      float64
-	maxIdleSleepMS   float64
-	workerMode       string
-	wakeCoalesceMS   float64
-	claimAny         bool
-	completeBatch    bool
-	steps            int
-	iterations       int
+	addr            string
+	mode            string
+	flows           int
+	workers         int
+	producers       int
+	partitions      int
+	claimBatchSize  int
+	createBatchSize int
+	transport       string
+	payloadBytes    int
+	workCommand     string
+	idleSleepMS     float64
+	maxIdleSleepMS  float64
+	workerMode      string
+	wakeCoalesceMS  float64
+	claimAny        bool
+	completeBatch   bool
+	steps           int
+	iterations      int
 }
 
 type phaseStats struct {
-	Created              int64 `json:"created,omitempty"`
-	Completed            int64 `json:"completed,omitempty"`
-	ClaimCalls           int64 `json:"claim_calls,omitempty"`
-	EmptyClaims          int64 `json:"empty_claims,omitempty"`
-	ClaimedItems         int64 `json:"claimed_items,omitempty"`
-	MaxClaimBatch        int64 `json:"max_claim_batch,omitempty"`
-	CreatePipelineFlushes int64 `json:"create_pipeline_flushes,omitempty"`
-	CreatePipelineCommands int64 `json:"create_pipeline_commands,omitempty"`
-	CreatePipelineMaxDepth int64 `json:"create_pipeline_max_depth,omitempty"`
-	ProcessPipelineFlushes int64 `json:"process_pipeline_flushes,omitempty"`
+	Created                 int64 `json:"created,omitempty"`
+	Completed               int64 `json:"completed,omitempty"`
+	ClaimCalls              int64 `json:"claim_calls,omitempty"`
+	EmptyClaims             int64 `json:"empty_claims,omitempty"`
+	ClaimedItems            int64 `json:"claimed_items,omitempty"`
+	MaxClaimBatch           int64 `json:"max_claim_batch,omitempty"`
+	CreatePipelineFlushes   int64 `json:"create_pipeline_flushes,omitempty"`
+	CreatePipelineCommands  int64 `json:"create_pipeline_commands,omitempty"`
+	CreatePipelineMaxDepth  int64 `json:"create_pipeline_max_depth,omitempty"`
+	ProcessPipelineFlushes  int64 `json:"process_pipeline_flushes,omitempty"`
 	ProcessPipelineCommands int64 `json:"process_pipeline_commands,omitempty"`
 	ProcessPipelineMaxDepth int64 `json:"process_pipeline_max_depth,omitempty"`
 }
@@ -517,12 +517,12 @@ func runQueued(ctx context.Context, cfg config) (map[string]any, error) {
 		"process_pipeline_max_depth": maxStats(workerStats, func(s phaseStats) int64 {
 			return s.ProcessPipelineMaxDepth
 		}),
-		"create_seconds":            createSeconds,
-		"process_seconds":           processSeconds,
-		"total_seconds":             totalSeconds,
-		"create_flows_per_sec":      rate(created, createSeconds),
-		"process_flows_per_sec":     rate(processed, processSeconds),
-		"end_to_end_flows_per_sec":  rate(processed, totalSeconds),
+		"create_seconds":           createSeconds,
+		"process_seconds":          processSeconds,
+		"total_seconds":            totalSeconds,
+		"create_flows_per_sec":     rate(created, createSeconds),
+		"process_flows_per_sec":    rate(processed, processSeconds),
+		"end_to_end_flows_per_sec": rate(processed, totalSeconds),
 	}, nil
 }
 

@@ -3,7 +3,7 @@
 Go version of the Python benchmark:
 
 ```bash
-go run ./cmd/dbos-style-benchmark \
+$(mise which go) run ./cmd/dbos-style-benchmark \
   --mode queued \
   --transport pipeline \
   --flows 10000 \
