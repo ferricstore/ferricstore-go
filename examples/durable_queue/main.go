@@ -26,9 +26,8 @@ func main() {
 		fmt.Printf("send email job=%s payload=%v\n", job.ID, job.Payload)
 		return nil
 	}, ferricstore.WorkerOptions{
-		BatchSize:    10,
-		Concurrency:  4,
-		ClaimPayload: true,
+		BatchSize:   10,
+		Concurrency: 4,
 	}).RunOnce(ctx)
 	if err != nil {
 		log.Fatal(err)

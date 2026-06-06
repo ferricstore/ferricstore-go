@@ -50,14 +50,12 @@ func TestIntegrationKVAndFlowRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	payload := true
 	jobs, err := client.ClaimDue(ctx, ClaimDueOptions{
 		Type:         "go-sdk-integration",
 		State:        "queued",
 		Worker:       "go-sdk-worker",
 		PartitionKey: partition,
 		Limit:        1,
-		Payload:      &payload,
 	})
 	if err != nil {
 		t.Fatal(err)

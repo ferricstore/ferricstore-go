@@ -139,7 +139,10 @@ func (w *WorkflowWorker) RunOnce(ctx context.Context) (WorkflowWorkerResult, err
 	if opts.Concurrency == 0 {
 		opts.Concurrency = 1
 	}
-	payload := true
+	var payload *bool
+	if opts.ClaimPayload {
+		payload = Bool(true)
+	}
 	jobs, err := w.workflow.client.ClaimDue(ctx, ClaimDueOptions{
 		Type:           w.workflow.Type,
 		States:         opts.States,
@@ -150,7 +153,7 @@ func (w *WorkflowWorker) RunOnce(ctx context.Context) (WorkflowWorkerResult, err
 		Limit:          opts.BatchSize,
 		ReclaimExpired: opts.ReclaimExpired,
 		ReclaimRatio:   opts.ReclaimRatio,
-		Payload:        &payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		return WorkflowWorkerResult{ClaimCalls: 1}, err
