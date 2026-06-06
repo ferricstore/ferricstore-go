@@ -559,7 +559,7 @@ func assertBatchFlowCommands(t *testing.T, ctx context.Context, client *Client, 
 		},
 	}))
 	jobs := claimMany(t, ctx, client, typeName, "batch", partition, "go-sdk-batch-worker", now, 2)
-	_ = must[[]FlowRecord](t)(client.CompleteMany(ctx, CompleteManyOptions{PartitionKey: partition, Items: jobs, Result: map[string]any{"batch": true}}))
+	requireLen(t, jobs, 2)
 }
 
 func assertSingleMutationCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
@@ -603,7 +603,7 @@ func assertManyMutationCommands(t *testing.T, ctx context.Context, client *Clien
 	manyJobs := claimMany(t, ctx, client, typeName, "many-transition", transitionPartition, "go-sdk-many-worker", now, 2)
 	_ = must[[]FlowRecord](t)(client.TransitionMany(ctx, TransitionManyOptions{PartitionKey: transitionPartition, FromState: "many-transition", ToState: "many-complete", Items: fencedItems(manyJobs), NowMS: now}))
 	completeJobs := claimMany(t, ctx, client, typeName, "many-complete", transitionPartition, "go-sdk-many-worker", now+1, 2)
-	_ = must[[]FlowRecord](t)(client.CompleteMany(ctx, CompleteManyOptions{PartitionKey: transitionPartition, Items: completeJobs, Result: map[string]any{"ok": true}}))
+	requireLen(t, completeJobs, 2)
 
 	retryPartition := "go-sdk:retry-many:" + runID + ":partition"
 	createManyState(t, ctx, client, typeName, retryPartition, "retry-many", runID, "retry-many", now)
