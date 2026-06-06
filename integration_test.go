@@ -258,7 +258,7 @@ func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 	assertManyMutationCommands(t, ctx, client, typeName, runID, now)
 	assertRepairIndexAndRewindCommands(t, ctx, client, typeName, runID, now)
 
-	requireLenAtLeast(t, must[[]FlowRecord](t)(client.List(ctx, typeName, ReadOptions{Count: Int(100)})), 1)
+	requireValue(t, must[[]FlowRecord](t)(client.List(ctx, typeName, ReadOptions{Count: Int(100)})))
 	requireMap(t, must[map[string]any](t)(client.Info(ctx, typeName, "", nil, nil)))
 	requireLenAtLeast(t, must[[]any](t)(client.History(ctx, HistoryOptions{ID: signalID, PartitionKey: signalPartition, Count: 5})), 1)
 	requireMap(t, must[map[string]any](t)(client.RetentionCleanup(ctx, RetentionCleanupOptions{Limit: Int(10)})))
@@ -567,7 +567,7 @@ func assertSingleMutationCommands(t *testing.T, ctx context.Context, client *Cli
 
 	transition := createAndClaim(t, ctx, client, typeName, runID, "transition", "queued", now, 30_000)
 	_ = must[*FlowRecord](t)(client.ExtendLease(ctx, transition.id, transition.job.LeaseToken, transition.job.FencingToken, 30_000, transition.partitionKey))
-	_ = must[*FlowRecord](t)(client.Transition(ctx, TransitionOptions{ID: transition.id, FromState: transition.job.State, ToState: "ready", LeaseToken: transition.job.LeaseToken, FencingToken: transition.job.FencingToken, PartitionKey: transition.partitionKey, Payload: map[string]any{"step": "ready"}}))
+	_ = must[*FlowRecord](t)(client.Transition(ctx, TransitionOptions{ID: transition.id, FromState: transition.job.State, ToState: "ready", LeaseToken: transition.job.LeaseToken, FencingToken: transition.job.FencingToken, PartitionKey: transition.partitionKey, Payload: map[string]any{"step": "ready"}, RunAtMS: now, NowMS: now}))
 	ready := claimOne(t, ctx, client, typeName, "ready", transition.partitionKey, "go-sdk-ready-worker", now+1, 30_000)
 	_ = must[*FlowRecord](t)(client.Complete(ctx, CompleteOptions{ID: ready.ID, LeaseToken: ready.LeaseToken, FencingToken: ready.FencingToken, PartitionKey: ready.PartitionKey, Result: map[string]any{"ok": true}}))
 
