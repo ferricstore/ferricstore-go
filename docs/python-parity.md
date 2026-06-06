@@ -60,12 +60,12 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 | `QueueClient.queue` | `NewQueueClient(...).Queue` | Covered |
 | queue `worker` | `Queue.Worker` | Covered |
 | queue `run_once` | `QueueWorker.RunOnce` | Covered |
-| queue `run_forever`, `start`, `join`, `stop`, stats | Not yet | Missing lifecycle helper; call `RunOnce` in your own goroutine/loop for now |
+| queue `run_forever`, `start`, `join`, `stop`, stats | `RunForever`, `Start`, handle `Join`/`Stop`/`Stats` | Covered |
 | `WorkflowClient.workflow` | `NewWorkflowClient(...).Workflow` | Covered |
 | workflow `state` handlers | `Workflow.State` | Covered |
 | workflow `start_flow`/`enqueue` | `Workflow.Start` | Covered |
 | workflow worker `run_once` | `WorkflowWorker.RunOnce` | Covered |
-| workflow `run`, `start`, `join`, `stop` | Not yet | Missing lifecycle helper; call `RunOnce` in your own goroutine/loop for now |
+| workflow `run`, `start`, `join`, `stop` | `RunForever`, `Start`, handle `Join`/`Stop`/`Stats` | Covered |
 | async Python SDK | Not applicable | Go uses goroutines and blocking calls |
 
 ## Stores And Data Structures
@@ -73,18 +73,18 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 | Area | Go SDK | Status |
 | --- | --- | --- |
 | Raw Redis/FerricStore commands | `Command` | Covered |
-| KV | `KV()` | Common helpers covered |
-| Hash | `Hash()` | Common helpers covered |
-| List | `ListStore()` | Common helpers covered |
-| Set | `SetStore()` | Common helpers covered |
-| Sorted set | `SortedSet()` | Common helpers covered |
-| Stream | `Stream()` | Common helpers covered |
-| Bitmap | `Bitmap()` | Common helpers covered |
-| HyperLogLog | `HyperLogLog()` | Common helpers covered |
-| Geo | `Geo()` | Common helpers covered |
-| JSON | `JSON()` | Common helpers covered |
-| Bloom, Cuckoo, CMS, TopK, TDigest | `Bloom()`, `Cuckoo()`, `CountMinSketch()`, `TopK()`, `TDigest()` | Common helpers covered |
-| Every Redis-compatible command as a typed method | `Command` fallback | Partial typed coverage |
+| KV | `KV()` | Broad typed coverage |
+| Hash | `Hash()` | Broad typed coverage |
+| List | `ListStore()` | Broad typed coverage |
+| Set | `SetStore()` | Broad typed coverage |
+| Sorted set | `SortedSet()` | Broad typed coverage for supported zset commands |
+| Stream | `Stream()` | Broad typed coverage |
+| Bitmap | `Bitmap()` | Covered |
+| HyperLogLog | `HyperLogLog()` | Covered |
+| Geo | `Geo()` | Broad typed coverage |
+| JSON | `JSON()` | Basic helpers only: `JSON.SET`, `JSON.GET`, `JSON.DEL`; advanced JSON helpers intentionally left to `Command` |
+| Bloom, Cuckoo, CMS, TopK, TDigest | `Bloom()`, `Cuckoo()`, `CountMinSketch()`, `TopK()`, `TDigest()` | Broad typed coverage |
+| Every Redis-compatible command as a typed method | `Command` fallback | Broad non-JSON coverage; advanced JSON and true connection-state APIs remain raw or go-redis-native |
 
 ## Locks, CAS, Rate Limit, Admin
 
@@ -114,10 +114,11 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 | `ferricstore_hotness` | `FerricStoreHotness` | Covered |
 | `ferricstore_metrics` | `FerricStoreMetrics` | Covered |
 | `ferricstore_blobgc` | `FerricStoreBlobGC` | Covered |
+| `ferricstore_doctor` | `FerricStoreDoctor` | Covered |
 
 ## Current Gaps
 
-- Long-running worker lifecycle helpers (`RunForever`, `Start`, `Stop`, `Join`) are not implemented yet.
-- The typed store surface covers common commands, but not every Redis-compatible command has a dedicated Go method.
+- Advanced JSON command helpers are intentionally not added yet; use `Command` for `JSON.TYPE`, `JSON.ARRAPPEND`, `JSON.NUMINCRBY`, and related commands.
+- Low-level connection-state command families such as ACL user management, CLIENT connection modes, SUBSCRIBE connection state, and MULTI/EXEC connection state remain available through `Command` or the underlying go-redis client where appropriate.
 - Python's background autobatcher is not ported as a matching API; Go currently exposes `BufferedExecutor` and `Pipeline`.
 - Integration tests need a live FerricStore server and are kept separate from unit tests.

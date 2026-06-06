@@ -30,7 +30,7 @@ client := ferricstore.NewClient("127.0.0.1:6379", ferricstore.WithCodec(ferricst
 defer func() { _ = client.Close() }()
 ```
 
-Use `Command` when a typed helper is not polished yet:
+Use `Command` for advanced JSON commands, low-level connection-mode commands, or any command that does not need a polished helper:
 
 ```go
 value, err := client.Command(ctx, "PING")
@@ -98,7 +98,7 @@ _, _ = client.ListStore().RPush(ctx, "outbox", "event-1")
 _, _ = client.SetStore().Add(ctx, "seen", "event-1")
 ```
 
-Available store helpers include KV, hash, list, set, sorted set, stream, bitmap, HyperLogLog, geo, JSON, Bloom, Cuckoo, Count-Min Sketch, TopK, and TDigest. Raw commands remain available through `Command`.
+Available store helpers include KV, hash, list, set, sorted set, stream, bitmap, HyperLogLog, geo, JSON, Bloom, Cuckoo, Count-Min Sketch, TopK, and TDigest. Non-JSON data-structure helpers cover the common FerricStore command surface broadly; advanced JSON commands remain available through `Command`.
 
 ## Value Refs
 
