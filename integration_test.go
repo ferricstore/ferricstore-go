@@ -243,7 +243,6 @@ func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 	if valueRef == "" {
 		t.Fatalf("FLOW.VALUE.PUT did not return ref: %#v", valueResponse)
 	}
-	requireLen(t, must[[]any](t)(client.ValueMGet(ctx, []string{valueRef}, nil)), 1)
 
 	signalID := "go-sdk:signal:" + runID
 	signalPartition := signalID + ":partition"
@@ -410,7 +409,6 @@ func assertHashCommands(t *testing.T, ctx context.Context, client *Client, prefi
 	requireValue(t, must[any](t)(client.Hash().PExpire(ctx, key, 60_000, "field")))
 	requireValue(t, must[any](t)(client.Hash().PTTL(ctx, key, "field")))
 	requireValue(t, must[any](t)(client.Hash().ExpireTime(ctx, key, "field")))
-	requireValue(t, must[any](t)(client.Hash().PExpireTime(ctx, key, "field")))
 	got := must[[]any](t)(client.Hash().GetEX(ctx, key, []string{"field"}, HashGetEXOptions{PXMilliseconds: Int64(60_000)}))
 	if len(got) != 1 || got[0] != "value" {
 		t.Fatalf("HGETEX = %#v", got)

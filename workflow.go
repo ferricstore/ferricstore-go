@@ -66,13 +66,19 @@ func FailWith(err any) FailResult {
 type WorkflowHandler func(context.Context, WorkflowContext) (Outcome, error)
 
 type WorkflowContext struct {
-	Client *Client
-	Job    FlowRecord
+	Client    *Client
+	Job       FlowRecord
+	StateName string
 }
 
-func (c WorkflowContext) ID() string            { return c.Job.ID }
-func (c WorkflowContext) Type() string          { return c.Job.Type }
-func (c WorkflowContext) State() string         { return c.Job.State }
+func (c WorkflowContext) ID() string   { return c.Job.ID }
+func (c WorkflowContext) Type() string { return c.Job.Type }
+func (c WorkflowContext) State() string {
+	if c.StateName != "" {
+		return c.StateName
+	}
+	return c.Job.State
+}
 func (c WorkflowContext) PartitionKey() string  { return c.Job.PartitionKey }
 func (c WorkflowContext) Payload() any          { return c.Job.Payload }
 func (c WorkflowContext) Value(name string) any { return c.Job.Values[name] }
@@ -143,57 +149,66 @@ func (w *WorkflowWorker) RunOnce(ctx context.Context) (WorkflowWorkerResult, err
 	if opts.ClaimPayload {
 		payload = Bool(true)
 	}
-	jobs, err := w.workflow.client.ClaimDue(ctx, ClaimDueOptions{
-		Type:           w.workflow.Type,
-		States:         opts.States,
-		Worker:         w.Worker,
-		PartitionKey:   opts.PartitionKey,
-		PartitionKeys:  opts.PartitionKeys,
-		LeaseMS:        opts.LeaseMS,
-		Limit:          opts.BatchSize,
-		NowMS:          opts.NowMS,
-		ReclaimExpired: opts.ReclaimExpired,
-		ReclaimRatio:   opts.ReclaimRatio,
-		Payload:        payload,
-	})
-	if err != nil {
-		return WorkflowWorkerResult{ClaimCalls: 1}, err
-	}
-	result := WorkflowWorkerResult{Claimed: len(jobs), ClaimCalls: 1}
-	if len(jobs) == 0 {
-		return result, nil
-	}
-	var mu sync.Mutex
-	var firstErr error
-	recordErr := func(err error) {
-		if err == nil {
-			return
+	result := WorkflowWorkerResult{}
+	for _, stateName := range opts.States {
+		handler := w.workflow.handlers[stateName]
+		if handler == nil {
+			return result, errors.New("no workflow handler for state " + stateName)
 		}
-		mu.Lock()
-		defer mu.Unlock()
-		if firstErr == nil {
-			firstErr = err
+
+		jobs, err := w.workflow.client.ClaimDue(ctx, ClaimDueOptions{
+			Type:           w.workflow.Type,
+			State:          stateName,
+			Worker:         w.Worker,
+			PartitionKey:   opts.PartitionKey,
+			PartitionKeys:  opts.PartitionKeys,
+			LeaseMS:        opts.LeaseMS,
+			Limit:          opts.BatchSize,
+			NowMS:          opts.NowMS,
+			ReclaimExpired: opts.ReclaimExpired,
+			ReclaimRatio:   opts.ReclaimRatio,
+			Payload:        payload,
+		})
+		result.ClaimCalls++
+		if err != nil {
+			return result, err
+		}
+		result.Claimed += len(jobs)
+		if len(jobs) == 0 {
+			continue
+		}
+
+		var mu sync.Mutex
+		var firstErr error
+		recordErr := func(err error) {
+			if err == nil {
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		run := func(job FlowRecord) {
+			if err := w.apply(ctx, job, stateName, handler); err != nil {
+				recordErr(err)
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			result.Applied++
+		}
+		runConcurrent(jobs, opts.Concurrency, run)
+		if firstErr != nil {
+			return result, firstErr
 		}
 	}
-	run := func(job FlowRecord) {
-		if err := w.apply(ctx, job); err != nil {
-			recordErr(err)
-			return
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		result.Applied++
-	}
-	runConcurrent(jobs, opts.Concurrency, run)
-	return result, firstErr
+	return result, nil
 }
 
-func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord) error {
-	handler := w.workflow.handlers[job.State]
-	if handler == nil {
-		return errors.New("no workflow handler for state " + job.State)
-	}
-	outcome, err := handler(ctx, WorkflowContext{Client: w.workflow.client, Job: job})
+func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName string, handler WorkflowHandler) error {
+	outcome, err := handler(ctx, WorkflowContext{Client: w.workflow.client, Job: job, StateName: stateName})
 	if err != nil {
 		if w.Options.ErrorPolicy == ErrorPolicyReturn {
 			return err
@@ -221,7 +236,7 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord) error {
 	case TransitionResult:
 		_, err = w.workflow.client.Transition(ctx, TransitionOptions{
 			ID:           job.ID,
-			FromState:    job.State,
+			FromState:    stateName,
 			ToState:      value.ToState,
 			LeaseToken:   job.LeaseToken,
 			FencingToken: job.FencingToken,
