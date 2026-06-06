@@ -11,7 +11,7 @@ import (
 func main() {
 	ctx := context.Background()
 	client := ferricstore.NewClient("127.0.0.1:6379", ferricstore.WithCodec(ferricstore.JSONCodec{}))
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	orders := ferricstore.NewWorkflowClient(client).Workflow("order", "validate")
 	orders.State("validate", func(ctx context.Context, w ferricstore.WorkflowContext) (ferricstore.Outcome, error) {

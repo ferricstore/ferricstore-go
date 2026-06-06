@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Go pinned by `mise.toml`
+- Go 1.24 or newer; the dev toolchain is pinned by `mise.toml`
 - Docker for integration/dev server work
 
 ```bash

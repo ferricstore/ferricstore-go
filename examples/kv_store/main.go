@@ -11,7 +11,7 @@ import (
 func main() {
 	ctx := context.Background()
 	client := ferricstore.NewClient("127.0.0.1:6379", ferricstore.WithCodec(ferricstore.JSONCodec{}))
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if err := client.KV().Set(ctx, "tenant:1:profile", map[string]any{"plan": "pro"}); err != nil {
 		log.Fatal(err)

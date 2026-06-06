@@ -27,7 +27,7 @@ The compose file uses `ghcr.io/ferricstore/ferricstore:0.4.1` and exposes Redis 
 ```go
 ctx := context.Background()
 client := ferricstore.NewClient("127.0.0.1:6379", ferricstore.WithCodec(ferricstore.JSONCodec{}))
-defer client.Close()
+defer func() { _ = client.Close() }()
 ```
 
 Use `Command` when a typed helper is not polished yet:
@@ -116,7 +116,7 @@ values, err := client.ValueMGet(ctx, []string{fmt.Sprint(ref)}, nil)
 
 ## Toolchain
 
-This repo pins Go with mise:
+The module requires Go 1.24 or newer. This repo pins the development toolchain with mise:
 
 ```bash
 brew install mise
