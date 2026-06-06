@@ -30,7 +30,7 @@ func TestCreateBuildsCommandDefaults(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("OK")}
 	client := NewClientWithExecutor(exec)
 
-	err := client.Create(context.Background(), CreateOptions{
+	_, err := client.Create(context.Background(), CreateOptions{
 		ID:           "flow-1",
 		Type:         "order",
 		State:        "created",
@@ -54,7 +54,7 @@ func TestCreateManyMixedBuildsItems(t *testing.T) {
 	client := NewClientWithExecutor(exec)
 	independent := true
 
-	err := client.CreateMany(context.Background(), CreateManyOptions{
+	_, err := client.CreateMany(context.Background(), CreateManyOptions{
 		Type:        "order",
 		State:       "queued",
 		NowMS:       100,
@@ -81,10 +81,13 @@ func TestCreateManyMixedRequiresPartitionKey(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("OK")}
 	client := NewClientWithExecutor(exec)
 
-	err := client.CreateMany(context.Background(), CreateManyOptions{
+	_, err := client.CreateMany(context.Background(), CreateManyOptions{
 		Type:  "order",
 		NowMS: 100,
-		Items: []CreateItem{{ID: "f1"}},
+		Items: []CreateItem{
+			{ID: "f1", PartitionKey: "p1"},
+			{ID: "f2"},
+		},
 	})
 
 	if err == nil {
@@ -133,7 +136,7 @@ func TestClaimDueDecodesRESP3Maps(t *testing.T) {
 	if record.ID != "flow-1" || record.Type != "order" || record.State != "running" {
 		t.Fatalf("unexpected record: %+v", record)
 	}
-	if record.LeaseToken != "lease" || record.FencingToken != 7 || string(record.Payload) != "payload" {
+	if record.LeaseToken != "lease" || record.FencingToken != 7 || string(asBytes(record.Payload)) != "payload" {
 		t.Fatalf("unexpected lease/payload fields: %+v", record)
 	}
 
@@ -160,7 +163,7 @@ func TestCompleteManyMixedBuildsItems(t *testing.T) {
 	client := NewClientWithExecutor(exec)
 	independent := true
 
-	err := client.CompleteMany(context.Background(), CompleteManyOptions{
+	_, err := client.CompleteMany(context.Background(), CompleteManyOptions{
 		Result:      []byte("ok"),
 		NowMS:       100,
 		Independent: &independent,
@@ -186,7 +189,7 @@ func TestTransitionBuildsCommand(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("OK")}
 	client := NewClientWithExecutor(exec)
 
-	err := client.Transition(context.Background(), TransitionOptions{
+	_, err := client.Transition(context.Background(), TransitionOptions{
 		ID:           "flow-1",
 		FromState:    "running",
 		ToState:      "next",
@@ -209,10 +212,10 @@ func TestTransitionBuildsCommand(t *testing.T) {
 }
 
 func TestRecordsFromRESPRejectsMalformedInput(t *testing.T) {
-	if _, err := recordsFromRESP("OK"); err == nil {
+	if _, err := recordsFromRESP("OK", RawCodec{}); err == nil {
 		t.Fatal("expected non-array error")
 	}
-	if _, err := recordsFromRESP([]any{[]any{"id"}}); err == nil {
+	if _, err := recordsFromRESP([]any{[]any{"id"}}, RawCodec{}); err == nil {
 		t.Fatal("expected odd map array error")
 	}
 }

@@ -1,0 +1,70 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: Unit Go ${{ matrix.go-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.24.x", "1.25.x", "1.26.x"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - run: go mod download
+      - name: Check formatting
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "$files"
+            exit 1
+          fi
+      - run: go test ./...
+      - run: go test -race ./...
+
+  package:
+    name: Package Dry Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - run: go mod tidy
+      - name: Verify go.mod is tidy
+        run: git diff --exit-code -- go.mod go.sum
+      - run: go list ./...
+      - run: go test ./cmd/dbos-style-benchmark
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - run: docker compose up -d ferricstore
+      - name: Run integration tests
+        run: |
+          for i in $(seq 1 30); do
+            if go test -tags integration ./...; then
+              exit 0
+            fi
+            sleep 2
+          done
+          go test -tags integration ./...
+      - if: always()
+        run: docker compose logs ferricstore
+      - if: always()
+        run: docker compose down -v

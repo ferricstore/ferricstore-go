@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ferricstore/ferricstore-go/ferricstore"
+	ferricstore "github.com/ferricstore/ferricstore-go"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -83,7 +83,7 @@ func newBenchFlowClient(addr, transport string) *benchFlowClient {
 func (c *benchFlowClient) enqueueMany(ctx context.Context, runID string, indices []int, partitions int, payload []byte) (int, error) {
 	if c.transport == "pipeline" || len(indices) == 1 {
 		for _, index := range indices {
-			err := c.client.Create(ctx, ferricstore.CreateOptions{
+			_, err := c.client.Create(ctx, ferricstore.CreateOptions{
 				ID:           fmt.Sprintf("%s:flow:%d", runID, index),
 				Type:         flowType,
 				State:        queueState,
@@ -107,7 +107,7 @@ func (c *benchFlowClient) enqueueMany(ctx context.Context, runID string, indices
 		})
 	}
 	independent := true
-	err := c.client.CreateMany(ctx, ferricstore.CreateManyOptions{
+	_, err := c.client.CreateMany(ctx, ferricstore.CreateManyOptions{
 		Items:       items,
 		Type:        flowType,
 		State:       queueState,
@@ -134,7 +134,7 @@ func (c *benchFlowClient) doWork(ctx context.Context, command, runID string, job
 		return nil
 	}
 	for range jobs {
-		if err := c.client.Incr(ctx, runID+":counter"); err != nil {
+		if _, err := c.client.KV().Incr(ctx, runID+":counter"); err != nil {
 			return err
 		}
 	}
@@ -144,7 +144,7 @@ func (c *benchFlowClient) doWork(ctx context.Context, command, runID string, job
 func (c *benchFlowClient) completeClaimed(ctx context.Context, jobs []ferricstore.FlowRecord, partitionKey string, useMany bool) error {
 	if c.transport == "pipeline" {
 		for _, job := range jobs {
-			if err := c.client.Complete(ctx, ferricstore.CompleteOptions{
+			if _, err := c.client.Complete(ctx, ferricstore.CompleteOptions{
 				ID:           job.ID,
 				LeaseToken:   job.LeaseToken,
 				FencingToken: job.FencingToken,
@@ -168,15 +168,16 @@ func (c *benchFlowClient) completeClaimed(ctx context.Context, jobs []ferricstor
 			})
 		}
 		independent := true
-		return c.client.CompleteMany(ctx, ferricstore.CompleteManyOptions{
+		_, err := c.client.CompleteMany(ctx, ferricstore.CompleteManyOptions{
 			PartitionKey: partitionKey,
 			Items:        items,
 			Result:       []byte("ok"),
 			Independent:  &independent,
 		})
+		return err
 	}
 	for _, job := range jobs {
-		if err := c.client.Complete(ctx, ferricstore.CompleteOptions{
+		if _, err := c.client.Complete(ctx, ferricstore.CompleteOptions{
 			ID:           job.ID,
 			LeaseToken:   job.LeaseToken,
 			FencingToken: job.FencingToken,
@@ -533,7 +534,7 @@ func runSerialLatency(ctx context.Context, cfg config) (map[string]any, error) {
 		runID := fmt.Sprintf("go-sdk-latency-%d-%d", time.Now().UnixNano(), i)
 		partition := partitionFor(0, 1, runID)
 		started := time.Now()
-		if err := client.Create(ctx, ferricstore.CreateOptions{
+		if _, err := client.Create(ctx, ferricstore.CreateOptions{
 			ID:           runID + ":flow",
 			Type:         flowType,
 			State:        "step_1",
@@ -557,11 +558,11 @@ func runSerialLatency(ctx context.Context, cfg config) (map[string]any, error) {
 				return nil, fmt.Errorf("no job claimed for step %d", step)
 			}
 			job := jobs[0]
-			if err := client.Incr(ctx, runID+":counter"); err != nil {
+			if _, err := client.KV().Incr(ctx, runID+":counter"); err != nil {
 				return nil, err
 			}
 			if step == cfg.steps {
-				err = client.Complete(ctx, ferricstore.CompleteOptions{
+				_, err = client.Complete(ctx, ferricstore.CompleteOptions{
 					ID:           job.ID,
 					LeaseToken:   job.LeaseToken,
 					FencingToken: job.FencingToken,
@@ -570,7 +571,7 @@ func runSerialLatency(ctx context.Context, cfg config) (map[string]any, error) {
 					ReturnRecord: false,
 				})
 			} else {
-				err = client.Transition(ctx, ferricstore.TransitionOptions{
+				_, err = client.Transition(ctx, ferricstore.TransitionOptions{
 					ID:           job.ID,
 					FromState:    job.State,
 					ToState:      fmt.Sprintf("step_%d", step+1),

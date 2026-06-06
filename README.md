@@ -1,11 +1,117 @@
 # FerricStore Go SDK
 
-Small Go SDK for FerricStore Flow commands plus DBOS-style throughput benchmark.
+Go SDK for FerricStore and FerricFlow.
+
+FerricStore exposes a Redis-compatible command surface. FerricFlow adds durable workflow state, leases, retries, history, value refs, and repair data while your Go service keeps running the application code.
 
 ## Install
 
 ```bash
 go get github.com/ferricstore/ferricstore-go
+```
+
+```go
+import ferricstore "github.com/ferricstore/ferricstore-go"
+```
+
+## Local Server
+
+```bash
+docker compose up -d ferricstore
+```
+
+The compose file uses `ghcr.io/ferricstore/ferricstore:0.4.1` and exposes Redis protocol on `127.0.0.1:6379`.
+
+## Client
+
+```go
+ctx := context.Background()
+client := ferricstore.NewClient("127.0.0.1:6379", ferricstore.WithCodec(ferricstore.JSONCodec{}))
+defer client.Close()
+```
+
+Use `Command` when a typed helper is not polished yet:
+
+```go
+value, err := client.Command(ctx, "PING")
+```
+
+## Durable Queue
+
+```go
+queue := ferricstore.NewQueueClient(client).Queue("email")
+
+_, err := queue.Enqueue(ctx, "email-1", map[string]any{"to": "user@example.com"}, ferricstore.CreateOptions{
+	PartitionKey: "tenant:1",
+})
+
+worker := queue.Worker("worker-1", func(ctx context.Context, job ferricstore.FlowRecord) error {
+	// Send the email here.
+	return nil
+}, ferricstore.WorkerOptions{
+	BatchSize:   50,
+	Concurrency: 16,
+})
+
+_, err = worker.RunOnce(ctx)
+```
+
+The worker claims due jobs, runs handlers concurrently, then completes, retries, fails, or returns handler errors based on `ErrorPolicy`.
+
+## State Workflow
+
+FerricFlow models workflows as explicit states and transitions.
+
+```go
+workflow := ferricstore.NewWorkflowClient(client).Workflow("order", "validate")
+
+workflow.State("validate", func(ctx context.Context, w ferricstore.WorkflowContext) (ferricstore.Outcome, error) {
+	return ferricstore.TransitionTo("charge", map[string]any{"validated": true}), nil
+})
+
+workflow.State("charge", func(ctx context.Context, w ferricstore.WorkflowContext) (ferricstore.Outcome, error) {
+	return ferricstore.CompleteWith(map[string]any{"status": "paid"}), nil
+})
+
+_, err := workflow.Start(ctx, "order-1", map[string]any{"amount": 42}, ferricstore.CreateOptions{
+	PartitionKey: "tenant:1",
+})
+
+_, err = workflow.Worker("orders-1", nil, ferricstore.WorkerOptions{
+	BatchSize:   25,
+	Concurrency: 8,
+}).RunOnce(ctx)
+```
+
+The state machine data is stored in FerricStore. The SDK does not add another database or persistence layer.
+
+## Stores
+
+Typed helpers cover common FerricStore/Redis-style data structures:
+
+```go
+_ = client.KV().Set(ctx, "tenant:1:profile", map[string]any{"plan": "pro"})
+profile, _ := client.KV().Get(ctx, "tenant:1:profile")
+
+_, _ = client.Hash().Set(ctx, "order:1", "status", "paid")
+_, _ = client.ListStore().RPush(ctx, "outbox", "event-1")
+_, _ = client.SetStore().Add(ctx, "seen", "event-1")
+```
+
+Available store helpers include KV, hash, list, set, sorted set, stream, bitmap, HyperLogLog, geo, JSON, Bloom, Cuckoo, Count-Min Sketch, TopK, and TDigest. Raw commands remain available through `Command`.
+
+## Value Refs
+
+Use value refs for larger durable values that should be attached to workflow state by reference.
+
+```go
+ref, err := client.PutValue(ctx, "analysis", map[string]any{"score": 98}, ferricstore.ValuePutOptions{
+	OwnerFlowID:  "flow-1",
+	PartitionKey: "tenant:1",
+	TTLMS:        ferricstore.Int64(3600000),
+})
+
+values, err := client.ValueMGet(ctx, []string{fmt.Sprint(ref)}, nil)
 ```
 
 ## Toolchain
@@ -15,40 +121,26 @@ This repo pins Go with mise:
 ```bash
 brew install mise
 mise trust ./mise.toml
-$(mise which go) version
+mise exec -- go test ./...
 ```
 
-If your shell has mise activated, plain `go` works. In non-activated shells, use
-`$(mise which go)` or the resolved path from `mise which go`.
+## Examples
 
-## Basic Usage
+Run examples against the compose server:
 
-```go
-ctx := context.Background()
-client := ferricstore.NewClient("127.0.0.1:6379")
-
-_ = client.Create(ctx, ferricstore.CreateOptions{
-	ID:           "flow-1",
-	Type:         "agent",
-	State:        "queued",
-	PartitionKey: "tenant-a:flow-1",
-	Payload:      []byte("payload"),
-	ReturnRecord: false,
-})
-
-jobs, _ := client.ClaimDue(ctx, ferricstore.ClaimDueOptions{
-	Type:         "agent",
-	State:        "queued",
-	Worker:       "worker-1",
-	PartitionKey: "tenant-a:flow-1",
-	Limit:        100,
-})
+```bash
+mise exec -- go run ./examples/durable_queue
+mise exec -- go run ./examples/state_workflow
+mise exec -- go run ./examples/fanout
+mise exec -- go run ./examples/signals
+mise exec -- go run ./examples/value_refs
+mise exec -- go run ./examples/kv_store
 ```
 
 ## Benchmark
 
 ```bash
-$(mise which go) run ./cmd/dbos-style-benchmark \
+mise exec -- go run ./cmd/dbos-style-benchmark \
   --mode queued \
   --transport pipeline \
   --flows 10000 \
@@ -59,5 +151,9 @@ $(mise which go) run ./cmd/dbos-style-benchmark \
   --create-batch-size 100
 ```
 
-`pipeline` uses normal SDK calls over a buffered Redis executor. `many` uses
-`FLOW.CREATE_MANY` and `FLOW.COMPLETE_MANY`.
+See:
+
+- [docs/design.md](docs/design.md)
+- [docs/python-parity.md](docs/python-parity.md)
+- [docs/api.md](docs/api.md)
+- [docs/benchmark.md](docs/benchmark.md)
