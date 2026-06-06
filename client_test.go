@@ -10,9 +10,10 @@ import (
 )
 
 type fakeExecutor struct {
-	calls [][]any
-	value any
-	err   error
+	calls  [][]any
+	value  any
+	values []any
+	err    error
 }
 
 func (f *fakeExecutor) Do(ctx context.Context, args ...any) *redis.Cmd {
@@ -22,7 +23,15 @@ func (f *fakeExecutor) Do(ctx context.Context, args ...any) *redis.Cmd {
 		cmd.SetErr(f.err)
 		return cmd
 	}
-	cmd.SetVal(f.value)
+	if len(f.values) > 0 {
+		index := len(f.calls) - 1
+		if index >= len(f.values) {
+			index = len(f.values) - 1
+		}
+		cmd.SetVal(f.values[index])
+	} else {
+		cmd.SetVal(f.value)
+	}
 	return cmd
 }
 
@@ -209,6 +218,54 @@ func TestTransitionBuildsCommand(t *testing.T) {
 		"PARTITION", "tenant:1", "PAYLOAD", []byte("payload"), "RUN_AT", int64(100),
 	}
 	assertCall(t, exec, want)
+}
+
+func TestRewindReturnRecordLoadsRecordWithoutReturnOption(t *testing.T) {
+	exec := &fakeExecutor{values: []any{
+		[]byte("OK"),
+		map[string]any{
+			"id":            "flow-1",
+			"type":          "order",
+			"state":         "queued",
+			"partition_key": "tenant:1",
+			"fencing_token": int64(9),
+			"version":       int64(2),
+		},
+	}}
+	client := NewClientWithExecutor(exec)
+
+	record, err := client.Rewind(context.Background(), RewindOptions{
+		ID:           "flow-1",
+		ToEvent:      "event-1",
+		PartitionKey: "tenant:1",
+		ExpectState:  "completed",
+		RunAtMS:      120,
+		ReasonRef:    "reason",
+		NowMS:        100,
+		ReturnRecord: true,
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(exec.calls))
+	}
+	wantRewind := []any{
+		"FLOW.REWIND", "flow-1", "TO_EVENT", "event-1", "NOW", int64(100),
+		"PARTITION", "tenant:1", "EXPECT_STATE", "completed", "RUN_AT", int64(120),
+		"REASON_REF", "reason",
+	}
+	if !reflect.DeepEqual(exec.calls[0], wantRewind) {
+		t.Fatalf("unexpected rewind call\n got: %#v\nwant: %#v", exec.calls[0], wantRewind)
+	}
+	wantGet := []any{"FLOW.GET", "flow-1", "PARTITION", "tenant:1"}
+	if !reflect.DeepEqual(exec.calls[1], wantGet) {
+		t.Fatalf("unexpected get call\n got: %#v\nwant: %#v", exec.calls[1], wantGet)
+	}
+	if record == nil || record.ID != "flow-1" || record.State != "queued" {
+		t.Fatalf("unexpected record %#v", record)
+	}
 }
 
 func TestRecordsFromRESPRejectsMalformedInput(t *testing.T) {

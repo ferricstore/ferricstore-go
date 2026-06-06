@@ -283,7 +283,8 @@ func (c *Client) Create(ctx context.Context, opt CreateOptions) (*FlowRecord, er
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
 	}
-	return recordOrNil(value, c.codec)
+	record, err := recordOrNil(value, c.codec)
+	return c.recordOrGet(ctx, record, err, opt.ID, opt.PartitionKey)
 }
 
 func (c *Client) Enqueue(ctx context.Context, opt CreateOptions) (*FlowRecord, error) {
@@ -620,7 +621,8 @@ func (c *Client) Transition(ctx context.Context, opt TransitionOptions) (*FlowRe
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
 	}
-	return recordOrNil(value, c.codec)
+	record, err := recordOrNil(value, c.codec)
+	return c.recordOrGet(ctx, record, err, opt.ID, opt.PartitionKey)
 }
 
 func (c *Client) Complete(ctx context.Context, opt CompleteOptions) (*FlowRecord, error) {
@@ -715,7 +717,8 @@ func (c *Client) Rewind(ctx context.Context, opt RewindOptions) (*FlowRecord, er
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
 	}
-	return recordOrNil(value, c.codec)
+	record, err := recordOrNil(value, c.codec)
+	return c.recordOrGet(ctx, record, err, opt.ID, opt.PartitionKey)
 }
 
 func (c *Client) CompleteMany(ctx context.Context, opt CompleteManyOptions) ([]FlowRecord, error) {
@@ -861,6 +864,20 @@ func (c *Client) Get(ctx context.Context, id string, partitionKey string, values
 		return nil, err
 	}
 	return recordOrNil(value, c.codec)
+}
+
+func (c *Client) recordOrGet(ctx context.Context, record *FlowRecord, err error, id, partitionKey string) (*FlowRecord, error) {
+	if err != nil || record != nil {
+		return record, err
+	}
+	record, err = c.Get(ctx, id, partitionKey, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if record == nil {
+		return nil, fmt.Errorf("FLOW command succeeded but record %q was not found", id)
+	}
+	return record, nil
 }
 
 func (c *Client) List(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
