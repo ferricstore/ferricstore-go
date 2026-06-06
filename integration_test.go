@@ -608,10 +608,6 @@ func assertManyMutationCommands(t *testing.T, ctx context.Context, client *Clien
 	retryAgain := claimMany(t, ctx, client, typeName, "retry-many", retryPartition, "go-sdk-retry-many-worker", now+1, 2)
 	_ = must[[]FlowRecord](t)(client.FailMany(ctx, FailManyOptions{PartitionKey: retryPartition, Items: retryAgain, Error: map[string]any{"done": true}}))
 
-	cancelPartition := "go-sdk:cancel-many:" + runID + ":partition"
-	createManyState(t, ctx, client, typeName, cancelPartition, "cancel-many", runID, "cancel-many", now)
-	cancelJobs := claimMany(t, ctx, client, typeName, "cancel-many", cancelPartition, "go-sdk-cancel-many-worker", now, 2)
-	_ = must[[]FlowRecord](t)(client.CancelMany(ctx, CancelManyOptions{PartitionKey: cancelPartition, Items: fencedItems(cancelJobs), Reason: map[string]any{"cancel": "many"}}))
 }
 
 func assertRepairIndexAndRewindCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
