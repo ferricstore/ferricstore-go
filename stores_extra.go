@@ -2,6 +2,7 @@ package ferricstore
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 )
@@ -342,21 +343,13 @@ type HashSetEXOptions struct {
 }
 
 func (s *HashStore) SetEX(ctx context.Context, key string, values map[string]any, opt HashSetEXOptions) (bool, error) {
-	args := []any{"HSETEX", key}
-	appendInt64Ptr(&args, "EX", opt.EXSeconds)
-	appendInt64Ptr(&args, "PX", opt.PXMilliseconds)
-	appendInt64Ptr(&args, "EXAT", opt.EXATSeconds)
-	appendInt64Ptr(&args, "PXAT", opt.PXATMillis)
-	if opt.KeepTTL {
-		args = append(args, "KEEPTTL")
+	if opt.EXSeconds == nil {
+		return false, errors.New("HSETEX requires EXSeconds")
 	}
-	if opt.FNXX {
-		args = append(args, "FNXX")
+	if opt.PXMilliseconds != nil || opt.EXATSeconds != nil || opt.PXATMillis != nil || opt.KeepTTL || opt.FNXX || opt.FXX {
+		return false, errors.New("HSETEX only supports EXSeconds")
 	}
-	if opt.FXX {
-		args = append(args, "FXX")
-	}
-	args = append(args, "FIELDS", len(values))
+	args := []any{"HSETEX", key, *opt.EXSeconds}
 	for _, field := range sortedKeys(values) {
 		encoded, err := s.client.encode(values[field])
 		if err != nil {
@@ -365,7 +358,7 @@ func (s *HashStore) SetEX(ctx context.Context, key string, values map[string]any
 		args = append(args, field, encoded)
 	}
 	response, err := s.client.Command(ctx, args...)
-	return asBool(response), err
+	return asInt64(response) >= 0 || asBool(response), err
 }
 
 func (s *HashStore) Expire(ctx context.Context, key string, seconds int64, fields ...string) (any, error) {

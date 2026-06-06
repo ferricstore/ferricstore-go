@@ -38,6 +38,26 @@ func TestHashGetEXBuildsCommand(t *testing.T) {
 	assertCall(t, exec, []any{"HGETEX", "hash:1", "PX", int64(5000), "FIELDS", 2, "a", "b"})
 }
 
+func TestHashSetEXBuildsFerricStoreCommand(t *testing.T) {
+	exec := &fakeExecutor{value: int64(2)}
+	client := NewClientWithExecutor(exec)
+
+	ok, err := client.Hash().SetEX(context.Background(), "hash:1", map[string]any{
+		"b": []byte("two"),
+		"a": []byte("one"),
+	}, HashSetEXOptions{
+		EXSeconds: Int64(60),
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected HSETEX success")
+	}
+	assertCall(t, exec, []any{"HSETEX", "hash:1", int64(60), "a", []byte("one"), "b", []byte("two")})
+}
+
 func TestStreamReadPreservesStreamOrder(t *testing.T) {
 	exec := &fakeExecutor{value: []any{}}
 	client := NewClientWithExecutor(exec)
