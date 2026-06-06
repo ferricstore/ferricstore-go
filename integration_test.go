@@ -597,7 +597,7 @@ func assertManyMutationCommands(t *testing.T, ctx context.Context, client *Clien
 	transitionPartition := "go-sdk:many:" + runID + ":partition"
 	createManyState(t, ctx, client, typeName, transitionPartition, "many-transition", runID, "many", now)
 	manyJobs := claimMany(t, ctx, client, typeName, "many-transition", transitionPartition, "go-sdk-many-worker", now, 2)
-	_ = must[[]FlowRecord](t)(client.TransitionMany(ctx, TransitionManyOptions{PartitionKey: transitionPartition, FromState: "many-transition", ToState: "many-complete", Items: fencedItems(manyJobs), NowMS: now}))
+	_ = must[[]FlowRecord](t)(client.TransitionMany(ctx, TransitionManyOptions{PartitionKey: transitionPartition, FromState: manyJobs[0].State, ToState: "many-complete", Items: fencedItems(manyJobs), NowMS: now}))
 	completeJobs := claimMany(t, ctx, client, typeName, "many-complete", transitionPartition, "go-sdk-many-worker", now+1, 2)
 	requireLen(t, completeJobs, 2)
 

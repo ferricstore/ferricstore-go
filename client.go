@@ -1323,10 +1323,10 @@ func appendFencedItems(args *[]any, partitionKey string, items []FencedItem, com
 		} else {
 			*args = append(*args, item.ID)
 		}
+		*args = append(*args, item.FencingToken)
 		if includeLease {
 			*args = append(*args, item.LeaseToken)
 		}
-		*args = append(*args, item.FencingToken)
 	}
 	return nil
 }
