@@ -238,9 +238,9 @@ func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 	typeName := "go-sdk-flow-" + runID
 	now := time.Now().UnixMilli()
 
-	requireValue(t, must[any](t)(client.InstallPolicy(ctx, typeName, &RetryPolicy{MaxRetries: 2, Backoff: "fixed", BaseMS: 10, MaxMS: 100, ExhaustedTo: "failed"}, nil)))
+	requireValue(t, must[any](t)(client.InstallPolicy(ctx, typeName, &RetryPolicy{MaxRetries: 2, Backoff: "FIXED", BaseMS: 10, MaxMS: 100, ExhaustedTo: "failed"}, nil)))
 	requireValue(t, must[any](t)(client.InstallPolicy(ctx, typeName, nil, map[string]RetryPolicy{
-		"queued": {MaxRetries: 1, Backoff: "fixed", BaseMS: 10, MaxMS: 100, ExhaustedTo: "failed"},
+		"queued": {MaxRetries: 1, Backoff: "FIXED", BaseMS: 10, MaxMS: 100, ExhaustedTo: "failed"},
 	})))
 	requireMap(t, must[map[string]any](t)(client.PolicyGet(ctx, typeName, "")))
 	requireMap(t, must[map[string]any](t)(client.PolicyGet(ctx, typeName, "queued")))
@@ -280,19 +280,20 @@ func TestIntegrationQueueAndWorkflowWrappers(t *testing.T) {
 	defer client.Close()
 
 	runID := integrationSuffix("wrappers")
+	now := time.Now().UnixMilli()
 	queueType := "go-sdk-queue-" + runID
 	queueID := "go-sdk:queue:" + runID
 	queuePartition := queueID + ":partition"
 	queue := NewQueueClient(client).Queue(queueType)
 
-	_ = must[*FlowRecord](t)(queue.Enqueue(ctx, queueID, map[string]any{"step": "queued"}, CreateOptions{PartitionKey: queuePartition, Idempotent: Bool(true)}))
+	_ = must[*FlowRecord](t)(queue.Enqueue(ctx, queueID, map[string]any{"step": "queued"}, CreateOptions{PartitionKey: queuePartition, Idempotent: Bool(true), NowMS: now, RunAtMS: now}))
 	queueResult := must[QueueWorkerResult](t)(queue.Worker("go-sdk-queue-worker", func(_ context.Context, job FlowRecord) error {
 		payload, ok := job.Payload.(map[string]any)
 		if !ok || payload["step"] != "queued" {
 			return fmt.Errorf("unexpected queue payload: %#v", job.Payload)
 		}
 		return nil
-	}, WorkerOptions{BatchSize: 1, ClaimPayload: true}).RunOnce(ctx))
+	}, WorkerOptions{BatchSize: 1, ClaimPayload: true, NowMS: now + 1}).RunOnce(ctx))
 	if queueResult.Claimed != 1 || queueResult.Completed != 1 || queueResult.Retried != 0 || queueResult.Failed != 0 {
 		t.Fatalf("unexpected queue result: %#v", queueResult)
 	}
@@ -308,12 +309,12 @@ func TestIntegrationQueueAndWorkflowWrappers(t *testing.T) {
 		return CompleteWith(map[string]any{"id": ctx.ID(), "done": true}), nil
 	})
 
-	_ = must[*FlowRecord](t)(workflow.Start(ctx, workflowID, map[string]any{"order": runID}, CreateOptions{PartitionKey: workflowPartition, Idempotent: Bool(true)}))
-	first := must[WorkflowWorkerResult](t)(workflow.Worker("go-sdk-workflow-worker", []string{"received"}, WorkerOptions{BatchSize: 1, ClaimPayload: true}).RunOnce(ctx))
+	_ = must[*FlowRecord](t)(workflow.Start(ctx, workflowID, map[string]any{"order": runID}, CreateOptions{PartitionKey: workflowPartition, Idempotent: Bool(true), NowMS: now, RunAtMS: now}))
+	first := must[WorkflowWorkerResult](t)(workflow.Worker("go-sdk-workflow-worker", []string{"received"}, WorkerOptions{BatchSize: 1, ClaimPayload: true, NowMS: now + 1}).RunOnce(ctx))
 	if first.Claimed != 1 || first.Applied != 1 {
 		t.Fatalf("unexpected first workflow result: %#v", first)
 	}
-	second := must[WorkflowWorkerResult](t)(workflow.Worker("go-sdk-workflow-worker", []string{"validated"}, WorkerOptions{BatchSize: 1, ClaimPayload: true}).RunOnce(ctx))
+	second := must[WorkflowWorkerResult](t)(workflow.Worker("go-sdk-workflow-worker", []string{"validated"}, WorkerOptions{BatchSize: 1, ClaimPayload: true, NowMS: now + 2}).RunOnce(ctx))
 	if second.Claimed != 1 || second.Applied != 1 {
 		t.Fatalf("unexpected second workflow result: %#v", second)
 	}
@@ -330,7 +331,7 @@ func assertStringCommands(t *testing.T, ctx context.Context, client *Client, pre
 	requireString(t, must[any](t)(client.KV().Get(ctx, key)), "abc")
 	requireInt64(t, must[int64](t)(client.KV().Exists(ctx, key)), 1)
 	values := must[[]any](t)(client.KV().MGet(ctx, key, prefix+"missing"))
-	if len(values) != 2 || values[0] != "abc" || values[1] != nil {
+	if len(values) != 2 || values[0] != "abc" || values[1] != "" {
 		t.Fatalf("MGET = %#v", values)
 	}
 	if err := client.KV().MSet(ctx, map[string]any{prefix + "string2": "2", prefix + "string3": "3"}); err != nil {
@@ -547,7 +548,7 @@ func assertStreamBitmapHllGeoCommands(t *testing.T, ctx context.Context, client 
 	requireValue(t, must[any](t)(client.Geo().Distance(ctx, geo, "palermo", "catania", "km")))
 	requireLen(t, must[[]string](t)(client.Geo().Hash(ctx, geo, "palermo")), 1)
 	requireValue(t, must[any](t)(client.Geo().Search(ctx, geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}})))
-	requireNonNegative(t, must[int64](t)(client.Geo().SearchStore(ctx, prefix+"geo-dst", geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}}, true)))
+	requireNonNegative(t, must[int64](t)(client.Geo().SearchStore(ctx, prefix+"geo-dst", geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}}, false)))
 }
 
 func assertBatchFlowCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {

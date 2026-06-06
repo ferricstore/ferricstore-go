@@ -151,6 +151,7 @@ func (w *WorkflowWorker) RunOnce(ctx context.Context) (WorkflowWorkerResult, err
 		PartitionKeys:  opts.PartitionKeys,
 		LeaseMS:        opts.LeaseMS,
 		Limit:          opts.BatchSize,
+		NowMS:          opts.NowMS,
 		ReclaimExpired: opts.ReclaimExpired,
 		ReclaimRatio:   opts.ReclaimRatio,
 		Payload:        payload,

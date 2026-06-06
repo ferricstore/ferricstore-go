@@ -67,6 +67,7 @@ type WorkerOptions struct {
 	PartitionKeys  []string
 	BatchSize      int
 	LeaseMS        int64
+	NowMS          int64
 	Concurrency    int
 	ReclaimExpired *bool
 	ReclaimRatio   *int64
@@ -111,6 +112,7 @@ func (w *QueueWorker) RunOnce(ctx context.Context) (QueueWorkerResult, error) {
 		PartitionKeys:  opts.PartitionKeys,
 		LeaseMS:        opts.LeaseMS,
 		Limit:          opts.BatchSize,
+		NowMS:          opts.NowMS,
 		ReclaimExpired: opts.ReclaimExpired,
 		ReclaimRatio:   opts.ReclaimRatio,
 		Payload:        payload,

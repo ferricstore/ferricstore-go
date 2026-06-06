@@ -187,6 +187,19 @@ func appendBoolPtr(args *[]any, name string, value *bool) {
 	}
 }
 
+func appendPayloadRead(args *[]any, payload *bool, maxBytes *int64) {
+	if payload != nil && !*payload {
+		*args = append(*args, "NOPAYLOAD")
+		return
+	}
+	if (payload != nil && *payload) || maxBytes != nil {
+		*args = append(*args, "PAYLOAD")
+	}
+	if maxBytes != nil {
+		*args = append(*args, "MAXBYTES", *maxBytes)
+	}
+}
+
 func appendInt64Ptr(args *[]any, name string, value *int64) {
 	if value != nil {
 		*args = append(*args, name, *value)
@@ -514,8 +527,7 @@ func (c *Client) claimDue(ctx context.Context, opt ClaimDueOptions) (any, error)
 		}
 	}
 	appendInt64Ptr(&args, "BLOCK", opt.BlockMS)
-	appendBoolPtr(&args, "PAYLOAD", opt.Payload)
-	appendInt64Ptr(&args, "PAYLOAD_MAX_BYTES", opt.PayloadMaxBytes)
+	appendPayloadRead(&args, opt.Payload, opt.PayloadMaxBytes)
 	appendValueReturn(&args, opt.Values, opt.ValueMaxBytes)
 	appendBoolPtr(&args, "RECLAIM_EXPIRED", opt.ReclaimExpired)
 	appendInt64Ptr(&args, "RECLAIM_RATIO", opt.ReclaimRatio)
@@ -570,8 +582,7 @@ func (c *Client) reclaim(ctx context.Context, opt ReclaimOptions) (any, error) {
 	if opt.JobOnly {
 		appendOpt(&args, "RETURN", "JOBS_COMPACT")
 	}
-	appendBoolPtr(&args, "PAYLOAD", opt.Payload)
-	appendInt64Ptr(&args, "PAYLOAD_MAX_BYTES", opt.PayloadMaxBytes)
+	appendPayloadRead(&args, opt.Payload, opt.PayloadMaxBytes)
 	appendValueReturn(&args, opt.Values, opt.ValueMaxBytes)
 	return c.Command(ctx, args...)
 }
