@@ -236,7 +236,7 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName st
 	case TransitionResult:
 		_, err = w.workflow.client.Transition(ctx, TransitionOptions{
 			ID:           job.ID,
-			FromState:    stateName,
+			FromState:    job.State,
 			ToState:      value.ToState,
 			LeaseToken:   job.LeaseToken,
 			FencingToken: job.FencingToken,

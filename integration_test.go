@@ -295,7 +295,7 @@ func TestIntegrationQueueAndWorkflowWrappers(t *testing.T) {
 	workflowPartition := workflowID + ":partition"
 	workflow := NewWorkflowClient(client).Workflow(workflowType, "received")
 	workflow.State("received", func(context.Context, WorkflowContext) (Outcome, error) {
-		return TransitionTo("validated", map[string]any{"validated": true}), nil
+		return TransitionResult{ToState: "validated", Payload: map[string]any{"validated": true}, RunAtMS: now + 1}, nil
 	})
 	workflow.State("validated", func(_ context.Context, ctx WorkflowContext) (Outcome, error) {
 		return CompleteWith(map[string]any{"id": ctx.ID(), "done": true}), nil
@@ -567,7 +567,7 @@ func assertSingleMutationCommands(t *testing.T, ctx context.Context, client *Cli
 
 	transition := createAndClaim(t, ctx, client, typeName, runID, "transition", "queued", now, 30_000)
 	_ = must[*FlowRecord](t)(client.ExtendLease(ctx, transition.id, transition.job.LeaseToken, transition.job.FencingToken, 30_000, transition.partitionKey))
-	_ = must[*FlowRecord](t)(client.Transition(ctx, TransitionOptions{ID: transition.id, FromState: "queued", ToState: "ready", LeaseToken: transition.job.LeaseToken, FencingToken: transition.job.FencingToken, PartitionKey: transition.partitionKey, Payload: map[string]any{"step": "ready"}}))
+	_ = must[*FlowRecord](t)(client.Transition(ctx, TransitionOptions{ID: transition.id, FromState: transition.job.State, ToState: "ready", LeaseToken: transition.job.LeaseToken, FencingToken: transition.job.FencingToken, PartitionKey: transition.partitionKey, Payload: map[string]any{"step": "ready"}}))
 	ready := claimOne(t, ctx, client, typeName, "ready", transition.partitionKey, "go-sdk-ready-worker", now+1, 30_000)
 	_ = must[*FlowRecord](t)(client.Complete(ctx, CompleteOptions{ID: ready.ID, LeaseToken: ready.LeaseToken, FencingToken: ready.FencingToken, PartitionKey: ready.PartitionKey, Result: map[string]any{"ok": true}}))
 
