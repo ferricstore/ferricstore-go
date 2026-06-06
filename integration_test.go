@@ -39,12 +39,15 @@ func TestIntegrationKVAndFlowRoundTrip(t *testing.T) {
 	}
 
 	partition := runID + ":partition"
+	dueAt := time.Now().Add(-time.Second).UnixMilli()
 	_, err = client.Create(ctx, CreateOptions{
 		ID:           runID + ":flow",
 		Type:         "go-sdk-integration",
 		State:        "queued",
 		PartitionKey: partition,
 		Payload:      map[string]any{"step": 1},
+		RunAtMS:      dueAt,
+		NowMS:        dueAt,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +59,7 @@ func TestIntegrationKVAndFlowRoundTrip(t *testing.T) {
 		Worker:       "go-sdk-worker",
 		PartitionKey: partition,
 		Limit:        1,
+		NowMS:        dueAt + 1000,
 	})
 	if err != nil {
 		t.Fatal(err)
