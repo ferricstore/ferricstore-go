@@ -16,8 +16,8 @@ $(mise which go) run ./cmd/dbos-style-benchmark \
 
 Modes:
 
-* `--transport pipeline`: normal SDK calls over a buffered Redis executor. Mixed
-  commands before flush are sent in one Redis pipeline.
+* `--transport pipeline`: normal SDK calls through a buffered SDK executor.
+  Commands are queued locally and flushed through `Client.Pipeline`.
 * `--transport many`: `FLOW.CREATE_MANY` and `FLOW.COMPLETE_MANY`.
 
 The queued benchmark creates and drains live, like the current Python benchmark.

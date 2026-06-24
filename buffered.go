@@ -1,29 +1,23 @@
 package ferricstore
 
-import (
-	"context"
-
-	"github.com/redis/go-redis/v9"
-)
+import "context"
 
 type BufferedExecutor struct {
-	client       *redis.Client
+	client       *Client
 	commands     [][]any
 	Flushes      int64
 	CommandsSent int64
 	MaxDepth     int64
 }
 
-func NewBufferedExecutor(client *redis.Client) *BufferedExecutor {
+func NewBufferedExecutor(client *Client) *BufferedExecutor {
 	return &BufferedExecutor{client: client}
 }
 
-func (e *BufferedExecutor) Do(ctx context.Context, args ...any) *redis.Cmd {
+func (e *BufferedExecutor) Do(ctx context.Context, args ...any) (any, error) {
 	copied := append([]any(nil), args...)
 	e.commands = append(e.commands, copied)
-	cmd := redis.NewCmd(ctx, args...)
-	cmd.SetVal([]byte("QUEUED"))
-	return cmd
+	return []byte("QUEUED"), nil
 }
 
 func (e *BufferedExecutor) Flush(ctx context.Context) ([]any, error) {
@@ -32,20 +26,14 @@ func (e *BufferedExecutor) Flush(ctx context.Context) ([]any, error) {
 	}
 	commands := e.commands
 	e.commands = nil
-	pipe := e.client.Pipeline()
-	for _, command := range commands {
-		pipe.Do(ctx, command...)
-	}
-	cmds, err := pipe.Exec(ctx)
 	depth := int64(len(commands))
 	e.Flushes++
 	e.CommandsSent += depth
 	if depth > e.MaxDepth {
 		e.MaxDepth = depth
 	}
-	results := make([]any, 0, len(cmds))
-	for _, cmd := range cmds {
-		results = append(results, cmd.(*redis.Cmd).Val())
+	if e.client == nil {
+		return nil, nil
 	}
-	return results, err
+	return e.client.Pipeline(ctx, commands)
 }

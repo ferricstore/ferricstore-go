@@ -6,17 +6,17 @@ import (
 	"strings"
 )
 
-func recordsFromRESP(value any, codec Codec) ([]FlowRecord, error) {
+func recordsFromNative(value any, codec Codec) ([]FlowRecord, error) {
 	if value == nil {
 		return nil, nil
 	}
 	items, ok := value.([]any)
 	if !ok {
-		return nil, fmt.Errorf("expected RESP array, got %T", value)
+		return nil, fmt.Errorf("expected native array, got %T", value)
 	}
 	records := make([]FlowRecord, 0, len(items))
 	for _, item := range items {
-		record, err := recordFromRESP(item, codec)
+		record, err := recordFromNative(item, codec)
 		if err != nil {
 			return nil, err
 		}
@@ -29,11 +29,11 @@ func recordsOrNil(value any, codec Codec) ([]FlowRecord, error) {
 	if value == nil || isOK(value) {
 		return nil, nil
 	}
-	return recordsFromRESP(value, codec)
+	return recordsFromNative(value, codec)
 }
 
-func recordFromRESP(value any, codec Codec) (FlowRecord, error) {
-	mapping, err := respMap(value)
+func recordFromNative(value any, codec Codec) (FlowRecord, error) {
+	mapping, err := nativeMap(value)
 	if err != nil {
 		return FlowRecord{}, err
 	}
@@ -44,24 +44,24 @@ func recordOrNil(value any, codec Codec) (*FlowRecord, error) {
 	if value == nil || isOK(value) {
 		return nil, nil
 	}
-	record, err := recordFromRESP(value, codec)
+	record, err := recordFromNative(value, codec)
 	if err != nil {
 		return nil, err
 	}
 	return &record, nil
 }
 
-func claimedItemsFromRESP(value any) ([]ClaimedItem, error) {
+func claimedItemsFromNative(value any) ([]ClaimedItem, error) {
 	if value == nil {
 		return nil, nil
 	}
 	items, ok := value.([]any)
 	if !ok {
-		return nil, fmt.Errorf("expected RESP array, got %T", value)
+		return nil, fmt.Errorf("expected native array, got %T", value)
 	}
 	claimed := make([]ClaimedItem, 0, len(items))
 	for _, item := range items {
-		parsed, err := claimedItemFromRESP(item)
+		parsed, err := claimedItemFromNative(item)
 		if err != nil {
 			return nil, err
 		}
@@ -70,7 +70,7 @@ func claimedItemsFromRESP(value any) ([]ClaimedItem, error) {
 	return claimed, nil
 }
 
-func claimedItemFromRESP(value any) (ClaimedItem, error) {
+func claimedItemFromNative(value any) (ClaimedItem, error) {
 	if list, ok := value.([]any); ok {
 		if len(list) < 4 {
 			return ClaimedItem{}, fmt.Errorf("expected claimed item with at least 4 fields")
@@ -87,7 +87,7 @@ func claimedItemFromRESP(value any) (ClaimedItem, error) {
 		}
 		return item, nil
 	}
-	m, err := respMap(value)
+	m, err := nativeMap(value)
 	if err != nil {
 		return ClaimedItem{}, err
 	}
@@ -152,24 +152,24 @@ func decodeValue(codec Codec, value any) (any, error) {
 	return codec.Decode(value)
 }
 
-func respMap(value any) (map[string]any, error) {
+func nativeMap(value any) (map[string]any, error) {
 	switch v := value.(type) {
 	case map[interface{}]interface{}:
 		out := make(map[string]any, len(v))
 		for key, val := range v {
-			out[asString(key)] = normalizeRESP(val)
+			out[asString(key)] = normalizeNative(val)
 		}
 		return out, nil
 	case map[string]any:
 		out := make(map[string]any, len(v))
 		for key, val := range v {
-			out[key] = normalizeRESP(val)
+			out[key] = normalizeNative(val)
 		}
 		return out, nil
 	case []any:
 		return pairArrayMap(v)
 	default:
-		return nil, fmt.Errorf("expected RESP map, got %T", value)
+		return nil, fmt.Errorf("expected native map, got %T", value)
 	}
 }
 
@@ -181,16 +181,16 @@ func pairArrayMap(items []any) (map[string]any, error) {
 		out := make(map[string]any, len(items))
 		for _, pair := range items {
 			p := pair.([]any)
-			out[asString(p[0])] = normalizeRESP(p[1])
+			out[asString(p[0])] = normalizeNative(p[1])
 		}
 		return out, nil
 	}
 	if len(items)%2 != 0 {
-		return nil, fmt.Errorf("odd RESP map array length %d", len(items))
+		return nil, fmt.Errorf("odd native map array length %d", len(items))
 	}
 	out := make(map[string]any, len(items)/2)
 	for i := 0; i < len(items); i += 2 {
-		out[asString(items[i])] = normalizeRESP(items[i+1])
+		out[asString(items[i])] = normalizeNative(items[i+1])
 	}
 	return out, nil
 }
@@ -209,7 +209,7 @@ func stringObjectMap(value any) map[string]any {
 	if value == nil {
 		return map[string]any{}
 	}
-	mapping, err := respMap(value)
+	mapping, err := nativeMap(value)
 	if err != nil {
 		return map[string]any{}
 	}
@@ -220,7 +220,7 @@ func kvResponse(value any) (map[string]any, error) {
 	if value == nil {
 		return map[string]any{}, nil
 	}
-	if mapping, err := respMap(value); err == nil {
+	if mapping, err := nativeMap(value); err == nil {
 		return mapping, nil
 	}
 	text := asString(value)
@@ -264,18 +264,18 @@ func coerceTextValue(value string) any {
 	return value
 }
 
-func normalizeRESP(value any) any {
+func normalizeNative(value any) any {
 	switch v := value.(type) {
 	case map[interface{}]interface{}:
 		out := make(map[string]any, len(v))
 		for key, val := range v {
-			out[asString(key)] = normalizeRESP(val)
+			out[asString(key)] = normalizeNative(val)
 		}
 		return out
 	case []interface{}:
 		out := make([]any, len(v))
 		for i, val := range v {
-			out[i] = normalizeRESP(val)
+			out[i] = normalizeNative(val)
 		}
 		return out
 	default:

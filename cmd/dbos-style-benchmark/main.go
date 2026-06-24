@@ -13,7 +13,6 @@ import (
 	"time"
 
 	ferricstore "github.com/ferricstore/ferricstore-go"
-	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -66,10 +65,9 @@ type benchFlowClient struct {
 }
 
 func newBenchFlowClient(addr, transport string) *benchFlowClient {
-	rdb := redis.NewClient(&redis.Options{Addr: addr, Protocol: 3})
-	read := ferricstore.NewClientFromRedis(rdb)
+	read := ferricstore.NewClient(addr)
 	if transport == "pipeline" {
-		buffered := ferricstore.NewBufferedExecutor(rdb)
+		buffered := ferricstore.NewBufferedExecutor(read)
 		return &benchFlowClient{
 			transport: transport,
 			read:      read,
@@ -603,7 +601,7 @@ func runSerialLatency(ctx context.Context, cfg config) (map[string]any, error) {
 
 func main() {
 	var cfg config
-	flag.StringVar(&cfg.addr, "addr", "127.0.0.1:6379", "FerricStore Redis address")
+	flag.StringVar(&cfg.addr, "addr", "127.0.0.1:6388", "FerricStore native address")
 	flag.StringVar(&cfg.mode, "mode", "queued", "queued or serial-latency")
 	flag.IntVar(&cfg.flows, "flows", 10000, "flows to create")
 	flag.IntVar(&cfg.workers, "workers", 16, "worker goroutines")
@@ -611,7 +609,7 @@ func main() {
 	flag.IntVar(&cfg.partitions, "partitions", 16, "partition keys")
 	flag.IntVar(&cfg.claimBatchSize, "claim-batch-size", 100, "FLOW.CLAIM_DUE limit")
 	flag.IntVar(&cfg.createBatchSize, "create-batch-size", 100, "create batch size")
-	flag.StringVar(&cfg.transport, "transport", "pipeline", "pipeline or many")
+	flag.StringVar(&cfg.transport, "transport", "pipeline", "pipeline/buffered or many")
 	flag.IntVar(&cfg.payloadBytes, "payload-bytes", 0, "payload bytes per flow")
 	flag.StringVar(&cfg.workCommand, "work-command", "none", "none or incr")
 	flag.Float64Var(&cfg.idleSleepMS, "idle-sleep-ms", 10, "idle sleep milliseconds")

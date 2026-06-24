@@ -107,7 +107,7 @@ func (s *HashStore) GetAll(ctx context.Context, key string) (map[string]any, err
 	if err != nil {
 		return nil, err
 	}
-	raw, err := respMap(value)
+	raw, err := nativeMap(value)
 	if err != nil {
 		return nil, err
 	}

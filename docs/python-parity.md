@@ -72,7 +72,7 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 
 | Area | Go SDK | Status |
 | --- | --- | --- |
-| Raw Redis/FerricStore commands | `Command` | Covered |
+| Raw FerricStore commands | `Command` | Covered |
 | KV | `KV()` | Broad typed coverage |
 | Hash | `Hash()` | Broad typed coverage |
 | List | `ListStore()` | Broad typed coverage |
@@ -84,7 +84,7 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 | Geo | `Geo()` | Broad typed coverage |
 | JSON | `JSON()` | Basic helpers only: `JSON.SET`, `JSON.GET`, `JSON.DEL`; advanced JSON helpers intentionally left to `Command` |
 | Bloom, Cuckoo, CMS, TopK, TDigest | `Bloom()`, `Cuckoo()`, `CountMinSketch()`, `TopK()`, `TDigest()` | Broad typed coverage |
-| Every Redis-compatible command as a typed method | `Command` fallback | Broad non-JSON coverage; advanced JSON and true connection-state APIs remain raw or go-redis-native |
+| Every supported command as a typed method | `Command` fallback | Broad non-JSON coverage; advanced JSON and true connection-state APIs remain raw/native |
 
 ## Locks, CAS, Rate Limit, Admin
 
@@ -119,6 +119,6 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 ## Current Gaps
 
 - Advanced JSON command helpers are intentionally not added yet; use `Command` for `JSON.TYPE`, `JSON.ARRAPPEND`, `JSON.NUMINCRBY`, and related commands.
-- Low-level connection-state command families such as ACL user management, CLIENT connection modes, SUBSCRIBE connection state, and MULTI/EXEC connection state remain available through `Command` or the underlying go-redis client where appropriate.
+- Low-level connection-state command families such as ACL user management, CLIENT connection modes, SUBSCRIBE connection state, and MULTI/EXEC connection state remain available through `Command` where appropriate.
 - Python's background autobatcher is not ported as a matching API; Go currently exposes `BufferedExecutor` and `Pipeline`.
 - Integration tests need a live FerricStore server and are kept separate from unit tests.

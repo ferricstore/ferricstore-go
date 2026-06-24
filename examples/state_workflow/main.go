@@ -10,7 +10,7 @@ import (
 
 func main() {
 	ctx := context.Background()
-	client := ferricstore.NewClient("127.0.0.1:6379", ferricstore.WithCodec(ferricstore.JSONCodec{}))
+	client := ferricstore.NewClient("127.0.0.1:6388", ferricstore.WithCodec(ferricstore.JSONCodec{}))
 	defer func() { _ = client.Close() }()
 
 	orders := ferricstore.NewWorkflowClient(client).Workflow("order", "validate")

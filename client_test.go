@@ -5,8 +5,6 @@ import (
 	"errors"
 	"reflect"
 	"testing"
-
-	"github.com/redis/go-redis/v9"
 )
 
 type fakeExecutor struct {
@@ -16,23 +14,19 @@ type fakeExecutor struct {
 	err    error
 }
 
-func (f *fakeExecutor) Do(ctx context.Context, args ...any) *redis.Cmd {
+func (f *fakeExecutor) Do(ctx context.Context, args ...any) (any, error) {
 	f.calls = append(f.calls, append([]any(nil), args...))
-	cmd := redis.NewCmd(ctx, args...)
 	if f.err != nil {
-		cmd.SetErr(f.err)
-		return cmd
+		return nil, f.err
 	}
 	if len(f.values) > 0 {
 		index := len(f.calls) - 1
 		if index >= len(f.values) {
 			index = len(f.values) - 1
 		}
-		cmd.SetVal(f.values[index])
-	} else {
-		cmd.SetVal(f.value)
+		return f.values[index], nil
 	}
-	return cmd
+	return f.value, nil
 }
 
 func TestCreateBuildsCommandDefaults(t *testing.T) {
@@ -107,7 +101,7 @@ func TestCreateManyMixedRequiresPartitionKey(t *testing.T) {
 	}
 }
 
-func TestClaimDueDecodesRESP3Maps(t *testing.T) {
+func TestClaimDueDecodesNativeMaps(t *testing.T) {
 	exec := &fakeExecutor{
 		value: []any{
 			map[interface{}]interface{}{
@@ -268,11 +262,11 @@ func TestRewindReturnRecordLoadsRecordWithoutReturnOption(t *testing.T) {
 	}
 }
 
-func TestRecordsFromRESPRejectsMalformedInput(t *testing.T) {
-	if _, err := recordsFromRESP("OK", RawCodec{}); err == nil {
+func TestRecordsFromNativeRejectsMalformedInput(t *testing.T) {
+	if _, err := recordsFromNative("OK", RawCodec{}); err == nil {
 		t.Fatal("expected non-array error")
 	}
-	if _, err := recordsFromRESP([]any{[]any{"id"}}, RawCodec{}); err == nil {
+	if _, err := recordsFromNative([]any{[]any{"id"}}, RawCodec{}); err == nil {
 		t.Fatal("expected odd map array error")
 	}
 }

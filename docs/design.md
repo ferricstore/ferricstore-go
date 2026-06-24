@@ -20,7 +20,7 @@ That makes storage choices explicit. Developers choose what goes into payloads, 
 
 FerricStore owns persistence. The Go SDK does not introduce another database, ORM, or sidecar storage layer.
 
-The SDK sends FerricStore commands and decodes responses. This is intentionally close to the protocol so high-throughput paths can use:
+The SDK sends FerricStore commands over the native binary protocol and decodes structured responses. This is intentionally close to the protocol so high-throughput paths can use:
 
 - `CreateMany`, `CompleteMany`, `TransitionMany`, `RetryMany`, `FailMany`, `CancelMany`
 - `Pipeline`
@@ -42,7 +42,7 @@ Long-running worker lifecycle helpers are intentionally not hidden yet. Applicat
 The default `RawCodec` sends and receives values as-is. `JSONCodec` is available for structured payloads:
 
 ```go
-client := ferricstore.NewClient("127.0.0.1:6379", ferricstore.WithCodec(ferricstore.JSONCodec{}))
+client := ferricstore.NewClient("127.0.0.1:6388", ferricstore.WithCodec(ferricstore.JSONCodec{}))
 ```
 
 Codecs apply to payloads, named values, value refs reads, and store wrappers where values are encoded.

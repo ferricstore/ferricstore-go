@@ -10,11 +10,14 @@ func TestBufferedExecutorQueuesCopiedCommands(t *testing.T) {
 	exec := NewBufferedExecutor(nil)
 	args := []any{"SET", "k", "v"}
 
-	cmd := exec.Do(context.Background(), args...)
+	value, err := exec.Do(context.Background(), args...)
 	args[0] = "GET"
 
-	if string(cmd.Val().([]byte)) != "QUEUED" {
-		t.Fatalf("unexpected placeholder value: %#v", cmd.Val())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(value.([]byte)) != "QUEUED" {
+		t.Fatalf("unexpected placeholder value: %#v", value)
 	}
 	want := [][]any{{"SET", "k", "v"}}
 	if !reflect.DeepEqual(exec.commands, want) {

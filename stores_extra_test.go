@@ -58,6 +58,19 @@ func TestHashSetEXBuildsFerricStoreCommand(t *testing.T) {
 	assertCall(t, exec, []any{"HSETEX", "hash:1", int64(60), "a", []byte("one"), "b", []byte("two")})
 }
 
+func TestHashScanOmitsDefaultCount(t *testing.T) {
+	exec := &fakeExecutor{value: []any{}}
+	client := NewClientWithExecutor(exec)
+	count := 10
+
+	_, err := client.Hash().Scan(context.Background(), "hash:1", 0, "", &count)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCall(t, exec, []any{"HSCAN", "hash:1", int64(0)})
+}
+
 func TestStreamReadPreservesStreamOrder(t *testing.T) {
 	exec := &fakeExecutor{value: []any{}}
 	client := NewClientWithExecutor(exec)

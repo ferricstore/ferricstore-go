@@ -154,9 +154,10 @@ func TestIntegrationTypedStoreFamilies(t *testing.T) {
 	assertHashCommands(t, ctx, client, prefix)
 	assertListSetSortedSetCommands(t, ctx, client, prefix)
 	assertStreamBitmapHllGeoCommands(t, ctx, client, prefix, runID)
+	assertUnsupportedJSONCommands(t, ctx, client, prefix)
 }
 
-func TestIntegrationProbabilisticHelpersExceptJSON(t *testing.T) {
+func TestIntegrationProbabilisticHelpers(t *testing.T) {
 	ctx, cancel := integrationContext(t)
 	defer cancel()
 
@@ -227,6 +228,71 @@ func TestIntegrationProbabilisticHelpersExceptJSON(t *testing.T) {
 	requireTrue(t, must[bool](t)(client.TDigest().Reset(ctx, tdigest)))
 }
 
+func TestIntegrationAdminMetadataAndExpectedErrors(t *testing.T) {
+	ctx, cancel := integrationContext(t)
+	defer cancel()
+
+	client := integrationClient(StringCodec{})
+	defer client.Close()
+
+	runID := integrationSuffix("admin")
+	prefix := "go-sdk:admin:" + runID + ":"
+	key := prefix + "key"
+
+	if err := client.KV().Set(ctx, key, "value"); err != nil {
+		t.Fatal(err)
+	}
+	requireValue(t, must[any](t)(client.ConfigGet(ctx, "*")))
+	if err := client.ConfigSet(ctx, "loglevel", "notice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ConfigResetStat(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ConfigRewrite(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireValue(t, must[any](t)(client.SlowLogGet(ctx, Int(10))))
+	requireNonNegative(t, must[int64](t)(client.SlowLogLen(ctx)))
+	if err := client.SlowLogReset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireNonNegative(t, must[int64](t)(client.LastSave(ctx)))
+	if err := client.BgSave(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Save(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireValue(t, must[any](t)(client.Module(ctx, "LIST")))
+	requireValue(t, must[any](t)(client.FerricStoreBlobGC(ctx)))
+	requireNonNegative(t, must[int64](t)(client.Publish(ctx, prefix+"channel", "message")))
+	requireValue(t, must[[]string](t)(client.PubSubChannels(ctx, prefix+"*")))
+	if subs := must[map[string]int64](t)(client.PubSubNumSub(ctx, prefix+"channel")); len(subs) == 0 {
+		t.Fatalf("expected pubsub numsub response, got %#v", subs)
+	}
+	requireNonNegative(t, must[int64](t)(client.PubSubNumPat(ctx)))
+
+	requireCommandError(t, client.Select(ctx, 0))
+	_, err := client.ClusterJoin(ctx, "127.0.0.1:1", false)
+	requireCommandError(t, err)
+	_, err = client.ClusterLeave(ctx)
+	requireCommandError(t, err)
+	_, err = client.ClusterFailover(ctx, 0, "missing-node")
+	requireCommandError(t, err)
+	_, err = client.ClusterPromote(ctx, "missing-node")
+	requireCommandError(t, err)
+	_, err = client.ClusterDemote(ctx, "missing-node")
+	requireCommandError(t, err)
+
+	if err := client.FlushDB(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.FlushAll(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 	ctx, cancel := integrationContext(t)
 	defer cancel()
@@ -243,9 +309,15 @@ func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 	if valueRef == "" {
 		t.Fatalf("FLOW.VALUE.PUT did not return ref: %#v", valueResponse)
 	}
+	_, err := client.ValueMGet(ctx, []string{valueRef}, nil)
+	requireCommandError(t, err)
 
 	signalID := "go-sdk:signal:" + runID
 	signalPartition := signalID + ":partition"
+	requireValue(t, must[any](t)(client.InstallPolicy(ctx, typeName, &RetryPolicy{MaxRetries: 3, Backoff: "fixed", BaseMS: 10, MaxMS: 100, ExhaustedTo: "failed"}, map[string]RetryPolicy{
+		"queued": {MaxRetries: 1, Backoff: "fixed", BaseMS: 10, MaxMS: 100},
+	})))
+	requireMap(t, must[map[string]any](t)(client.PolicyGet(ctx, typeName, "")))
 	_ = must[*FlowRecord](t)(client.Create(ctx, CreateOptions{ID: signalID, Type: typeName, State: "created", PartitionKey: signalPartition, Payload: map[string]any{"step": "created"}, Idempotent: Bool(true)}))
 	requireValue(t, must[any](t)(client.Signal(ctx, SignalOptions{ID: signalID, Signal: "approve", PartitionKey: signalPartition, IfStates: []string{"created"}, TransitionTo: "approved"})))
 	requireValue(t, must[any](t)(client.FlowSignal(ctx, SignalOptions{ID: signalID, Signal: "ship", PartitionKey: signalPartition, IfStates: []string{"approved"}, TransitionTo: "shipped"})))
@@ -409,6 +481,8 @@ func assertHashCommands(t *testing.T, ctx context.Context, client *Client, prefi
 	requireValue(t, must[any](t)(client.Hash().PExpire(ctx, key, 60_000, "field")))
 	requireValue(t, must[any](t)(client.Hash().PTTL(ctx, key, "field")))
 	requireValue(t, must[any](t)(client.Hash().ExpireTime(ctx, key, "field")))
+	_, err := client.Hash().PExpireTime(ctx, key, "field")
+	requireCommandError(t, err)
 	got := must[[]any](t)(client.Hash().GetEX(ctx, key, []string{"field"}, HashGetEXOptions{PXMilliseconds: Int64(60_000)}))
 	if len(got) != 1 || got[0] != "value" {
 		t.Fatalf("HGETEX = %#v", got)
@@ -423,6 +497,12 @@ func assertHashCommands(t *testing.T, ctx context.Context, client *Client, prefi
 
 func assertListSetSortedSetCommands(t *testing.T, ctx context.Context, client *Client, prefix string) {
 	t.Helper()
+
+	popKey := prefix + "list-pop"
+	requireInt64(t, must[int64](t)(client.ListStore().LPush(ctx, popKey, "left")), 1)
+	requireInt64(t, must[int64](t)(client.ListStore().RPush(ctx, popKey, "right")), 2)
+	requireString(t, must[any](t)(client.ListStore().LPop(ctx, popKey)), "left")
+	requireString(t, must[any](t)(client.ListStore().RPop(ctx, popKey)), "right")
 
 	listKey := prefix + "list"
 	listDst := prefix + "list-dst"
@@ -542,6 +622,17 @@ func assertStreamBitmapHllGeoCommands(t *testing.T, ctx context.Context, client 
 	requireNonNegative(t, must[int64](t)(client.Geo().SearchStore(ctx, prefix+"geo-dst", geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}}, false)))
 }
 
+func assertUnsupportedJSONCommands(t *testing.T, ctx context.Context, client *Client, prefix string) {
+	t.Helper()
+
+	key := prefix + "json"
+	requireCommandError(t, client.JSON().Set(ctx, key, "$", map[string]any{"value": true}))
+	_, err := client.JSON().Get(ctx, key, "$")
+	requireCommandError(t, err)
+	_, err = client.JSON().Del(ctx, key, "$")
+	requireCommandError(t, err)
+}
+
 func assertBatchFlowCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
 	t.Helper()
 
@@ -608,6 +699,16 @@ func assertManyMutationCommands(t *testing.T, ctx context.Context, client *Clien
 	retryAgain := claimMany(t, ctx, client, typeName, "retry-many", retryPartition, "go-sdk-retry-many-worker", now+1, 2)
 	_ = must[[]FlowRecord](t)(client.FailMany(ctx, FailManyOptions{PartitionKey: retryPartition, Items: retryAgain, Error: map[string]any{"done": true}}))
 
+	completePartition := "go-sdk:complete-many:" + runID + ":partition"
+	createManyState(t, ctx, client, typeName, completePartition, "complete-many", runID, "complete-many", now)
+	manyCompleteJobs := claimMany(t, ctx, client, typeName, "complete-many", completePartition, "go-sdk-complete-many-worker", now, 2)
+	_ = must[[]FlowRecord](t)(client.CompleteMany(ctx, CompleteManyOptions{PartitionKey: completePartition, Items: manyCompleteJobs, Result: map[string]any{"done": true}}))
+
+	cancelPartition := "go-sdk:cancel-many:" + runID + ":partition"
+	createManyState(t, ctx, client, typeName, cancelPartition, "cancel-many", runID, "cancel-many", now)
+	cancelJobs := claimMany(t, ctx, client, typeName, "cancel-many", cancelPartition, "go-sdk-cancel-many-worker", now, 2)
+	_, err := client.CancelMany(ctx, CancelManyOptions{PartitionKey: cancelPartition, Items: fencedItems(cancelJobs), Reason: map[string]any{"cancelled": true}})
+	requireCommandError(t, err)
 }
 
 func assertRepairIndexAndRewindCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
@@ -717,7 +818,7 @@ func eventID(event any) string {
 }
 
 func responseField(value any, name string) any {
-	mapping, err := respMap(value)
+	mapping, err := nativeMap(value)
 	if err != nil {
 		return nil
 	}
@@ -732,9 +833,9 @@ func integrationContext(t *testing.T) (context.Context, context.CancelFunc) {
 func integrationClient(codec Codec) *Client {
 	addr := os.Getenv("FERRICSTORE_ADDR")
 	if addr == "" {
-		addr = "127.0.0.1:6379"
+		addr = "127.0.0.1:6388"
 	}
-	return NewClient(addr, WithCodec(codec))
+	return newIntegrationTrackedClient(addr, codec)
 }
 
 func integrationSuffix(name string) string {
@@ -832,6 +933,13 @@ func requireOKResponse(t *testing.T, value any) {
 	t.Helper()
 	if !isOK(value) && asInt64(value) != 1 && !asBool(value) {
 		t.Fatalf("expected OK response, got %#v", value)
+	}
+}
+
+func requireCommandError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected command error")
 	}
 }
 

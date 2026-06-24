@@ -2,7 +2,7 @@
 
 Go SDK for FerricStore and FerricFlow.
 
-FerricStore exposes a Redis-compatible command surface. FerricFlow adds durable workflow state, leases, retries, history, value refs, and repair data while your Go service keeps running the application code.
+FerricStore exposes a native binary command protocol. FerricFlow adds durable workflow state, leases, retries, history, value refs, and repair data while your Go service keeps running the application code.
 
 ## Install
 
@@ -20,14 +20,20 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses `ghcr.io/ferricstore/ferricstore:0.4.1` and exposes Redis protocol on `127.0.0.1:6379`.
+The compose file uses `ghcr.io/ferricstore/ferricstore:0.5.3` and exposes the native protocol on `127.0.0.1:6388`.
 
 ## Client
 
 ```go
 ctx := context.Background()
-client := ferricstore.NewClient("127.0.0.1:6379", ferricstore.WithCodec(ferricstore.JSONCodec{}))
+client := ferricstore.NewClient("127.0.0.1:6388", ferricstore.WithCodec(ferricstore.JSONCodec{}))
 defer func() { _ = client.Close() }()
+```
+
+Use `NewClientFromURL` when you prefer URL configuration:
+
+```go
+client, err := ferricstore.NewClientFromURL("ferric://127.0.0.1:6388")
 ```
 
 Use `Command` for advanced JSON commands, low-level connection-mode commands, or any command that does not need a polished helper:
@@ -87,7 +93,7 @@ The state machine data is stored in FerricStore. The SDK does not add another da
 
 ## Stores
 
-Typed helpers cover common FerricStore/Redis-style data structures:
+Typed helpers cover common FerricStore data structures:
 
 ```go
 _ = client.KV().Set(ctx, "tenant:1:profile", map[string]any{"plan": "pro"})
@@ -122,6 +128,12 @@ The module requires Go 1.24 or newer. This repo pins the development toolchain w
 brew install mise
 mise trust ./mise.toml
 mise exec -- go test ./...
+```
+
+Run the Docker-backed integration suite against the released FerricStore image:
+
+```bash
+./scripts/integration-docker.sh
 ```
 
 ## Examples

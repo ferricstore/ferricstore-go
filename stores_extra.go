@@ -294,7 +294,7 @@ func (s *HashStore) Scan(ctx context.Context, key string, cursor int64, match st
 	if match != "" {
 		args = append(args, "MATCH", match)
 	}
-	appendIntPtr(&args, "COUNT", count)
+	appendScanCount(&args, count)
 	return s.client.Command(ctx, args...)
 }
 
@@ -661,7 +661,7 @@ func (s *SetStore) Scan(ctx context.Context, key string, cursor int64, match str
 	if match != "" {
 		args = append(args, "MATCH", match)
 	}
-	appendIntPtr(&args, "COUNT", count)
+	appendScanCount(&args, count)
 	return s.client.Command(ctx, args...)
 }
 
@@ -831,7 +831,7 @@ func (s *SortedSetStore) Scan(ctx context.Context, key string, cursor int64, mat
 	if match != "" {
 		args = append(args, "MATCH", match)
 	}
-	appendIntPtr(&args, "COUNT", count)
+	appendScanCount(&args, count)
 	return s.client.Command(ctx, args...)
 }
 

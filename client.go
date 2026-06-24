@@ -5,12 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
 type Executor interface {
-	Do(ctx context.Context, args ...any) *redis.Cmd
+	Do(ctx context.Context, args ...any) (any, error)
 }
 
 type ClientOption func(*Client)
@@ -46,25 +44,20 @@ type Client struct {
 }
 
 func NewClient(addr string, opts ...ClientOption) *Client {
-	return NewClientFromRedis(redis.NewClient(&redis.Options{
-		Addr:     addr,
-		Protocol: 3,
-	}), opts...)
+	exec := NewNativeExecutor(addr)
+	client := NewClientWithExecutor(exec, opts...)
+	client.closer = exec.Close
+	return client
 }
 
-func NewClientFromURL(url string, opts ...ClientOption) (*Client, error) {
-	redisOptions, err := redis.ParseURL(url)
+func NewClientFromURL(rawurl string, opts ...ClientOption) (*Client, error) {
+	exec, err := NewNativeExecutorFromURL(rawurl)
 	if err != nil {
 		return nil, err
 	}
-	redisOptions.Protocol = 3
-	return NewClientFromRedis(redis.NewClient(redisOptions), opts...), nil
-}
-
-func NewClientFromRedis(rdb *redis.Client, opts ...ClientOption) *Client {
-	client := NewClientWithExecutor(rdb, opts...)
-	client.closer = rdb.Close
-	return client
+	client := NewClientWithExecutor(exec, opts...)
+	client.closer = exec.Close
+	return client, nil
 }
 
 func NewClientWithExecutor(exec Executor, opts ...ClientOption) *Client {
@@ -115,26 +108,12 @@ func (c *Client) TopK() *TopKStore                     { return c.topk }
 func (c *Client) TDigest() *TDigestStore               { return c.tdigest }
 
 func (c *Client) Command(ctx context.Context, args ...any) (any, error) {
-	cmd := c.exec.Do(ctx, args...)
-	return cmd.Result()
+	return c.exec.Do(ctx, args...)
 }
 
 func (c *Client) Pipeline(ctx context.Context, commands [][]any) ([]any, error) {
 	if len(commands) == 0 {
 		return nil, nil
-	}
-	if pipeliner, ok := c.exec.(interface{ Pipeline() redis.Pipeliner }); ok {
-		pipe := pipeliner.Pipeline()
-		cmds := make([]*redis.Cmd, 0, len(commands))
-		for _, command := range commands {
-			cmds = append(cmds, pipe.Do(ctx, command...))
-		}
-		_, err := pipe.Exec(ctx)
-		results := make([]any, 0, len(cmds))
-		for _, cmd := range cmds {
-			results = append(results, cmd.Val())
-		}
-		return results, err
 	}
 	results := make([]any, 0, len(commands))
 	for _, command := range commands {
@@ -209,6 +188,12 @@ func appendInt64Ptr(args *[]any, name string, value *int64) {
 func appendIntPtr(args *[]any, name string, value *int) {
 	if value != nil {
 		*args = append(*args, name, *value)
+	}
+}
+
+func appendScanCount(args *[]any, count *int) {
+	if count != nil && *count != 10 {
+		*args = append(*args, "COUNT", *count)
 	}
 }
 
@@ -472,7 +457,7 @@ func (c *Client) ClaimDue(ctx context.Context, opt ClaimDueOptions) ([]FlowRecor
 	if err != nil {
 		return nil, err
 	}
-	return recordsFromRESP(value, c.codec)
+	return recordsFromNative(value, c.codec)
 }
 
 func (c *Client) ClaimJobs(ctx context.Context, opt ClaimDueOptions) ([]ClaimedItem, error) {
@@ -481,7 +466,7 @@ func (c *Client) ClaimJobs(ctx context.Context, opt ClaimDueOptions) ([]ClaimedI
 	if err != nil {
 		return nil, err
 	}
-	return claimedItemsFromRESP(value)
+	return claimedItemsFromNative(value)
 }
 
 func (c *Client) claimDue(ctx context.Context, opt ClaimDueOptions) (any, error) {
@@ -540,7 +525,7 @@ func (c *Client) Reclaim(ctx context.Context, opt ReclaimOptions) ([]FlowRecord,
 	if err != nil {
 		return nil, err
 	}
-	return recordsFromRESP(value, c.codec)
+	return recordsFromNative(value, c.codec)
 }
 
 func (c *Client) ReclaimJobs(ctx context.Context, opt ReclaimOptions) ([]ClaimedItem, error) {
@@ -549,7 +534,7 @@ func (c *Client) ReclaimJobs(ctx context.Context, opt ReclaimOptions) ([]Claimed
 	if err != nil {
 		return nil, err
 	}
-	return claimedItemsFromRESP(value)
+	return claimedItemsFromNative(value)
 }
 
 func (c *Client) reclaim(ctx context.Context, opt ReclaimOptions) (any, error) {
@@ -891,7 +876,7 @@ func (c *Client) List(ctx context.Context, flowType string, opt ReadOptions) ([]
 	if err != nil {
 		return nil, err
 	}
-	return recordsFromRESP(value, c.codec)
+	return recordsFromNative(value, c.codec)
 }
 
 func (c *Client) Terminals(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
@@ -921,7 +906,7 @@ func (c *Client) indexRead(ctx context.Context, command, key string, opt ReadOpt
 	if err != nil {
 		return nil, err
 	}
-	return recordsFromRESP(value, c.codec)
+	return recordsFromNative(value, c.codec)
 }
 
 func appendReadOptions(args *[]any, opt ReadOptions) {
@@ -945,7 +930,7 @@ func (c *Client) Info(ctx context.Context, flowType, partitionKey string, includ
 	if err != nil {
 		return nil, err
 	}
-	return respMap(value)
+	return nativeMap(value)
 }
 
 func (c *Client) Stuck(ctx context.Context, flowType string, partitionKey string, count *int, olderThanMS, now *int64) ([]FlowRecord, error) {
@@ -958,7 +943,7 @@ func (c *Client) Stuck(ctx context.Context, flowType string, partitionKey string
 	if err != nil {
 		return nil, err
 	}
-	return recordsFromRESP(value, c.codec)
+	return recordsFromNative(value, c.codec)
 }
 
 func (c *Client) History(ctx context.Context, opt HistoryOptions) ([]any, error) {
@@ -1077,7 +1062,7 @@ func (c *Client) PolicyGet(ctx context.Context, flowType, state string) (map[str
 	if err != nil {
 		return nil, err
 	}
-	return respMap(value)
+	return nativeMap(value)
 }
 
 func (c *Client) RetentionCleanup(ctx context.Context, opt RetentionCleanupOptions) (map[string]any, error) {
@@ -1088,7 +1073,7 @@ func (c *Client) RetentionCleanup(ctx context.Context, opt RetentionCleanupOptio
 	if err != nil {
 		return nil, err
 	}
-	return respMap(value)
+	return nativeMap(value)
 }
 
 func appendRetryPolicy(args *[]any, policy RetryPolicy) {
@@ -1155,7 +1140,7 @@ func (c *Client) KeyInfo(ctx context.Context, key string) (KeyInfo, error) {
 	if err != nil {
 		return KeyInfo{}, err
 	}
-	raw, err := respMap(response)
+	raw, err := nativeMap(response)
 	if err != nil {
 		return KeyInfo{}, err
 	}

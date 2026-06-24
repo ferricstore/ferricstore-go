@@ -38,7 +38,7 @@ func (s *BloomFilterStore) Info(ctx context.Context, key string) (map[string]any
 	if err != nil {
 		return nil, err
 	}
-	return respMap(value)
+	return nativeMap(value)
 }
 
 func (s *CuckooFilterStore) AddNX(ctx context.Context, key string, element any) (bool, error) {
@@ -86,7 +86,7 @@ func (s *CuckooFilterStore) Info(ctx context.Context, key string) (map[string]an
 	if err != nil {
 		return nil, err
 	}
-	return respMap(value)
+	return nativeMap(value)
 }
 
 func (s *CountMinSketchStore) InitByProb(ctx context.Context, key string, errorRate, probability float64) (bool, error) {
@@ -150,7 +150,7 @@ func (s *CountMinSketchStore) Info(ctx context.Context, key string) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	return respMap(value)
+	return nativeMap(value)
 }
 
 type TopKReserveOptions struct {
@@ -231,7 +231,7 @@ func (s *TopKStore) Info(ctx context.Context, key string) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
-	return respMap(value)
+	return nativeMap(value)
 }
 
 func (s *TDigestStore) Reset(ctx context.Context, key string) (bool, error) {
@@ -293,7 +293,7 @@ func (s *TDigestStore) Info(ctx context.Context, key string) (map[string]any, er
 	if err != nil {
 		return nil, err
 	}
-	return respMap(value)
+	return nativeMap(value)
 }
 
 type TDigestMergeOptions struct {
