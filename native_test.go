@@ -219,6 +219,48 @@ func TestNativeResponseChunkCumulativeLimit(t *testing.T) {
 	}
 }
 
+func TestNativeDecodeRejectsHugeDeclaredCounts(t *testing.T) {
+	huge := uint32(nativeMaxContainerItems + 1)
+
+	array := []byte{5, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(array[1:5], huge)
+	if _, _, err := decodeNativeValue(array); err == nil {
+		t.Fatal("expected huge native array count to fail")
+	}
+
+	mapping := []byte{6, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(mapping[1:5], huge)
+	if _, _, err := decodeNativeValue(mapping); err == nil {
+		t.Fatal("expected huge native map count to fail")
+	}
+
+	mget := []byte{nativeCompactKVMGet, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(mget[1:5], huge)
+	if _, err := decodeNativeCompactKVMGet(mget); err == nil {
+		t.Fatal("expected huge compact MGET count to fail")
+	}
+
+	pipeline := []byte{nativeCompactPipelineResponse, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(pipeline[1:5], huge)
+	if _, err := decodeNativeCompactPipelineResponse(pipeline); err == nil {
+		t.Fatal("expected huge compact pipeline count to fail")
+	}
+}
+
+func TestNativeDeliverEventDropsWhenBufferFull(t *testing.T) {
+	exec := &NativeExecutor{events: make(chan any, 1)}
+
+	exec.deliverEvent("first")
+	exec.deliverEvent("second")
+
+	if dropped := exec.DroppedEvents(); dropped != 1 {
+		t.Fatalf("expected one dropped event, got %d", dropped)
+	}
+	if got := <-exec.events; got != "first" {
+		t.Fatalf("unexpected delivered event: %#v", got)
+	}
+}
+
 func TestNewClientFromURLUsesNativeScheme(t *testing.T) {
 	client, err := NewClientFromURL("ferric://alice:secret@localhost:7000?timeout=5s")
 	if err != nil {

@@ -51,6 +51,13 @@ Default client behavior matches the Python SDK:
 - no hidden auto-batching; use `Pipeline` or high-level worker APIs when you want batching
 - queue/workflow workers default to batch size 10, concurrency 1, and a 30s claim lease
 
+This is the recommended starting point for application code:
+
+```go
+client := ferricstore.NewClient("127.0.0.1:6388")
+defer func() { _ = client.Close() }()
+```
+
 Use `Command` for low-level connection-mode commands or any command that does not need a polished helper:
 
 ```go
@@ -68,6 +75,8 @@ defer func() { _ = client.Close() }()
 ```
 
 Autobatching is opt-in because it can add up to `FlushInterval` latency to a single lonely request. For latency-first services, use `NewClient`; for high-throughput producers, use `NewAutoBatchClient`, `Pipeline`, or FerricFlow batch APIs.
+
+If a request context is canceled before an autobatch flush starts, the SDK skips that command. Once a command has been flushed to FerricStore, cancellation only stops the caller from waiting; the server may still commit the command.
 
 ## Durable Queue
 
@@ -171,6 +180,8 @@ if event.Name == "FLOW_WAKE" {
 ```
 
 Use `OpenPubSub` when you want events on the existing native multiplexed connection. Use `NewPubSub` or `NewPubSubFromURL` when you want an isolated long-lived pub/sub connection.
+
+Shared native events are delivered through a bounded client buffer. If the buffer is full, the SDK drops new events instead of blocking normal command responses. Check `client.DroppedEvents()` or `pubsub.DroppedEvents()` if wake/event loss matters to your worker loop.
 
 ## Stores
 

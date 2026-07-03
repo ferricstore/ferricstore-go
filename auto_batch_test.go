@@ -123,6 +123,33 @@ func TestAutoBatchExecutorPropagatesPipelineError(t *testing.T) {
 	}
 }
 
+func TestAutoBatchExecutorSkipsCanceledRequestsBeforeFlush(t *testing.T) {
+	pipeline := &fakePipelineExecutor{}
+	base := NewClientWithExecutor(pipeline)
+	exec := NewAutoBatchExecutor(base, AutoBatchOptions{MaxSize: 10, FlushInterval: time.Hour})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() {
+		_, err := exec.Do(ctx, "SET", "cancelled", "1")
+		errc <- err
+	}()
+
+	for i := 0; i < 100 && len(exec.requests) == 0; i++ {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-errc; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if err := exec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if pipeline.batchCount() != 0 {
+		t.Fatalf("canceled request should not be flushed, got %d batches", pipeline.batchCount())
+	}
+}
+
 func TestAutoBatchExecutorCloseRejectsNewCommands(t *testing.T) {
 	pipeline := &fakePipelineExecutor{}
 	base := NewClientWithExecutor(pipeline)

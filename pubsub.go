@@ -81,6 +81,14 @@ func (p *PubSub) Close() error {
 	return p.exec.Close()
 }
 
+// DroppedEvents returns native events dropped because the client event buffer was full.
+func (p *PubSub) DroppedEvents() uint64 {
+	if p == nil || p.exec == nil {
+		return 0
+	}
+	return p.exec.DroppedEvents()
+}
+
 // Subscribe subscribes to Redis-compatible pub/sub channels.
 func (p *PubSub) Subscribe(ctx context.Context, channels ...string) (PubSubMessage, error) {
 	args := []any{"SUBSCRIBE"}

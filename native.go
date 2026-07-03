@@ -2,18 +2,15 @@ package ferricstore
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,13 +18,14 @@ import (
 )
 
 const (
-	nativeMagic           = "FSNP"
-	nativeRequestVersion  = 0x01
-	nativeResponseVersion = 0x81
-	nativeHeaderLen       = 24
-	nativeDefaultPort     = "6388"
-	nativeDefaultTLSPort  = "6389"
-	nativeMaxFrameBytes   = 128 * 1024 * 1024
+	nativeMagic             = "FSNP"
+	nativeRequestVersion    = 0x01
+	nativeResponseVersion   = 0x81
+	nativeHeaderLen         = 24
+	nativeDefaultPort       = "6388"
+	nativeDefaultTLSPort    = "6389"
+	nativeMaxFrameBytes     = 128 * 1024 * 1024
+	nativeMaxContainerItems = 1_000_000
 
 	nativeFlagCompressed    = 0x08
 	nativeFlagCustomPayload = 0x02
@@ -163,6 +161,7 @@ type NativeExecutor struct {
 	lastActivityUnixNano atomic.Int64
 	pending              map[uint64]chan nativeResponse
 	events               chan any
+	droppedEvents        atomic.Uint64
 }
 
 type NativeError struct {
@@ -244,6 +243,13 @@ func (e *NativeExecutor) Close() error {
 	return e.closeConnLocked()
 }
 
+func (e *NativeExecutor) DroppedEvents() uint64 {
+	if e == nil {
+		return 0
+	}
+	return e.droppedEvents.Load()
+}
+
 func (e *NativeExecutor) command(ctx context.Context, args ...any) (any, error) {
 	command, err := buildNativeCommand(args)
 	if err != nil {
@@ -295,98 +301,6 @@ func (e *NativeExecutor) Pipeline(ctx context.Context, commands [][]any) ([]any,
 		return nil, fmt.Errorf("PIPELINE: %w", err)
 	}
 	return pipelineValues(value, len(commands))
-}
-
-func compactPipelinePayload(commands [][]any) ([]byte, bool, error) {
-	if len(commands) == 0 {
-		return nil, false, nil
-	}
-	if len(commands[0]) == 0 {
-		return nil, false, nil
-	}
-	first := strings.ToUpper(asString(commands[0][0]))
-	switch first {
-	case "SET":
-		payload, ok, err := compactSetPipelinePayload(commands)
-		return payload, ok, err
-	case "GET":
-		payload, ok, err := compactGetPipelinePayload(commands)
-		return payload, ok, err
-	default:
-		return nil, false, nil
-	}
-}
-
-func compactSetPipelinePayload(commands [][]any) ([]byte, bool, error) {
-	size := 5
-	for _, command := range commands {
-		if len(command) != 3 || !strings.EqualFold(asString(command[0]), "SET") {
-			return nil, false, nil
-		}
-		size += 8 + compactBinarySize(command[1]) + compactBinarySize(command[2])
-	}
-	payload := make([]byte, 0, size)
-	payload = append(payload, nativeCompactPipelineRequest, 0x81)
-	payload = appendUint32(payload, uint32(len(commands)))
-	for _, command := range commands {
-		payload = appendCompactAny(payload, command[1])
-		payload = appendCompactAny(payload, command[2])
-	}
-	return payload, true, nil
-}
-
-func compactGetPipelinePayload(commands [][]any) ([]byte, bool, error) {
-	size := 5
-	for _, command := range commands {
-		if len(command) != 2 || !strings.EqualFold(asString(command[0]), "GET") {
-			return nil, false, nil
-		}
-		size += 4 + compactBinarySize(command[1])
-	}
-	payload := make([]byte, 0, size)
-	payload = append(payload, nativeCompactPipelineRequest, 0x82)
-	payload = appendUint32(payload, uint32(len(commands)))
-	for _, command := range commands {
-		payload = appendCompactAny(payload, command[1])
-	}
-	return payload, true, nil
-}
-
-func compactBinarySize(value any) int {
-	switch v := value.(type) {
-	case nil:
-		return 0
-	case string:
-		return len(v)
-	case []byte:
-		return len(v)
-	default:
-		return len(asBytes(v))
-	}
-}
-
-func appendCompactAny(payload []byte, value any) []byte {
-	switch v := value.(type) {
-	case nil:
-		return appendUint32(payload, 0)
-	case string:
-		payload = appendUint32(payload, uint32(len(v)))
-		return append(payload, v...)
-	case []byte:
-		payload = appendUint32(payload, uint32(len(v)))
-		return append(payload, v...)
-	default:
-		bytes := asBytes(v)
-		payload = appendUint32(payload, uint32(len(bytes)))
-		return append(payload, bytes...)
-	}
-}
-
-func appendUint32(payload []byte, value uint32) []byte {
-	offset := len(payload)
-	payload = append(payload, 0, 0, 0, 0)
-	binary.BigEndian.PutUint32(payload[offset:offset+4], value)
-	return payload
 }
 
 type nativeCommand struct {
@@ -831,7 +745,11 @@ func (e *NativeExecutor) deliverEvent(value any) {
 	if events == nil {
 		return
 	}
-	events <- value
+	select {
+	case events <- value:
+	default:
+		e.droppedEvents.Add(1)
+	}
 }
 
 func (e *NativeExecutor) nextEvent(ctx context.Context) (any, error) {
@@ -968,381 +886,6 @@ func (e *NativeExecutor) clientName() string {
 	return "ferricstore-go"
 }
 
-func pipelineValues(value any, expected int) ([]any, error) {
-	if count, ok := value.(nativeCompactOKCount); ok {
-		if int(count) != expected {
-			return nil, fmt.Errorf("PIPELINE returned OK count %d, expected %d", count, expected)
-		}
-		out := make([]any, int(count))
-		for idx := range out {
-			out[idx] = []byte("OK")
-		}
-		return out, nil
-	}
-	items, ok := value.([]any)
-	if !ok {
-		return nil, fmt.Errorf("PIPELINE returned %T, expected array", value)
-	}
-	if len(items) != expected {
-		return nil, fmt.Errorf("PIPELINE returned %d results, expected %d", len(items), expected)
-	}
-	out := make([]any, 0, len(items))
-	for _, item := range items {
-		value, err := pipelineItemValue(item)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, value)
-	}
-	return out, nil
-}
-
-func pipelineItemValue(item any) (any, error) {
-	if pair, ok := item.([]any); ok && len(pair) == 2 {
-		if strings.EqualFold(asString(pair[0]), "ok") {
-			return pair[1], nil
-		}
-		return nil, NativeError{Status: 1, Value: pair[1]}
-	}
-	if mapping, ok := item.(map[string]any); ok {
-		if status, ok := mapping["status"]; ok {
-			if strings.EqualFold(asString(status), "ok") {
-				return mapping["value"], nil
-			}
-			return nil, NativeError{Status: 1, Value: mapping["value"]}
-		}
-	}
-	return item, nil
-}
-
-func decodeNativeCompactValue(opcode uint16, data []byte) (any, bool, error) {
-	switch data[0] {
-	case nativeCompactFlowClaimJobs:
-		if opcode != nativeOpFlowClaimDue {
-			return nil, false, nil
-		}
-		value, err := decodeNativeCompactClaimJobs(data)
-		return value, true, err
-	case nativeCompactOKList:
-		value, err := decodeNativeCompactOKList(data)
-		return value, true, err
-	case nativeCompactKVGet:
-		value, err := decodeNativeCompactKVGet(data)
-		return value, true, err
-	case nativeCompactKVMGet:
-		value, err := decodeNativeCompactKVMGet(data)
-		return value, true, err
-	case nativeCompactKVMGetFixed:
-		value, err := decodeNativeCompactKVMGetFixed(data)
-		return value, true, err
-	case nativeCompactPipelineResponse:
-		if opcode != nativeOpPipeline {
-			return nil, false, nil
-		}
-		value, err := decodeNativeCompactPipelineResponse(data)
-		return value, true, err
-	default:
-		return nil, false, nil
-	}
-}
-
-func decodeNativeCompactOKList(data []byte) (any, error) {
-	if len(data) != 5 || data[0] != nativeCompactOKList {
-		return nil, errors.New("ferricstore native compact OK list is invalid")
-	}
-	count := int(binary.BigEndian.Uint32(data[1:5]))
-	return nativeCompactOKCount(count), nil
-}
-
-func decodeNativeCompactKVGet(data []byte) (any, error) {
-	if len(data) < 2 || data[0] != nativeCompactKVGet {
-		return nil, errors.New("ferricstore native compact GET is invalid")
-	}
-	switch data[1] {
-	case 0:
-		if len(data) != 2 {
-			return nil, errors.New("ferricstore native compact nil GET has trailing bytes")
-		}
-		return nil, nil
-	case 1:
-		value, next, err := readNativeCompactBinary(data, 2)
-		if err != nil {
-			return nil, err
-		}
-		if next != len(data) {
-			return nil, errors.New("ferricstore native compact GET has trailing bytes")
-		}
-		return value, nil
-	default:
-		return nil, fmt.Errorf("ferricstore native compact GET present tag %d is unsupported", data[1])
-	}
-}
-
-func decodeNativeCompactKVMGet(data []byte) ([]any, error) {
-	if len(data) < 5 || data[0] != nativeCompactKVMGet {
-		return nil, errors.New("ferricstore native compact MGET is invalid")
-	}
-	count := int(binary.BigEndian.Uint32(data[1:5]))
-	offset := 5
-	items := make([]any, 0, count)
-	for i := 0; i < count; i++ {
-		if offset >= len(data) {
-			return nil, errors.New("ferricstore native compact MGET item is truncated")
-		}
-		present := data[offset]
-		offset++
-		switch present {
-		case 0:
-			items = append(items, nil)
-		case 1:
-			value, next, err := readNativeCompactBinary(data, offset)
-			if err != nil {
-				return nil, err
-			}
-			offset = next
-			items = append(items, value)
-		default:
-			return nil, fmt.Errorf("ferricstore native compact MGET present tag %d is unsupported", present)
-		}
-	}
-	if offset != len(data) {
-		return nil, errors.New("ferricstore native compact MGET has trailing bytes")
-	}
-	return items, nil
-}
-
-func decodeNativeCompactKVMGetFixed(data []byte) ([]any, error) {
-	if len(data) < 9 || data[0] != nativeCompactKVMGetFixed {
-		return nil, errors.New("ferricstore native compact fixed MGET is invalid")
-	}
-	count := int(binary.BigEndian.Uint32(data[1:5]))
-	size := int(binary.BigEndian.Uint32(data[5:9]))
-	offset := 9
-	if len(data)-offset != count*size {
-		return nil, errors.New("ferricstore native compact fixed MGET payload length mismatch")
-	}
-	items := make([]any, 0, count)
-	for i := 0; i < count; i++ {
-		value := append([]byte(nil), data[offset:offset+size]...)
-		offset += size
-		items = append(items, value)
-	}
-	return items, nil
-}
-
-func decodeNativeCompactClaimJobs(data []byte) ([]ClaimedItem, error) {
-	if len(data) < 5 || data[0] != nativeCompactFlowClaimJobs {
-		return nil, errors.New("ferricstore native compact claim jobs is invalid")
-	}
-	count := int(binary.BigEndian.Uint32(data[1:5]))
-	for _, width := range []int{4, 5, 6} {
-		items, ok := tryDecodeNativeCompactClaimJobsWidth(data, 5, count, width)
-		if ok {
-			return items, nil
-		}
-	}
-	return nil, errors.New("ferricstore native compact claim jobs payload is invalid")
-}
-
-func tryDecodeNativeCompactClaimJobsWidth(data []byte, offset, count, width int) ([]ClaimedItem, bool) {
-	items := make([]ClaimedItem, 0, count)
-	for i := 0; i < count; i++ {
-		id, next, err := readNativeCompactBinary(data, offset)
-		if err != nil {
-			return nil, false
-		}
-		offset = next
-		partition, next, err := readNativeCompactOptionalBinary(data, offset)
-		if err != nil {
-			return nil, false
-		}
-		offset = next
-		lease, next, err := readNativeCompactBinary(data, offset)
-		if err != nil {
-			return nil, false
-		}
-		offset = next
-		if len(data)-offset < 8 {
-			return nil, false
-		}
-		fencing := int64(binary.BigEndian.Uint64(data[offset : offset+8]))
-		offset += 8
-		item := ClaimedItem{
-			ID:           string(id),
-			PartitionKey: string(partition),
-			LeaseToken:   string(lease),
-			FencingToken: fencing,
-			State:        "running",
-		}
-		switch width {
-		case 5:
-			attrs, rest, err := decodeNativeValue(data[offset:])
-			if err != nil {
-				return nil, false
-			}
-			consumed := len(data[offset:]) - len(rest)
-			offset += consumed
-			if _, ok := attrs.(map[string]any); !ok {
-				return nil, false
-			}
-			item.Attributes = stringObjectMap(attrs)
-		case 6:
-			runState, next, err := readNativeCompactOptionalBinary(data, offset)
-			if err != nil {
-				return nil, false
-			}
-			offset = next
-			attrs, rest, err := decodeNativeValue(data[offset:])
-			if err != nil {
-				return nil, false
-			}
-			consumed := len(data[offset:]) - len(rest)
-			offset += consumed
-			if _, ok := attrs.(map[string]any); !ok {
-				return nil, false
-			}
-			item.RunState = string(runState)
-			item.Attributes = stringObjectMap(attrs)
-		}
-		items = append(items, item)
-	}
-	return items, offset == len(data)
-}
-
-func decodeNativeCompactPipelineResponse(data []byte) ([]any, error) {
-	if len(data) < 5 || data[0] != nativeCompactPipelineResponse {
-		return nil, errors.New("ferricstore native compact pipeline response is truncated")
-	}
-	count := int(binary.BigEndian.Uint32(data[1:5]))
-	offset := 5
-	items := make([]any, 0, count)
-	for i := 0; i < count; i++ {
-		if offset >= len(data) {
-			return nil, errors.New("ferricstore native compact pipeline item is truncated")
-		}
-		status := data[offset]
-		offset++
-		switch status {
-		case 0:
-			if offset >= len(data) {
-				return nil, errors.New("ferricstore native compact pipeline ok item is truncated")
-			}
-			present := data[offset]
-			offset++
-			value, next, err := decodeNativeCompactPipelineOKValue(present, data, offset)
-			if err != nil {
-				return nil, err
-			}
-			offset = next
-			items = append(items, []any{"ok", value})
-		case 1, 2:
-			reason, next, err := readNativeCompactBinary(data, offset)
-			if err != nil {
-				return nil, err
-			}
-			offset = next
-			label := "error"
-			if status == 1 {
-				label = "busy"
-			}
-			items = append(items, []any{label, reason})
-		default:
-			return nil, fmt.Errorf("ferricstore native compact pipeline status %d is unsupported", status)
-		}
-	}
-	if offset != len(data) {
-		return nil, errors.New("ferricstore native compact pipeline response has trailing bytes")
-	}
-	return items, nil
-}
-
-func decodeNativeCompactPipelineOKValue(present byte, data []byte, offset int) (any, int, error) {
-	switch present {
-	case 0:
-		return nil, offset, nil
-	case 1:
-		return readNativeCompactBinary(data, offset)
-	default:
-		return nil, offset, fmt.Errorf("ferricstore native compact pipeline value tag %d is unsupported", present)
-	}
-}
-
-func readNativeCompactBinary(data []byte, offset int) ([]byte, int, error) {
-	if len(data)-offset < 4 {
-		return nil, offset, errors.New("ferricstore native compact binary length is truncated")
-	}
-	size := int(binary.BigEndian.Uint32(data[offset : offset+4]))
-	offset += 4
-	if len(data)-offset < size {
-		return nil, offset, errors.New("ferricstore native compact binary value is truncated")
-	}
-	value := append([]byte(nil), data[offset:offset+size]...)
-	return value, offset + size, nil
-}
-
-func readNativeCompactOptionalBinary(data []byte, offset int) ([]byte, int, error) {
-	if len(data)-offset < 4 {
-		return nil, offset, errors.New("ferricstore native compact optional binary length is truncated")
-	}
-	size := binary.BigEndian.Uint32(data[offset : offset+4])
-	if size == nativeCompactNilU32 {
-		return nil, offset + 4, nil
-	}
-	return readNativeCompactBinary(data, offset)
-}
-
-type nativeFrame struct {
-	flags     byte
-	laneID    uint32
-	opcode    uint16
-	requestID uint64
-	body      []byte
-}
-
-type nativeResponse struct {
-	laneID    uint32
-	opcode    uint16
-	requestID uint64
-	status    uint16
-	value     any
-	err       error
-}
-
-func appendNativeResponseChunk(body, next []byte, max int) ([]byte, error) {
-	if len(next) > max-len(body) {
-		return nil, errors.New("ferricstore native response body is too large")
-	}
-	return append(body, next...), nil
-}
-
-func readNativeFrame(reader io.Reader) (nativeFrame, error) {
-	header := make([]byte, nativeHeaderLen)
-	if _, err := io.ReadFull(reader, header); err != nil {
-		return nativeFrame{}, err
-	}
-	if string(header[0:4]) != nativeMagic {
-		return nativeFrame{}, errors.New("ferricstore native response has invalid magic")
-	}
-	if header[4] != nativeResponseVersion {
-		return nativeFrame{}, fmt.Errorf("ferricstore native response has unsupported version 0x%x", header[4])
-	}
-	bodyLen := binary.BigEndian.Uint32(header[20:24])
-	if bodyLen > nativeMaxFrameBytes {
-		return nativeFrame{}, errors.New("ferricstore native response frame is too large")
-	}
-	body := make([]byte, int(bodyLen))
-	if _, err := io.ReadFull(reader, body); err != nil {
-		return nativeFrame{}, err
-	}
-	return nativeFrame{
-		flags:     header[5],
-		laneID:    binary.BigEndian.Uint32(header[6:10]),
-		opcode:    binary.BigEndian.Uint16(header[10:12]),
-		requestID: binary.BigEndian.Uint64(header[12:20]),
-		body:      body,
-	}, nil
-}
-
 func defaultNativeOptions(addr string, tlsEnabled bool) NativeOptions {
 	defaultPort := nativeDefaultPort
 	if tlsEnabled {
@@ -1371,255 +914,4 @@ func nativeAddressWithPort(addr, defaultPort string) string {
 		return net.JoinHostPort(addr, defaultPort)
 	}
 	return net.JoinHostPort(addr, defaultPort)
-}
-
-func encodeNativeValue(value any) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := writeNativeValue(&buf, value); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func writeNativeValue(buf *bytes.Buffer, value any) error {
-	switch v := value.(type) {
-	case nil:
-		buf.WriteByte(0)
-	case bool:
-		if v {
-			buf.WriteByte(1)
-		} else {
-			buf.WriteByte(2)
-		}
-	case int:
-		writeNativeInt(buf, int64(v))
-	case int8:
-		writeNativeInt(buf, int64(v))
-	case int16:
-		writeNativeInt(buf, int64(v))
-	case int32:
-		writeNativeInt(buf, int64(v))
-	case int64:
-		writeNativeInt(buf, v)
-	case uint:
-		return writeNativeUint(buf, uint64(v))
-	case uint8:
-		return writeNativeUint(buf, uint64(v))
-	case uint16:
-		return writeNativeUint(buf, uint64(v))
-	case uint32:
-		return writeNativeUint(buf, uint64(v))
-	case uint64:
-		return writeNativeUint(buf, v)
-	case float32:
-		writeNativeFloat(buf, float64(v))
-	case float64:
-		writeNativeFloat(buf, v)
-	case string:
-		writeNativeBytes(buf, []byte(v))
-	case []byte:
-		writeNativeBytes(buf, v)
-	case []any:
-		return writeNativeArray(buf, v)
-	case map[string]any:
-		return writeNativeMap(buf, v)
-	default:
-		return writeNativeReflect(buf, value)
-	}
-	return nil
-}
-
-func writeNativeReflect(buf *bytes.Buffer, value any) error {
-	rv := reflect.ValueOf(value)
-	if !rv.IsValid() {
-		buf.WriteByte(0)
-		return nil
-	}
-	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
-		if rv.IsNil() {
-			buf.WriteByte(0)
-			return nil
-		}
-		rv = rv.Elem()
-	}
-	switch rv.Kind() {
-	case reflect.Slice, reflect.Array:
-		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
-			writeNativeBytes(buf, rv.Bytes())
-			return nil
-		}
-		items := make([]any, 0, rv.Len())
-		for i := 0; i < rv.Len(); i++ {
-			items = append(items, rv.Index(i).Interface())
-		}
-		return writeNativeArray(buf, items)
-	case reflect.Map:
-		mapping := make(map[string]any, rv.Len())
-		iter := rv.MapRange()
-		for iter.Next() {
-			mapping[fmt.Sprint(iter.Key().Interface())] = iter.Value().Interface()
-		}
-		return writeNativeMap(buf, mapping)
-	default:
-		writeNativeBytes(buf, []byte(fmt.Sprint(value)))
-		return nil
-	}
-}
-
-func writeNativeInt(buf *bytes.Buffer, value int64) {
-	buf.WriteByte(3)
-	var raw [8]byte
-	binary.BigEndian.PutUint64(raw[:], uint64(value))
-	buf.Write(raw[:])
-}
-
-func writeNativeUint(buf *bytes.Buffer, value uint64) error {
-	if value > math.MaxInt64 {
-		return fmt.Errorf("ferricstore native integer overflows int64: %d", value)
-	}
-	writeNativeInt(buf, int64(value))
-	return nil
-}
-
-func writeNativeFloat(buf *bytes.Buffer, value float64) {
-	buf.WriteByte(7)
-	var raw [8]byte
-	binary.BigEndian.PutUint64(raw[:], math.Float64bits(value))
-	buf.Write(raw[:])
-}
-
-func writeNativeBytes(buf *bytes.Buffer, value []byte) {
-	buf.WriteByte(4)
-	var raw [4]byte
-	binary.BigEndian.PutUint32(raw[:], uint32(len(value)))
-	buf.Write(raw[:])
-	buf.Write(value)
-}
-
-func writeNativeArray(buf *bytes.Buffer, values []any) error {
-	buf.WriteByte(5)
-	var raw [4]byte
-	binary.BigEndian.PutUint32(raw[:], uint32(len(values)))
-	buf.Write(raw[:])
-	for _, value := range values {
-		if err := writeNativeValue(buf, value); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func writeNativeMap(buf *bytes.Buffer, values map[string]any) error {
-	buf.WriteByte(6)
-	var raw [4]byte
-	binary.BigEndian.PutUint32(raw[:], uint32(len(values)))
-	buf.Write(raw[:])
-	for key, value := range values {
-		binary.BigEndian.PutUint32(raw[:], uint32(len(key)))
-		buf.Write(raw[:])
-		buf.WriteString(key)
-		if err := writeNativeValue(buf, value); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func decodeNativeValue(data []byte) (any, []byte, error) {
-	if len(data) == 0 {
-		return nil, nil, errors.New("ferricstore native value is empty")
-	}
-	tag := data[0]
-	rest := data[1:]
-	switch tag {
-	case 0:
-		return nil, rest, nil
-	case 1:
-		return true, rest, nil
-	case 2:
-		return false, rest, nil
-	case 3:
-		if len(rest) < 8 {
-			return nil, nil, errors.New("ferricstore native integer is truncated")
-		}
-		return int64(binary.BigEndian.Uint64(rest[:8])), rest[8:], nil
-	case 4:
-		if len(rest) < 4 {
-			return nil, nil, errors.New("ferricstore native binary length is truncated")
-		}
-		size := int(binary.BigEndian.Uint32(rest[:4]))
-		rest = rest[4:]
-		if len(rest) < size {
-			return nil, nil, errors.New("ferricstore native binary is truncated")
-		}
-		return append([]byte(nil), rest[:size]...), rest[size:], nil
-	case 5:
-		if len(rest) < 4 {
-			return nil, nil, errors.New("ferricstore native array length is truncated")
-		}
-		count := int(binary.BigEndian.Uint32(rest[:4]))
-		rest = rest[4:]
-		items := make([]any, 0, count)
-		for i := 0; i < count; i++ {
-			value, next, err := decodeNativeValue(rest)
-			if err != nil {
-				return nil, nil, err
-			}
-			items = append(items, value)
-			rest = next
-		}
-		return items, rest, nil
-	case 6:
-		if len(rest) < 4 {
-			return nil, nil, errors.New("ferricstore native map length is truncated")
-		}
-		count := int(binary.BigEndian.Uint32(rest[:4]))
-		rest = rest[4:]
-		mapping := make(map[string]any, count)
-		for i := 0; i < count; i++ {
-			if len(rest) < 4 {
-				return nil, nil, errors.New("ferricstore native map key length is truncated")
-			}
-			keySize := int(binary.BigEndian.Uint32(rest[:4]))
-			rest = rest[4:]
-			if len(rest) < keySize {
-				return nil, nil, errors.New("ferricstore native map key is truncated")
-			}
-			key := string(rest[:keySize])
-			rest = rest[keySize:]
-			value, next, err := decodeNativeValue(rest)
-			if err != nil {
-				return nil, nil, err
-			}
-			mapping[key] = value
-			rest = next
-		}
-		return mapping, rest, nil
-	case 7:
-		if len(rest) < 8 {
-			return nil, nil, errors.New("ferricstore native float is truncated")
-		}
-		return math.Float64frombits(binary.BigEndian.Uint64(rest[:8])), rest[8:], nil
-	default:
-		return nil, nil, fmt.Errorf("ferricstore native value has unknown tag %d", tag)
-	}
-}
-
-func nativeErrorMessage(value any) string {
-	switch v := value.(type) {
-	case nil:
-		return ""
-	case string:
-		return v
-	case []byte:
-		return string(v)
-	case map[string]any:
-		if message := asString(v["message"]); message != "" {
-			return message
-		}
-		if code := asString(v["code"]); code != "" {
-			return code
-		}
-	}
-	return fmt.Sprint(value)
 }

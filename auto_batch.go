@@ -33,6 +33,7 @@ type AutoBatchExecutor struct {
 }
 
 type autoBatchRequest struct {
+	ctx    context.Context
 	args   []any
 	result chan autoBatchResult
 }
@@ -106,6 +107,7 @@ func (e *AutoBatchExecutor) Do(ctx context.Context, args ...any) (any, error) {
 		return nil, errAutoBatchClosed
 	}
 	request := autoBatchRequest{
+		ctx:    ctx,
 		args:   append([]any(nil), args...),
 		result: make(chan autoBatchResult, 1),
 	}
@@ -218,24 +220,35 @@ func (e *AutoBatchExecutor) drain(batch *[]autoBatchRequest, maxSize int) {
 
 func (e *AutoBatchExecutor) flush(batch []autoBatchRequest) {
 	commands := make([][]any, 0, len(batch))
+	active := make([]autoBatchRequest, 0, len(batch))
 	for _, request := range batch {
+		select {
+		case <-request.ctx.Done():
+			request.result <- autoBatchResult{err: request.ctx.Err()}
+			continue
+		default:
+		}
+		active = append(active, request)
 		commands = append(commands, request.args)
+	}
+	if len(active) == 0 {
+		return
 	}
 	values, err := e.client.Pipeline(context.Background(), commands)
 	if err != nil {
-		for _, request := range batch {
+		for _, request := range active {
 			request.result <- autoBatchResult{err: err}
 		}
 		return
 	}
-	if len(values) != len(batch) {
-		err = fmt.Errorf("ferricstore autobatch returned %d results for %d commands", len(values), len(batch))
-		for _, request := range batch {
+	if len(values) != len(active) {
+		err = fmt.Errorf("ferricstore autobatch returned %d results for %d commands", len(values), len(active))
+		for _, request := range active {
 			request.result <- autoBatchResult{err: err}
 		}
 		return
 	}
-	for i, request := range batch {
+	for i, request := range active {
 		request.result <- autoBatchResult{value: values[i]}
 	}
 }
