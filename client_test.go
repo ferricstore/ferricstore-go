@@ -52,8 +52,33 @@ func TestCreateBuildsCommandDefaults(t *testing.T) {
 	assertCall(t, exec, want)
 }
 
-func TestCreateManyMixedBuildsItems(t *testing.T) {
+func TestCreateBuildsAttributes(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("OK")}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.Create(context.Background(), CreateOptions{
+		ID:         "flow-1",
+		Type:       "order",
+		State:      "created",
+		Payload:    []byte("payload"),
+		NowMS:      100,
+		Attributes: map[string]any{"tenant": "acme", "priority": "high"},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := exec.calls[0]
+	if !containsSubsequence(got, []any{"ATTRIBUTE", "tenant", "acme"}) {
+		t.Fatalf("missing tenant attribute in %#v", got)
+	}
+	if !containsSubsequence(got, []any{"ATTRIBUTE", "priority", "high"}) {
+		t.Fatalf("missing priority attribute in %#v", got)
+	}
+}
+
+func TestCreateManyMixedBuildsItems(t *testing.T) {
+	exec := &fakeExecutor{value: []any{[]byte("OK"), []byte("OK")}}
 	client := NewClientWithExecutor(exec)
 	independent := true
 
@@ -115,6 +140,7 @@ func TestClaimDueDecodesNativeMaps(t *testing.T) {
 				"payload":        []byte("payload"),
 				"root_flow_id":   []byte("root"),
 				"correlation_id": []byte("corr"),
+				"attributes":     map[string]any{"tenant": "acme"},
 			},
 		},
 	}
@@ -142,6 +168,9 @@ func TestClaimDueDecodesNativeMaps(t *testing.T) {
 	if record.LeaseToken != "lease" || record.FencingToken != 7 || string(asBytes(record.Payload)) != "payload" {
 		t.Fatalf("unexpected lease/payload fields: %+v", record)
 	}
+	if record.Attributes["tenant"] != "acme" {
+		t.Fatalf("unexpected attributes: %#v", record.Attributes)
+	}
 
 	want := []any{
 		"FLOW.CLAIM_DUE", "order", "STATE", "queued", "WORKER", "worker-1",
@@ -158,6 +187,25 @@ func TestClaimDuePropagatesExecutorError(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestClaimDueDefaultsNow(t *testing.T) {
+	exec := &fakeExecutor{value: []any{}}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.ClaimDue(context.Background(), ClaimDueOptions{Type: "order", Worker: "w"})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := exec.calls[0]
+	index := indexOf(got, "NOW")
+	if index < 0 || index+1 >= len(got) {
+		t.Fatalf("expected NOW in claim command, got %#v", got)
+	}
+	if asInt64(got[index+1]) <= 0 {
+		t.Fatalf("expected positive NOW, got %#v", got[index+1])
 	}
 }
 
@@ -279,4 +327,22 @@ func assertCall(t *testing.T, exec *fakeExecutor, want []any) {
 	if !reflect.DeepEqual(exec.calls[0], want) {
 		t.Fatalf("unexpected call\n got: %#v\nwant: %#v", exec.calls[0], want)
 	}
+}
+
+func containsSubsequence(values []any, want []any) bool {
+	for idx := 0; idx+len(want) <= len(values); idx++ {
+		if reflect.DeepEqual(values[idx:idx+len(want)], want) {
+			return true
+		}
+	}
+	return false
+}
+
+func indexOf(values []any, needle string) int {
+	for index, value := range values {
+		if asString(value) == needle {
+			return index
+		}
+	}
+	return -1
 }

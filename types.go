@@ -12,8 +12,13 @@ type FlowRecord struct {
 	ParentFlowID  string
 	RootFlowID    string
 	CorrelationID string
+	RunState      string
+	Attributes    map[string]any
 	Values        map[string]any
 	ValueRefs     map[string]any
+	ValueSizes    map[string]any
+	ValueOmitted  map[string]any
+	ValueMissing  map[string]any
 	Raw           map[string]any
 }
 
@@ -23,6 +28,7 @@ type CreateItem struct {
 	PartitionKey string
 	Values       map[string]any
 	ValueRefs    map[string]string
+	Attributes   map[string]any
 }
 
 type ChildSpec struct {
@@ -32,6 +38,7 @@ type ChildSpec struct {
 	PartitionKey string
 	Values       map[string]any
 	ValueRefs    map[string]string
+	Attributes   map[string]any
 }
 
 type ClaimedItem struct {
@@ -43,6 +50,7 @@ type ClaimedItem struct {
 	State        string
 	RunState     string
 	Payload      any
+	Attributes   map[string]any
 }
 
 type FencedItem struct {
@@ -103,6 +111,7 @@ type CreateOptions struct {
 	RetentionTTLMS *int64
 	Values         map[string]any
 	ValueRefs      map[string]string
+	Attributes     map[string]any
 	ReturnRecord   bool
 }
 
@@ -119,52 +128,57 @@ type CreateManyOptions struct {
 	RetentionTTLMS *int64
 	Values         map[string]any
 	ValueRefs      map[string]string
+	Attributes     map[string]any
 }
 
 type ClaimDueOptions struct {
-	Type            string
-	State           string
-	States          []string
-	Worker          string
-	PartitionKey    string
-	PartitionKeys   []string
-	LeaseMS         int64
-	Limit           int
-	Priority        *int64
-	NowMS           int64
-	BlockMS         *int64
-	ReclaimExpired  *bool
-	ReclaimRatio    *int64
-	JobOnly         bool
-	Payload         *bool
-	PayloadMaxBytes *int64
-	Values          []string
-	ValueMaxBytes   *int64
-	IncludeState    bool
+	Type              string
+	State             string
+	States            []string
+	Worker            string
+	PartitionKey      string
+	PartitionKeys     []string
+	LeaseMS           int64
+	Limit             int
+	Priority          *int64
+	NowMS             int64
+	BlockMS           *int64
+	ReclaimExpired    *bool
+	ReclaimRatio      *int64
+	JobOnly           bool
+	Payload           *bool
+	PayloadMaxBytes   *int64
+	Values            []string
+	ValueMaxBytes     *int64
+	IncludeState      bool
+	IncludeAttributes *bool
 }
 
 type ReclaimOptions struct {
-	Type            string
-	State           string
-	Worker          string
-	PartitionKey    string
-	PartitionKeys   []string
-	LeaseMS         int64
-	Limit           int
-	Priority        *int64
-	NowMS           int64
-	JobOnly         bool
-	Payload         *bool
-	PayloadMaxBytes *int64
-	Values          []string
-	ValueMaxBytes   *int64
+	Type              string
+	State             string
+	Worker            string
+	PartitionKey      string
+	PartitionKeys     []string
+	LeaseMS           int64
+	Limit             int
+	Priority          *int64
+	NowMS             int64
+	JobOnly           bool
+	Payload           *bool
+	PayloadMaxBytes   *int64
+	Values            []string
+	ValueMaxBytes     *int64
+	IncludeAttributes *bool
 }
 
 type NamedValues struct {
-	Values         map[string]any
-	ValueRefs      map[string]string
-	DropValues     []string
-	OverrideValues []string
+	Values           map[string]any
+	ValueRefs        map[string]string
+	DropValues       []string
+	OverrideValues   []string
+	AttributesMerge  map[string]any
+	AttributesDelete []string
 }
 
 type CompleteOptions struct {
@@ -332,6 +346,7 @@ type ReadOptions struct {
 	TerminalOnly         *bool
 	IncludeCold          *bool
 	ConsistentProjection *bool
+	Attributes           map[string]any
 }
 
 type HistoryOptions struct {

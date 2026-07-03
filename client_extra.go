@@ -162,6 +162,57 @@ func (c *Client) ConfigRewrite(ctx context.Context) error {
 	return err
 }
 
+func (c *Client) ClientSetName(ctx context.Context, name string) error {
+	_, err := c.Command(ctx, "CLIENT", "SETNAME", name)
+	return err
+}
+
+func (c *Client) ClientInfo(ctx context.Context) (map[string]any, error) {
+	value, err := c.Command(ctx, "CLIENT", "INFO")
+	if err != nil {
+		return nil, err
+	}
+	return kvResponse(value)
+}
+
+func (c *Client) ACL(ctx context.Context, subcommand string, args ...any) (any, error) {
+	command := []any{"ACL", subcommand}
+	command = append(command, args...)
+	return c.Command(ctx, command...)
+}
+
+func (c *Client) ACLSetUser(ctx context.Context, username string, rules ...string) error {
+	args := []any{username}
+	for _, rule := range rules {
+		args = append(args, rule)
+	}
+	_, err := c.ACL(ctx, "SETUSER", args...)
+	return err
+}
+
+func (c *Client) ACLDelUser(ctx context.Context, username string) (int64, error) {
+	value, err := c.ACL(ctx, "DELUSER", username)
+	return asInt64(value), err
+}
+
+func (c *Client) ACLGetUser(ctx context.Context, username string) (map[string]any, error) {
+	value, err := c.ACL(ctx, "GETUSER", username)
+	if err != nil {
+		return nil, err
+	}
+	return nativeMap(value)
+}
+
+func (c *Client) ACLList(ctx context.Context) ([]string, error) {
+	value, err := c.ACL(ctx, "LIST")
+	return stringArray(value, err)
+}
+
+func (c *Client) ACLSave(ctx context.Context) error {
+	_, err := c.ACL(ctx, "SAVE")
+	return err
+}
+
 func (c *Client) SlowLogGet(ctx context.Context, count *int) (any, error) {
 	args := []any{"SLOWLOG", "GET"}
 	if count != nil {
@@ -211,6 +262,38 @@ func (c *Client) ObjectHelp(ctx context.Context) (any, error) {
 func (c *Client) Publish(ctx context.Context, channel, message string) (int64, error) {
 	value, err := c.Command(ctx, "PUBLISH", channel, message)
 	return asInt64(value), err
+}
+
+func (c *Client) Subscribe(ctx context.Context, channels ...string) (any, error) {
+	args := []any{"SUBSCRIBE"}
+	for _, channel := range channels {
+		args = append(args, channel)
+	}
+	return c.Command(ctx, args...)
+}
+
+func (c *Client) Unsubscribe(ctx context.Context, channels ...string) (any, error) {
+	args := []any{"UNSUBSCRIBE"}
+	for _, channel := range channels {
+		args = append(args, channel)
+	}
+	return c.Command(ctx, args...)
+}
+
+func (c *Client) PSubscribe(ctx context.Context, patterns ...string) (any, error) {
+	args := []any{"PSUBSCRIBE"}
+	for _, pattern := range patterns {
+		args = append(args, pattern)
+	}
+	return c.Command(ctx, args...)
+}
+
+func (c *Client) PUnsubscribe(ctx context.Context, patterns ...string) (any, error) {
+	args := []any{"PUNSUBSCRIBE"}
+	for _, pattern := range patterns {
+		args = append(args, pattern)
+	}
+	return c.Command(ctx, args...)
 }
 
 func (c *Client) PubSubChannels(ctx context.Context, pattern string) ([]string, error) {

@@ -1,8 +1,12 @@
 package ferricstore
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 type BufferedExecutor struct {
+	mu           sync.Mutex
 	client       *Client
 	commands     [][]any
 	Flushes      int64
@@ -16,12 +20,16 @@ func NewBufferedExecutor(client *Client) *BufferedExecutor {
 
 func (e *BufferedExecutor) Do(ctx context.Context, args ...any) (any, error) {
 	copied := append([]any(nil), args...)
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.commands = append(e.commands, copied)
 	return []byte("QUEUED"), nil
 }
 
 func (e *BufferedExecutor) Flush(ctx context.Context) ([]any, error) {
+	e.mu.Lock()
 	if len(e.commands) == 0 {
+		e.mu.Unlock()
 		return nil, nil
 	}
 	commands := e.commands
@@ -32,8 +40,10 @@ func (e *BufferedExecutor) Flush(ctx context.Context) ([]any, error) {
 	if depth > e.MaxDepth {
 		e.MaxDepth = depth
 	}
-	if e.client == nil {
+	client := e.client
+	e.mu.Unlock()
+	if client == nil {
 		return nil, nil
 	}
-	return e.client.Pipeline(ctx, commands)
+	return client.Pipeline(ctx, commands)
 }

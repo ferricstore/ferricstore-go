@@ -55,6 +55,9 @@ func claimedItemsFromNative(value any) ([]ClaimedItem, error) {
 	if value == nil {
 		return nil, nil
 	}
+	if claimed, ok := value.([]ClaimedItem); ok {
+		return claimed, nil
+	}
 	items, ok := value.([]any)
 	if !ok {
 		return nil, fmt.Errorf("expected native array, got %T", value)
@@ -83,7 +86,14 @@ func claimedItemFromNative(value any) (ClaimedItem, error) {
 			State:        "running",
 		}
 		if len(list) > 4 {
-			item.RunState = asString(list[4])
+			if attrs := stringObjectMap(list[4]); len(attrs) > 0 {
+				item.Attributes = attrs
+			} else {
+				item.RunState = asString(list[4])
+			}
+		}
+		if len(list) > 5 {
+			item.Attributes = stringObjectMap(list[5])
 		}
 		return item, nil
 	}
@@ -104,6 +114,7 @@ func claimedItemFromNative(value any) (ClaimedItem, error) {
 		State:        state,
 		RunState:     asString(m["run_state"]),
 		Payload:      m["payload"],
+		Attributes:   stringObjectMap(m["attributes"]),
 	}, nil
 }
 
@@ -122,8 +133,13 @@ func recordFromMap(m map[string]any, codec Codec) FlowRecord {
 		ParentFlowID:  asString(m["parent_flow_id"]),
 		RootFlowID:    asString(m["root_flow_id"]),
 		CorrelationID: asString(m["correlation_id"]),
+		RunState:      asString(m["run_state"]),
+		Attributes:    stringObjectMap(m["attributes"]),
 		Values:        values,
 		ValueRefs:     stringObjectMap(m["value_refs"]),
+		ValueSizes:    stringObjectMap(m["value_sizes"]),
+		ValueOmitted:  stringObjectMap(m["value_omitted"]),
+		ValueMissing:  stringObjectMap(m["value_missing"]),
 		Raw:           m,
 	}
 }
@@ -232,12 +248,15 @@ func kvResponse(value any) (map[string]any, error) {
 		}
 		key, raw, ok := strings.Cut(line, ":")
 		if !ok {
-			fields := strings.Fields(line)
-			if len(fields) < 2 {
-				continue
+			key, raw, ok = strings.Cut(line, "=")
+			if !ok {
+				fields := strings.Fields(line)
+				if len(fields) < 2 {
+					continue
+				}
+				key = fields[0]
+				raw = strings.Join(fields[1:], " ")
 			}
-			key = fields[0]
-			raw = strings.Join(fields[1:], " ")
 		}
 		out[strings.TrimSpace(key)] = coerceTextValue(strings.TrimSpace(raw))
 	}
@@ -291,6 +310,8 @@ func asString(value any) string {
 		return v
 	case []byte:
 		return string(v)
+	case nativeCompactOKCount:
+		return "OK"
 	case int64:
 		return strconv.FormatInt(v, 10)
 	case int:
@@ -387,9 +408,21 @@ func asBool(value any) bool {
 func isOK(value any) bool {
 	switch v := value.(type) {
 	case string:
-		return v == "OK"
+		return strings.EqualFold(v, "OK")
 	case []byte:
-		return string(v) == "OK"
+		return strings.EqualFold(string(v), "OK")
+	case nativeCompactOKCount:
+		return v > 0
+	case []any:
+		if len(v) == 0 {
+			return false
+		}
+		for _, item := range v {
+			if !isOK(item) {
+				return false
+			}
+		}
+		return true
 	default:
 		return false
 	}

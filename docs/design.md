@@ -22,10 +22,14 @@ FerricStore owns persistence. The Go SDK does not introduce another database, OR
 
 The SDK sends FerricStore commands over the native binary protocol and decodes structured responses. This is intentionally close to the protocol so high-throughput paths can use:
 
+- compact native KV `SET`/`GET` pipeline payloads
 - `CreateMany`, `CompleteMany`, `TransitionMany`, `RetryMany`, `FailMany`, `CancelMany`
 - `Pipeline`
 - `BufferedExecutor`
+- `AutoBatchExecutor` and `NewAutoBatchClient`
 - raw `Command` for new or advanced commands
+
+Default transport behavior is intentionally simple and aligned with the Python SDK latency-first path: one connection per client, 30s request timeout, TCP keepalive, idle protocol heartbeat, and no hidden auto-batching. Throughput code can opt into `NewAutoBatchClient`, explicit `Pipeline`, or FerricFlow batch APIs.
 
 ## Concurrency
 
@@ -39,13 +43,13 @@ Long-running worker lifecycle helpers are intentionally not hidden yet. Applicat
 
 ## Codecs
 
-The default `RawCodec` sends and receives values as-is. `JSONCodec` is available for structured payloads:
+The default `RawCodec` sends and receives values as-is. `JSONCodec` is available for client-side value encoding of structured payloads:
 
 ```go
 client := ferricstore.NewClient("127.0.0.1:6388", ferricstore.WithCodec(ferricstore.JSONCodec{}))
 ```
 
-Codecs apply to payloads, named values, value refs reads, and store wrappers where values are encoded.
+Codecs apply to payloads, named values, value refs reads, and store wrappers where values are encoded. `JSONCodec` does not use FerricStore JSON document commands; it stores encoded bytes through normal FerricStore values.
 
 ## Package Shape
 
@@ -55,4 +59,4 @@ The module root is the import path:
 import ferricstore "github.com/ferricstore/ferricstore-go"
 ```
 
-Examples live under `examples/`, and the benchmark lives under `cmd/dbos-style-benchmark`.
+Examples live under `examples/`. Benchmarks live under `cmd/dbos-style-benchmark` and `cmd/kv-benchmark`.

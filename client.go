@@ -11,6 +11,10 @@ type Executor interface {
 	Do(ctx context.Context, args ...any) (any, error)
 }
 
+type pipelineExecutor interface {
+	Pipeline(ctx context.Context, commands [][]any) ([]any, error)
+}
+
 type ClientOption func(*Client)
 
 func WithCodec(codec Codec) ClientOption {
@@ -35,7 +39,6 @@ type Client struct {
 	bitmap      *BitmapStore
 	hyperloglog *HyperLogLogStore
 	geo         *GeoStore
-	json        *JSONStore
 	bloom       *BloomFilterStore
 	cuckoo      *CuckooFilterStore
 	cms         *CountMinSketchStore
@@ -74,7 +77,6 @@ func NewClientWithExecutor(exec Executor, opts ...ClientOption) *Client {
 	client.bitmap = &BitmapStore{client: client}
 	client.hyperloglog = &HyperLogLogStore{client: client}
 	client.geo = &GeoStore{client: client}
-	client.json = &JSONStore{client: client}
 	client.bloom = &BloomFilterStore{client: client}
 	client.cuckoo = &CuckooFilterStore{client: client}
 	client.cms = &CountMinSketchStore{client: client}
@@ -100,7 +102,6 @@ func (c *Client) Stream() *StreamStore                 { return c.stream }
 func (c *Client) Bitmap() *BitmapStore                 { return c.bitmap }
 func (c *Client) HyperLogLog() *HyperLogLogStore       { return c.hyperloglog }
 func (c *Client) Geo() *GeoStore                       { return c.geo }
-func (c *Client) JSON() *JSONStore                     { return c.json }
 func (c *Client) Bloom() *BloomFilterStore             { return c.bloom }
 func (c *Client) Cuckoo() *CuckooFilterStore           { return c.cuckoo }
 func (c *Client) CountMinSketch() *CountMinSketchStore { return c.cms }
@@ -114,6 +115,9 @@ func (c *Client) Command(ctx context.Context, args ...any) (any, error) {
 func (c *Client) Pipeline(ctx context.Context, commands [][]any) ([]any, error) {
 	if len(commands) == 0 {
 		return nil, nil
+	}
+	if exec, ok := c.exec.(pipelineExecutor); ok {
+		return exec.Pipeline(ctx, commands)
 	}
 	results := make([]any, 0, len(commands))
 	for _, command := range commands {
@@ -261,6 +265,7 @@ func (c *Client) Create(ctx context.Context, opt CreateOptions) (*FlowRecord, er
 	appendInt64Ptr(&args, "PRIORITY", opt.Priority)
 	appendBoolPtr(&args, "IDEMPOTENT", opt.Idempotent)
 	appendInt64Ptr(&args, "RETENTION_TTL_MS", opt.RetentionTTLMS)
+	appendAttributes(&args, opt.Attributes, nil, nil)
 	if err := c.appendNamedValues(&args, NamedValues{Values: opt.Values, ValueRefs: opt.ValueRefs}); err != nil {
 		return nil, err
 	}
@@ -302,12 +307,20 @@ func (c *Client) CreateMany(ctx context.Context, opt CreateManyOptions) ([]FlowR
 	} else if wirePartition == "" {
 		wirePartition = "AUTO"
 	}
+	if records, ok, err := c.tryCreateManyNativeCompact(ctx, opt, state, now, runAt, mixed, wirePartition); ok || err != nil {
+		return records, err
+	}
 	args := []any{"FLOW.CREATE_MANY", wirePartition, "TYPE", opt.Type, "STATE", state, "NOW", now}
 	appendOpt(&args, "RUN_AT", runAt)
 	appendInt64Ptr(&args, "PRIORITY", opt.Priority)
 	appendBoolPtr(&args, "IDEMPOTENT", opt.Idempotent)
 	appendBoolPtr(&args, "INDEPENDENT", opt.Independent)
 	appendInt64Ptr(&args, "RETENTION_TTL_MS", opt.RetentionTTLMS)
+	attrs, err := sharedCreateManyAttributes(opt.Items, opt.Attributes)
+	if err != nil {
+		return nil, err
+	}
+	appendAttributes(&args, attrs, nil, nil)
 	extended := anyCreateItemValues(opt.Items)
 	if extended {
 		args = append(args, "ITEMS_EXT", len(opt.Items))
@@ -484,6 +497,10 @@ func (c *Client) claimDue(ctx context.Context, opt ClaimDueOptions) (any, error)
 	if limit == 0 {
 		limit = 1
 	}
+	now := opt.NowMS
+	if now == 0 {
+		now = nowMS()
+	}
 	args := []any{"FLOW.CLAIM_DUE", opt.Type}
 	if len(opt.States) > 0 {
 		for _, state := range opt.States {
@@ -493,7 +510,7 @@ func (c *Client) claimDue(ctx context.Context, opt ClaimDueOptions) (any, error)
 		appendOpt(&args, "STATE", opt.State)
 	}
 	args = append(args, "WORKER", opt.Worker, "LEASE_MS", leaseMS, "LIMIT", limit)
-	appendOpt(&args, "NOW", opt.NowMS)
+	appendOpt(&args, "NOW", now)
 	appendOpt(&args, "PARTITION", opt.PartitionKey)
 	if len(opt.PartitionKeys) > 0 {
 		args = append(args, "PARTITIONS", len(opt.PartitionKeys))
@@ -505,9 +522,18 @@ func (c *Client) claimDue(ctx context.Context, opt ClaimDueOptions) (any, error)
 	if opt.IncludeState && !opt.JobOnly {
 		return nil, errors.New("include state requires job only")
 	}
+	if value, ok, err := c.tryClaimDueNativeCompact(ctx, opt, leaseMS, limit); ok || err != nil {
+		return value, err
+	}
 	if opt.JobOnly {
 		if opt.IncludeState {
-			appendOpt(&args, "RETURN", "JOBS_COMPACT_STATE")
+			if boolDefault(opt.IncludeAttributes, true) {
+				appendOpt(&args, "RETURN", "JOBS_COMPACT_STATE_ATTRS")
+			} else {
+				appendOpt(&args, "RETURN", "JOBS_COMPACT_STATE")
+			}
+		} else if boolDefault(opt.IncludeAttributes, true) {
+			appendOpt(&args, "RETURN", "JOBS_COMPACT_ATTRS")
 		} else {
 			appendOpt(&args, "RETURN", "JOBS_COMPACT")
 		}
@@ -566,7 +592,11 @@ func (c *Client) reclaim(ctx context.Context, opt ReclaimOptions) (any, error) {
 	}
 	appendInt64Ptr(&args, "PRIORITY", opt.Priority)
 	if opt.JobOnly {
-		appendOpt(&args, "RETURN", "JOBS_COMPACT")
+		if boolDefault(opt.IncludeAttributes, true) {
+			appendOpt(&args, "RETURN", "JOBS_COMPACT_ATTRS")
+		} else {
+			appendOpt(&args, "RETURN", "JOBS_COMPACT")
+		}
 	}
 	appendPayloadRead(&args, opt.Payload, opt.PayloadMaxBytes)
 	appendValueReturn(&args, opt.Values, opt.ValueMaxBytes)
@@ -602,6 +632,7 @@ func (c *Client) Transition(ctx context.Context, opt TransitionOptions) (*FlowRe
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	value, err := c.Command(ctx, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
@@ -623,6 +654,7 @@ func (c *Client) Complete(ctx context.Context, opt CompleteOptions) (*FlowRecord
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	value, err := c.Command(ctx, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
@@ -645,6 +677,7 @@ func (c *Client) Retry(ctx context.Context, opt RetryOptions) (*FlowRecord, erro
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	value, err := c.Command(ctx, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
@@ -665,6 +698,7 @@ func (c *Client) Fail(ctx context.Context, opt FailOptions) (*FlowRecord, error)
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	value, err := c.Command(ctx, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
@@ -683,6 +717,7 @@ func (c *Client) Cancel(ctx context.Context, opt CancelOptions) (*FlowRecord, er
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	value, err := c.Command(ctx, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
@@ -710,6 +745,10 @@ func (c *Client) CompleteMany(ctx context.Context, opt CompleteManyOptions) ([]F
 	if len(opt.Items) == 0 {
 		return nil, nil
 	}
+	now := valueOrNow(opt.NowMS)
+	if records, ok, err := c.tryCompleteManyNativeCompact(ctx, opt, now); ok || err != nil {
+		return records, err
+	}
 	args := []any{"FLOW.COMPLETE_MANY", mixedPartition(opt.PartitionKey)}
 	if err := c.appendEncoded(&args, "RESULT", opt.Result); err != nil {
 		return nil, err
@@ -718,11 +757,12 @@ func (c *Client) CompleteMany(ctx context.Context, opt CompleteManyOptions) ([]F
 		return nil, err
 	}
 	appendInt64Ptr(&args, "TTL", opt.TTLMS)
-	appendOpt(&args, "NOW", valueOrNow(opt.NowMS))
+	appendOpt(&args, "NOW", now)
 	appendBoolPtr(&args, "INDEPENDENT", opt.Independent)
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	if err := appendClaimedItems(&args, opt.PartitionKey, opt.Items, "FLOW.COMPLETE_MANY"); err != nil {
 		return nil, err
 	}
@@ -750,6 +790,7 @@ func (c *Client) TransitionMany(ctx context.Context, opt TransitionManyOptions) 
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	if err := appendFencedItems(&args, opt.PartitionKey, opt.Items, "FLOW.TRANSITION_MANY", true); err != nil {
 		return nil, err
 	}
@@ -779,6 +820,7 @@ func (c *Client) RetryMany(ctx context.Context, opt RetryManyOptions) ([]FlowRec
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	if err := appendClaimedItems(&args, opt.PartitionKey, opt.Items, "FLOW.RETRY_MANY"); err != nil {
 		return nil, err
 	}
@@ -806,6 +848,7 @@ func (c *Client) FailMany(ctx context.Context, opt FailManyOptions) ([]FlowRecor
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	if err := appendClaimedItems(&args, opt.PartitionKey, opt.Items, "FLOW.FAIL_MANY"); err != nil {
 		return nil, err
 	}
@@ -830,6 +873,7 @@ func (c *Client) CancelMany(ctx context.Context, opt CancelManyOptions) ([]FlowR
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	if err := appendFencedItems(&args, opt.PartitionKey, opt.Items, "FLOW.CANCEL_MANY", false); err != nil {
 		return nil, err
 	}
@@ -867,11 +911,7 @@ func (c *Client) recordOrGet(ctx context.Context, record *FlowRecord, err error,
 
 func (c *Client) List(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
 	args := []any{"FLOW.LIST", flowType}
-	appendOpt(&args, "STATE", opt.State)
-	appendIntPtr(&args, "COUNT", opt.Count)
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	appendBoolPtr(&args, "INCLUDE_COLD", opt.IncludeCold)
-	appendBoolPtr(&args, "CONSISTENT_PROJECTION", opt.ConsistentProjection)
+	appendReadOptions(&args, opt)
 	value, err := c.Command(ctx, args...)
 	if err != nil {
 		return nil, err
@@ -919,6 +959,7 @@ func appendReadOptions(args *[]any, opt ReadOptions) {
 	appendBoolPtr(args, "TERMINAL_ONLY", opt.TerminalOnly)
 	appendBoolPtr(args, "INCLUDE_COLD", opt.IncludeCold)
 	appendBoolPtr(args, "CONSISTENT_PROJECTION", opt.ConsistentProjection)
+	appendAttributes(args, opt.Attributes, nil, nil)
 }
 
 func (c *Client) Info(ctx context.Context, flowType, partitionKey string, includeCold, consistentProjection *bool) (map[string]any, error) {

@@ -325,38 +325,6 @@ func (s *GeoStore) Distance(ctx context.Context, key string, member1, member2 an
 	return s.client.Command(ctx, args...)
 }
 
-type JSONStore struct{ client *Client }
-
-func (s *JSONStore) Set(ctx context.Context, key, path string, value any) error {
-	encoded, err := JSONCodec{}.Encode(value)
-	if err != nil {
-		return err
-	}
-	_, err = s.client.Command(ctx, "JSON.SET", key, path, encoded)
-	return err
-}
-
-func (s *JSONStore) Get(ctx context.Context, key, path string) (any, error) {
-	args := []any{"JSON.GET", key}
-	if path != "" {
-		args = append(args, path)
-	}
-	value, err := s.client.Command(ctx, args...)
-	if err != nil {
-		return nil, err
-	}
-	return JSONCodec{}.Decode(value)
-}
-
-func (s *JSONStore) Del(ctx context.Context, key, path string) (int64, error) {
-	args := []any{"JSON.DEL", key}
-	if path != "" {
-		args = append(args, path)
-	}
-	value, err := s.client.Command(ctx, args...)
-	return asInt64(value), err
-}
-
 type BloomFilterStore struct{ client *Client }
 
 func (s *BloomFilterStore) Reserve(ctx context.Context, key string, errorRate float64, capacity int64) (bool, error) {

@@ -20,7 +20,8 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses `ghcr.io/ferricstore/ferricstore:0.5.3` and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses `ghcr.io/ferricstore/ferricstore:latest` by default and exposes the native protocol on `127.0.0.1:6388`.
+Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Client
 
@@ -36,11 +37,37 @@ Use `NewClientFromURL` when you prefer URL configuration:
 client, err := ferricstore.NewClientFromURL("ferric://127.0.0.1:6388")
 ```
 
-Use `Command` for advanced JSON commands, low-level connection-mode commands, or any command that does not need a polished helper:
+Use `ferrics://` for TLS when credentials leave a trusted local network:
+
+```go
+client, err := ferricstore.NewClientFromURL("ferrics://default:password@ferricstore.example.com:6389")
+```
+
+Default client behavior matches the Python SDK:
+
+- one native protocol connection per `Client`
+- 30s request timeout
+- 30s TCP keepalive and idle protocol heartbeat
+- no hidden auto-batching; use `Pipeline` or high-level worker APIs when you want batching
+- queue/workflow workers default to batch size 10, concurrency 1, and a 30s claim lease
+
+Use `Command` for low-level connection-mode commands or any command that does not need a polished helper:
 
 ```go
 value, err := client.Command(ctx, "PING")
 ```
+
+Use `NewAutoBatchClient` when many goroutines issue independent commands and you want the SDK to coalesce them into native protocol pipeline flushes:
+
+```go
+client := ferricstore.NewAutoBatchClient("127.0.0.1:6388", ferricstore.AutoBatchOptions{
+	MaxSize:       100,
+	FlushInterval: time.Millisecond,
+}, ferricstore.WithCodec(ferricstore.JSONCodec{}))
+defer func() { _ = client.Close() }()
+```
+
+Autobatching is opt-in because it can add up to `FlushInterval` latency to a single lonely request. For latency-first services, use `NewClient`; for high-throughput producers, use `NewAutoBatchClient`, `Pipeline`, or FerricFlow batch APIs.
 
 ## Durable Queue
 
@@ -63,6 +90,19 @@ _, err = worker.RunOnce(ctx)
 ```
 
 The worker claims due jobs, runs handlers concurrently, then completes, retries, fails, or returns handler errors based on `ErrorPolicy`.
+
+For a long-running process, start the worker and stop it with context cancellation:
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+handle := worker.Start(ctx, time.Second)
+
+// Later, during shutdown:
+cancel()
+stats, err := handle.Join()
+```
+
+Use `ErrorPolicyRetry` for transient errors, `ErrorPolicyFail` for permanent business failures, and `ErrorPolicyReturn` when your app wants to handle the error and leave the job lease semantics explicit.
 
 ## State Workflow
 
@@ -91,6 +131,47 @@ _, err = workflow.Worker("orders-1", nil, ferricstore.WorkerOptions{
 
 The state machine data is stored in FerricStore. The SDK does not add another database or persistence layer.
 
+For service workers, use the same lifecycle helper:
+
+```go
+worker := workflow.Worker("orders-1", nil, ferricstore.WorkerOptions{
+	BatchSize:   25,
+	Concurrency: 8,
+})
+handle := worker.Start(ctx, time.Second)
+defer handle.Stop()
+```
+
+## Native Events and Flow Wake Signals
+
+FerricStore can send native protocol events over the same multiplexed client connection. Use this for wake hints, then still claim work through FerricFlow so leases and fencing stay correct.
+
+```go
+pubsub, err := client.OpenPubSub()
+if err != nil {
+	return err
+}
+
+_, err = pubsub.SubscribeFlowWake(ctx, ferricstore.FlowWakeSubscriptionOptions{
+	Type:  "email",
+	State: "queued",
+	Limit: ferricstore.Int(100),
+})
+if err != nil {
+	return err
+}
+
+event, err := pubsub.NextEvent(ctx)
+if err != nil {
+	return err
+}
+if event.Name == "FLOW_WAKE" {
+	// Wake your worker loop and call ClaimDue/ClaimJobs for the advertised type/state.
+}
+```
+
+Use `OpenPubSub` when you want events on the existing native multiplexed connection. Use `NewPubSub` or `NewPubSubFromURL` when you want an isolated long-lived pub/sub connection.
+
 ## Stores
 
 Typed helpers cover common FerricStore data structures:
@@ -104,7 +185,7 @@ _, _ = client.ListStore().RPush(ctx, "outbox", "event-1")
 _, _ = client.SetStore().Add(ctx, "seen", "event-1")
 ```
 
-Available store helpers include KV, hash, list, set, sorted set, stream, bitmap, HyperLogLog, geo, JSON, Bloom, Cuckoo, Count-Min Sketch, TopK, and TDigest. Non-JSON data-structure helpers cover the common FerricStore command surface broadly; advanced JSON commands remain available through `Command`.
+Available store helpers include KV, hash, list, set, sorted set, stream, bitmap, HyperLogLog, geo, Bloom, Cuckoo, Count-Min Sketch, TopK, and TDigest. FerricStore JSON document commands are not exposed by this SDK because the current server does not support them.
 
 ## Value Refs
 
@@ -118,6 +199,74 @@ ref, err := client.PutValue(ctx, "analysis", map[string]any{"score": 98}, ferric
 })
 
 values, err := client.ValueMGet(ctx, []string{fmt.Sprint(ref)}, nil)
+```
+
+## Attributes, Schedules, Governance
+
+Workflow attributes are indexed metadata for debugging and search. They are separate from payload bytes.
+
+```go
+_, err := client.Create(ctx, ferricstore.CreateOptions{
+	ID:         "order-1",
+	Type:       "order",
+	State:      "validate",
+	Payload:    map[string]any{"amount": 42},
+	Attributes: map[string]any{"tenant": "acme", "region": "us"},
+})
+
+orders, err := client.List(ctx, "order", ferricstore.ReadOptions{
+	Attributes: map[string]any{"tenant": "acme"},
+	Count:      ferricstore.Int(100),
+})
+```
+
+Schedules create flows from durable time rules:
+
+```go
+schedule, err := client.ScheduleCreate(ctx, "daily-report", ferricstore.ScheduleOptions{
+	Cron:     "0 9 * * *",
+	Timezone: "America/New_York",
+	Target: map[string]any{
+		"type":  "report",
+		"state": "queued",
+		"id":    "report-{{fire_id}}",
+	},
+	Overwrite: ferricstore.Bool(true),
+})
+```
+
+Schedules can be paused, resumed, deleted, manually fired, and listed:
+
+```go
+_, _ = client.SchedulePause(ctx, "daily-report", nil)
+_, _ = client.ScheduleResume(ctx, "daily-report", nil)
+_, _ = client.ScheduleFire(ctx, "daily-report", nil)
+schedules, _ := client.ScheduleList(ctx, ferricstore.ScheduleListOptions{Limit: ferricstore.Int(100)})
+```
+
+Governance helpers expose approvals, budgets, limits, effects, and circuit breakers without dropping to raw commands:
+
+```go
+approval, err := client.ApprovalRequest(ctx, "approval-1", ferricstore.ApprovalRequestOptions{
+	FlowID:      "order-1",
+	Scope:       "tenant:acme:refund",
+	RequestedBy: "worker-1",
+	Assignees:   []string{"ops@example.com"},
+})
+
+budget, err := client.BudgetReserve(ctx, "llm:tenant:acme", 100, ferricstore.Int64(10_000), ferricstore.Int64(60_000), "reservation-1", nil)
+```
+
+Circuit breakers are cheap reads in the normal path and explicit writes when the circuit changes:
+
+```go
+status, err := client.CircuitGet(ctx, "vendor:payments")
+if status != nil && status.Status == "open" {
+	return fmt.Errorf("payments circuit open")
+}
+
+_, _ = client.CircuitOpen(ctx, "vendor:payments", ferricstore.Int64(30_000), nil, nil)
+_, _ = client.CircuitClose(ctx, "vendor:payments", nil)
 ```
 
 ## Toolchain
@@ -154,14 +303,28 @@ mise exec -- go run ./examples/kv_store
 ```bash
 mise exec -- go run ./cmd/dbos-style-benchmark \
   --mode queued \
-  --transport pipeline \
-  --flows 10000 \
+  --transport many \
+  --flows 100000 \
   --workers 16 \
   --producers 4 \
   --partitions 16 \
-  --claim-batch-size 100 \
-  --create-batch-size 100
+  --claim-batch-size 250 \
+  --create-batch-size 500 \
+  --wake-coalesce-ms 0
 ```
+
+KV throughput benchmark:
+
+```bash
+mise exec -- go run ./cmd/kv-benchmark \
+  --mode set \
+  --requests 1000000 \
+  --clients 800 \
+  --pipeline 50 \
+  --value-bytes 256
+```
+
+The large `--clients`/`--pipeline` values are benchmark tuning knobs, not SDK defaults.
 
 See:
 

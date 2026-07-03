@@ -29,6 +29,24 @@ func (e *integrationTrackingExecutor) Do(ctx context.Context, args ...any) (any,
 	return e.inner.Do(ctx, args...)
 }
 
+func (e *integrationTrackingExecutor) Pipeline(ctx context.Context, commands [][]any) ([]any, error) {
+	for _, args := range commands {
+		recordIntegrationCommand(args)
+	}
+	if exec, ok := e.inner.(pipelineExecutor); ok {
+		return exec.Pipeline(ctx, commands)
+	}
+	results := make([]any, 0, len(commands))
+	for _, args := range commands {
+		value, err := e.inner.Do(ctx, args...)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, value)
+	}
+	return results, nil
+}
+
 func newIntegrationTrackedClient(addr string, codec Codec) *Client {
 	exec := NewNativeExecutor(addr)
 	client := NewClientWithExecutor(&integrationTrackingExecutor{inner: exec}, WithCodec(codec))
@@ -52,7 +70,7 @@ func integrationCommandKey(args []any) string {
 	}
 	command := strings.ToUpper(asString(args[0]))
 	switch command {
-	case "COMMAND", "CONFIG", "MEMORY", "MODULE", "OBJECT", "PUBSUB", "SLOWLOG", "XGROUP", "XINFO":
+	case "ACL", "CLIENT", "COMMAND", "CONFIG", "MEMORY", "MODULE", "OBJECT", "PUBSUB", "SLOWLOG", "XGROUP", "XINFO":
 		if len(args) > 1 {
 			return command + " " + strings.ToUpper(asString(args[1]))
 		}
@@ -98,6 +116,11 @@ func missingIntegrationCommands() []string {
 
 func expectedIntegrationCommands() []string {
 	return []string{
+		"ACL DELUSER",
+		"ACL GETUSER",
+		"ACL LIST",
+		"ACL SAVE",
+		"ACL SETUSER",
 		"APPEND",
 		"BF.ADD",
 		"BF.CARD",
@@ -134,6 +157,8 @@ func expectedIntegrationCommands() []string {
 		"CLUSTER.SLOTS",
 		"CLUSTER.STATS",
 		"CLUSTER.STATUS",
+		"CLIENT INFO",
+		"CLIENT SETNAME",
 		"CMS.INCRBY",
 		"CMS.INFO",
 		"CMS.INITBYDIM",
@@ -169,6 +194,18 @@ func expectedIntegrationCommands() []string {
 		"FETCH_OR_COMPUTE",
 		"FETCH_OR_COMPUTE_ERROR",
 		"FETCH_OR_COMPUTE_RESULT",
+		"FLOW.APPROVAL.APPROVE",
+		"FLOW.APPROVAL.GET",
+		"FLOW.APPROVAL.LIST",
+		"FLOW.APPROVAL.REJECT",
+		"FLOW.APPROVAL.REQUEST",
+		"FLOW.ATTRIBUTES",
+		"FLOW.ATTRIBUTE_VALUES",
+		"FLOW.BUDGET.COMMIT",
+		"FLOW.BUDGET.GET",
+		"FLOW.BUDGET.LIST",
+		"FLOW.BUDGET.RELEASE",
+		"FLOW.BUDGET.RESERVE",
 		"FLOW.BY_CORRELATION",
 		"FLOW.BY_PARENT",
 		"FLOW.BY_ROOT",
@@ -179,14 +216,29 @@ func expectedIntegrationCommands() []string {
 		"FLOW.COMPLETE_MANY",
 		"FLOW.CREATE",
 		"FLOW.CREATE_MANY",
+		"FLOW.CIRCUIT.CLOSE",
+		"FLOW.CIRCUIT.GET",
+		"FLOW.CIRCUIT.OPEN",
+		"FLOW.EFFECT.COMPENSATE",
+		"FLOW.EFFECT.CONFIRM",
+		"FLOW.EFFECT.FAIL",
+		"FLOW.EFFECT.GET",
+		"FLOW.EFFECT.RESERVE",
 		"FLOW.EXTEND_LEASE",
 		"FLOW.FAIL",
 		"FLOW.FAIL_MANY",
 		"FLOW.FAILURES",
 		"FLOW.GET",
+		"FLOW.GOVERNANCE.LEDGER",
+		"FLOW.GOVERNANCE.OVERVIEW",
 		"FLOW.HISTORY",
 		"FLOW.INFO",
 		"FLOW.LIST",
+		"FLOW.LIMIT.GET",
+		"FLOW.LIMIT.LEASE",
+		"FLOW.LIMIT.LIST",
+		"FLOW.LIMIT.RELEASE",
+		"FLOW.LIMIT.SPEND",
 		"FLOW.POLICY.GET",
 		"FLOW.POLICY.SET",
 		"FLOW.RECLAIM",
@@ -194,8 +246,17 @@ func expectedIntegrationCommands() []string {
 		"FLOW.RETRY",
 		"FLOW.RETRY_MANY",
 		"FLOW.REWIND",
+		"FLOW.SCHEDULE.CREATE",
+		"FLOW.SCHEDULE.DELETE",
+		"FLOW.SCHEDULE.FIRE",
+		"FLOW.SCHEDULE.FIRE_DUE",
+		"FLOW.SCHEDULE.GET",
+		"FLOW.SCHEDULE.LIST",
+		"FLOW.SCHEDULE.PAUSE",
+		"FLOW.SCHEDULE.RESUME",
 		"FLOW.SIGNAL",
 		"FLOW.SPAWN_CHILDREN",
+		"FLOW.STATS",
 		"FLOW.STUCK",
 		"FLOW.TERMINALS",
 		"FLOW.TRANSITION",
@@ -245,9 +306,6 @@ func expectedIntegrationCommands() []string {
 		"INCRBY",
 		"INCRBYFLOAT",
 		"INFO",
-		"JSON.DEL",
-		"JSON.GET",
-		"JSON.SET",
 		"KEYS",
 		"LASTSAVE",
 		"LINDEX",
@@ -280,7 +338,9 @@ func expectedIntegrationCommands() []string {
 		"PING",
 		"PSETEX",
 		"PTTL",
+		"PSUBSCRIBE",
 		"PUBLISH",
+		"PUNSUBSCRIBE",
 		"PUBSUB CHANNELS",
 		"PUBSUB NUMPAT",
 		"PUBSUB NUMSUB",
@@ -320,6 +380,8 @@ func expectedIntegrationCommands() []string {
 		"STRLEN",
 		"SUNION",
 		"SUNIONSTORE",
+		"SUBSCRIBE",
+		"SUBSCRIBE_EVENTS",
 		"TDIGEST.ADD",
 		"TDIGEST.BYRANK",
 		"TDIGEST.BYREVRANK",
@@ -345,6 +407,8 @@ func expectedIntegrationCommands() []string {
 		"TYPE",
 		"UNLINK",
 		"UNLOCK",
+		"UNSUBSCRIBE",
+		"UNSUBSCRIBE_EVENTS",
 		"WAIT",
 		"WAITAOF",
 		"XACK",

@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
+	"runtime/pprof"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,25 +24,28 @@ const (
 )
 
 type config struct {
-	addr            string
-	mode            string
-	flows           int
-	workers         int
-	producers       int
-	partitions      int
-	claimBatchSize  int
-	createBatchSize int
-	transport       string
-	payloadBytes    int
-	workCommand     string
-	idleSleepMS     float64
-	maxIdleSleepMS  float64
-	workerMode      string
-	wakeCoalesceMS  float64
-	claimAny        bool
-	completeBatch   bool
-	steps           int
-	iterations      int
+	addr                    string
+	mode                    string
+	flows                   int
+	workers                 int
+	producers               int
+	partitions              int
+	claimBatchSize          int
+	claimPartitionBatchSize int
+	createBatchSize         int
+	transport               string
+	payloadBytes            int
+	workCommand             string
+	idleSleepMS             float64
+	maxIdleSleepMS          float64
+	workerMode              string
+	wakeCoalesceMS          float64
+	claimAny                bool
+	completeBatch           bool
+	steps                   int
+	iterations              int
+	cpuProfile              string
+	memProfile              string
 }
 
 type phaseStats struct {
@@ -82,7 +88,7 @@ func (c *benchFlowClient) enqueueMany(ctx context.Context, runID string, indices
 	if c.transport == "pipeline" || len(indices) == 1 {
 		for _, index := range indices {
 			_, err := c.client.Create(ctx, ferricstore.CreateOptions{
-				ID:           fmt.Sprintf("%s:flow:%d", runID, index),
+				ID:           flowID(runID, index),
 				Type:         flowType,
 				State:        queueState,
 				PartitionKey: partitionFor(index, partitions, runID),
@@ -99,7 +105,7 @@ func (c *benchFlowClient) enqueueMany(ctx context.Context, runID string, indices
 	items := make([]ferricstore.CreateItem, 0, len(indices))
 	for _, index := range indices {
 		items = append(items, ferricstore.CreateItem{
-			ID:           fmt.Sprintf("%s:flow:%d", runID, index),
+			ID:           flowID(runID, index),
 			Payload:      payload,
 			PartitionKey: partitionFor(index, partitions, runID),
 		})
@@ -117,17 +123,24 @@ func (c *benchFlowClient) enqueueMany(ctx context.Context, runID string, indices
 	return len(items), nil
 }
 
-func (c *benchFlowClient) claimDue(ctx context.Context, worker, partitionKey string, limit int) ([]ferricstore.FlowRecord, error) {
-	return c.read.ClaimDue(ctx, ferricstore.ClaimDueOptions{
-		Type:         flowType,
-		State:        queueState,
-		Worker:       worker,
-		PartitionKey: partitionKey,
-		Limit:        limit,
-	})
+func (c *benchFlowClient) claimDue(ctx context.Context, worker string, partitionKeys []string, limit int) ([]ferricstore.ClaimedItem, error) {
+	includeAttributes := false
+	opt := ferricstore.ClaimDueOptions{
+		Type:              flowType,
+		State:             queueState,
+		Worker:            worker,
+		Limit:             limit,
+		IncludeAttributes: &includeAttributes,
+	}
+	if len(partitionKeys) == 1 {
+		opt.PartitionKey = partitionKeys[0]
+	} else if len(partitionKeys) > 1 {
+		opt.PartitionKeys = partitionKeys
+	}
+	return c.read.ClaimJobs(ctx, opt)
 }
 
-func (c *benchFlowClient) doWork(ctx context.Context, command, runID string, jobs []ferricstore.FlowRecord) error {
+func (c *benchFlowClient) doWork(ctx context.Context, command, runID string, jobs []ferricstore.ClaimedItem) error {
 	if command != "incr" {
 		return nil
 	}
@@ -139,7 +152,7 @@ func (c *benchFlowClient) doWork(ctx context.Context, command, runID string, job
 	return nil
 }
 
-func (c *benchFlowClient) completeClaimed(ctx context.Context, jobs []ferricstore.FlowRecord, partitionKey string, useMany bool) error {
+func (c *benchFlowClient) completeClaimed(ctx context.Context, jobs []ferricstore.ClaimedItem, partitionKey string, useMany bool) error {
 	if c.transport == "pipeline" {
 		for _, job := range jobs {
 			if _, err := c.client.Complete(ctx, ferricstore.CompleteOptions{
@@ -147,7 +160,6 @@ func (c *benchFlowClient) completeClaimed(ctx context.Context, jobs []ferricstor
 				LeaseToken:   job.LeaseToken,
 				FencingToken: job.FencingToken,
 				PartitionKey: job.PartitionKey,
-				Result:       []byte("ok"),
 				ReturnRecord: false,
 			}); err != nil {
 				return err
@@ -156,20 +168,10 @@ func (c *benchFlowClient) completeClaimed(ctx context.Context, jobs []ferricstor
 		return c.flush(ctx)
 	}
 	if useMany && len(jobs) > 1 {
-		items := make([]ferricstore.ClaimedItem, 0, len(jobs))
-		for _, job := range jobs {
-			items = append(items, ferricstore.ClaimedItem{
-				ID:           job.ID,
-				LeaseToken:   job.LeaseToken,
-				FencingToken: job.FencingToken,
-				PartitionKey: job.PartitionKey,
-			})
-		}
 		independent := true
 		_, err := c.client.CompleteMany(ctx, ferricstore.CompleteManyOptions{
 			PartitionKey: partitionKey,
-			Items:        items,
-			Result:       []byte("ok"),
+			Items:        jobs,
 			Independent:  &independent,
 		})
 		return err
@@ -180,7 +182,6 @@ func (c *benchFlowClient) completeClaimed(ctx context.Context, jobs []ferricstor
 			LeaseToken:   job.LeaseToken,
 			FencingToken: job.FencingToken,
 			PartitionKey: job.PartitionKey,
-			Result:       []byte("ok"),
 			ReturnRecord: false,
 		}); err != nil {
 			return err
@@ -238,15 +239,30 @@ func (c *partitionWakeCoordinator) notifyPartition(partition int) {
 	c.chans[owner] <- partition
 }
 
-func (c *partitionWakeCoordinator) nextPartition(worker int, timeout time.Duration) (int, bool) {
+func (c *partitionWakeCoordinator) nextPartitions(worker int, timeout time.Duration, limit int) ([]int, bool) {
+	if limit <= 0 {
+		limit = 1
+	}
 	select {
 	case partition := <-c.chans[worker]:
 		c.locks[worker].Lock()
 		delete(c.pending[worker], partition)
 		c.locks[worker].Unlock()
-		return partition, true
+		partitions := []int{partition}
+		for len(partitions) < limit {
+			select {
+			case partition := <-c.chans[worker]:
+				c.locks[worker].Lock()
+				delete(c.pending[worker], partition)
+				c.locks[worker].Unlock()
+				partitions = append(partitions, partition)
+			default:
+				return partitions, true
+			}
+		}
+		return partitions, true
 	case <-time.After(timeout):
-		return 0, false
+		return nil, false
 	}
 }
 
@@ -281,7 +297,7 @@ func createFlows(ctx context.Context, cfg config, runID string, indices []int, p
 
 func runClaimWorker(ctx context.Context, cfg config, runID string, workerIndex int, producersDone *atomic.Bool, completed *atomic.Int64, wake *partitionWakeCoordinator) (phaseStats, error) {
 	flow := newBenchFlowClient(cfg.addr, cfg.transport)
-	worker := fmt.Sprintf("%s:worker:%d", runID, workerIndex)
+	worker := workerID(runID, workerIndex)
 	var localCompleted, claimCalls, emptyClaims, claimedItems, maxClaimBatch int64
 	claimRound := 0
 	baseIdle := time.Duration(cfg.idleSleepMS * float64(time.Millisecond))
@@ -297,6 +313,7 @@ func runClaimWorker(ctx context.Context, cfg config, runID string, workerIndex i
 			owned = append(owned, p)
 		}
 	}
+	activeOwned := append([]int(nil), owned...)
 	fallbackRound := 0
 
 	finish := func() phaseStats {
@@ -315,7 +332,7 @@ func runClaimWorker(ctx context.Context, cfg config, runID string, workerIndex i
 		return stats
 	}
 
-	handleJobs := func(jobs []ferricstore.FlowRecord, partitionKey string) error {
+	handleJobs := func(jobs []ferricstore.ClaimedItem, partitionKey string) error {
 		if int64(len(jobs)) > maxClaimBatch {
 			maxClaimBatch = int64(len(jobs))
 		}
@@ -332,13 +349,25 @@ func runClaimWorker(ctx context.Context, cfg config, runID string, workerIndex i
 	}
 
 	for completed.Load() < int64(cfg.flows) {
-		partitionKey := ""
+		partitionKeys := []string(nil)
 		if wake != nil && !cfg.claimAny {
-			partition, ok := wake.nextPartition(workerIndex, idle)
+			partitions, ok := wake.nextPartitions(workerIndex, idle, cfg.claimPartitionBatchSize)
 			if !ok {
-				if producersDone.Load() && len(owned) > 0 {
-					partition = owned[fallbackRound%len(owned)]
-					fallbackRound++
+				if producersDone.Load() && len(activeOwned) > 0 {
+					limit := cfg.claimPartitionBatchSize
+					if limit <= 0 {
+						limit = 1
+					}
+					if limit > len(activeOwned) {
+						limit = len(activeOwned)
+					}
+					partitions = make([]int, 0, limit)
+					for i := 0; i < limit; i++ {
+						partitions = append(partitions, activeOwned[(fallbackRound+i)%len(activeOwned)])
+					}
+					fallbackRound += limit
+				} else if producersDone.Load() {
+					return finish(), nil
 				} else {
 					continue
 				}
@@ -346,18 +375,29 @@ func runClaimWorker(ctx context.Context, cfg config, runID string, workerIndex i
 			if wakeCoalesce > 0 && !producersDone.Load() {
 				time.Sleep(wakeCoalesce)
 			}
-			partitionKey = partitionFor(partition, cfg.partitions, runID)
+			partitionKeys = partitionKeysFor(partitions, cfg.partitions, runID)
+			completePartitionKey := ""
+			if len(partitionKeys) == 1 {
+				completePartitionKey = partitionKeys[0]
+			}
 			for completed.Load() < int64(cfg.flows) {
 				claimCalls++
-				jobs, err := flow.claimDue(ctx, worker, partitionKey, cfg.claimBatchSize)
+				jobs, err := flow.claimDue(ctx, worker, partitionKeys, cfg.claimBatchSize)
 				if err != nil {
 					return phaseStats{}, err
 				}
 				if len(jobs) == 0 {
 					emptyClaims++
+					if producersDone.Load() && len(partitions) > 0 {
+						activeOwned = removeInts(activeOwned, partitions)
+						if len(activeOwned) == 0 {
+							return finish(), nil
+						}
+						fallbackRound = 0
+					}
 					break
 				}
-				if err := handleJobs(jobs, partitionKey); err != nil {
+				if err := handleJobs(jobs, completePartitionKey); err != nil {
 					return phaseStats{}, err
 				}
 				if len(jobs) < cfg.claimBatchSize {
@@ -370,10 +410,10 @@ func runClaimWorker(ctx context.Context, cfg config, runID string, workerIndex i
 		if !cfg.claimAny {
 			partition := partitionIndexForClaim(workerIndex, cfg.workers, cfg.partitions, claimRound)
 			claimRound++
-			partitionKey = partitionFor(partition, cfg.partitions, runID)
+			partitionKeys = []string{partitionFor(partition, cfg.partitions, runID)}
 		}
 		claimCalls++
-		jobs, err := flow.claimDue(ctx, worker, partitionKey, cfg.claimBatchSize)
+		jobs, err := flow.claimDue(ctx, worker, partitionKeys, cfg.claimBatchSize)
 		if err != nil {
 			return phaseStats{}, err
 		}
@@ -389,7 +429,11 @@ func runClaimWorker(ctx context.Context, cfg config, runID string, workerIndex i
 			continue
 		}
 		idle = baseIdle
-		if err := handleJobs(jobs, partitionKey); err != nil {
+		completePartitionKey := ""
+		if len(partitionKeys) == 1 {
+			completePartitionKey = partitionKeys[0]
+		}
+		if err := handleJobs(jobs, completePartitionKey); err != nil {
 			return phaseStats{}, err
 		}
 	}
@@ -397,7 +441,7 @@ func runClaimWorker(ctx context.Context, cfg config, runID string, workerIndex i
 }
 
 func runQueued(ctx context.Context, cfg config) (map[string]any, error) {
-	runID := "go-sdk-bench-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	runID := "go-sdk-bench-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	payload := make([]byte, cfg.payloadBytes)
 	for i := range payload {
 		payload[i] = 'x'
@@ -484,35 +528,36 @@ func runQueued(ctx context.Context, cfg config) (map[string]any, error) {
 	totalSeconds := processFinished.Sub(started).Seconds()
 
 	return map[string]any{
-		"mode":                      "queued",
-		"queued_shape":              "live",
-		"flows":                     cfg.flows,
-		"created":                   created,
-		"completed":                 processed,
-		"workers":                   cfg.workers,
-		"producers":                 cfg.producers,
-		"partitions":                cfg.partitions,
-		"claim_any":                 cfg.claimAny,
-		"worker_mode":               effectiveWorkerMode,
-		"claim_batch_size":          cfg.claimBatchSize,
-		"create_batch_size":         cfg.createBatchSize,
-		"complete_batch":            cfg.completeBatch,
-		"transport":                 cfg.transport,
-		"payload_bytes":             cfg.payloadBytes,
-		"work_command":              cfg.workCommand,
-		"idle_sleep_ms":             cfg.idleSleepMS,
-		"max_idle_sleep_ms":         cfg.maxIdleSleepMS,
-		"wake_coalesce_ms":          cfg.wakeCoalesceMS,
-		"wake_notifications":        wakeNotifications(wake),
-		"process_claim_calls":       claimCalls,
-		"process_empty_claims":      sumStats(workerStats, func(s phaseStats) int64 { return s.EmptyClaims }),
-		"process_avg_claim_batch":   avg(claimedItems, claimCalls),
-		"process_max_claim_batch":   maxStats(workerStats, func(s phaseStats) int64 { return s.MaxClaimBatch }),
-		"create_pipeline_flushes":   sumStats(createStats, func(s phaseStats) int64 { return s.CreatePipelineFlushes }),
-		"create_pipeline_commands":  sumStats(createStats, func(s phaseStats) int64 { return s.CreatePipelineCommands }),
-		"create_pipeline_max_depth": maxStats(createStats, func(s phaseStats) int64 { return s.CreatePipelineMaxDepth }),
-		"process_pipeline_flushes":  sumStats(workerStats, func(s phaseStats) int64 { return s.ProcessPipelineFlushes }),
-		"process_pipeline_commands": sumStats(workerStats, func(s phaseStats) int64 { return s.ProcessPipelineCommands }),
+		"mode":                       "queued",
+		"queued_shape":               "live",
+		"flows":                      cfg.flows,
+		"created":                    created,
+		"completed":                  processed,
+		"workers":                    cfg.workers,
+		"producers":                  cfg.producers,
+		"partitions":                 cfg.partitions,
+		"claim_any":                  cfg.claimAny,
+		"worker_mode":                effectiveWorkerMode,
+		"claim_batch_size":           cfg.claimBatchSize,
+		"claim_partition_batch_size": cfg.claimPartitionBatchSize,
+		"create_batch_size":          cfg.createBatchSize,
+		"complete_batch":             cfg.completeBatch,
+		"transport":                  cfg.transport,
+		"payload_bytes":              cfg.payloadBytes,
+		"work_command":               cfg.workCommand,
+		"idle_sleep_ms":              cfg.idleSleepMS,
+		"max_idle_sleep_ms":          cfg.maxIdleSleepMS,
+		"wake_coalesce_ms":           cfg.wakeCoalesceMS,
+		"wake_notifications":         wakeNotifications(wake),
+		"process_claim_calls":        claimCalls,
+		"process_empty_claims":       sumStats(workerStats, func(s phaseStats) int64 { return s.EmptyClaims }),
+		"process_avg_claim_batch":    avg(claimedItems, claimCalls),
+		"process_max_claim_batch":    maxStats(workerStats, func(s phaseStats) int64 { return s.MaxClaimBatch }),
+		"create_pipeline_flushes":    sumStats(createStats, func(s phaseStats) int64 { return s.CreatePipelineFlushes }),
+		"create_pipeline_commands":   sumStats(createStats, func(s phaseStats) int64 { return s.CreatePipelineCommands }),
+		"create_pipeline_max_depth":  maxStats(createStats, func(s phaseStats) int64 { return s.CreatePipelineMaxDepth }),
+		"process_pipeline_flushes":   sumStats(workerStats, func(s phaseStats) int64 { return s.ProcessPipelineFlushes }),
+		"process_pipeline_commands":  sumStats(workerStats, func(s phaseStats) int64 { return s.ProcessPipelineCommands }),
 		"process_pipeline_max_depth": maxStats(workerStats, func(s phaseStats) int64 {
 			return s.ProcessPipelineMaxDepth
 		}),
@@ -565,7 +610,6 @@ func runSerialLatency(ctx context.Context, cfg config) (map[string]any, error) {
 					LeaseToken:   job.LeaseToken,
 					FencingToken: job.FencingToken,
 					PartitionKey: job.PartitionKey,
-					Result:       []byte("ok"),
 					ReturnRecord: false,
 				})
 			} else {
@@ -607,19 +651,22 @@ func main() {
 	flag.IntVar(&cfg.workers, "workers", 16, "worker goroutines")
 	flag.IntVar(&cfg.producers, "producers", 4, "producer goroutines")
 	flag.IntVar(&cfg.partitions, "partitions", 16, "partition keys")
-	flag.IntVar(&cfg.claimBatchSize, "claim-batch-size", 100, "FLOW.CLAIM_DUE limit")
-	flag.IntVar(&cfg.createBatchSize, "create-batch-size", 100, "create batch size")
-	flag.StringVar(&cfg.transport, "transport", "pipeline", "pipeline/buffered or many")
+	flag.IntVar(&cfg.claimBatchSize, "claim-batch-size", 250, "FLOW.CLAIM_DUE limit")
+	flag.IntVar(&cfg.claimPartitionBatchSize, "claim-partition-batch-size", 64, "partition keys to include in one FLOW.CLAIM_DUE")
+	flag.IntVar(&cfg.createBatchSize, "create-batch-size", 500, "create batch size")
+	flag.StringVar(&cfg.transport, "transport", "many", "many or pipeline/buffered")
 	flag.IntVar(&cfg.payloadBytes, "payload-bytes", 0, "payload bytes per flow")
 	flag.StringVar(&cfg.workCommand, "work-command", "none", "none or incr")
 	flag.Float64Var(&cfg.idleSleepMS, "idle-sleep-ms", 10, "idle sleep milliseconds")
 	flag.Float64Var(&cfg.maxIdleSleepMS, "max-idle-sleep-ms", 50, "max idle sleep milliseconds")
 	flag.StringVar(&cfg.workerMode, "worker-mode", "owner-wakeup", "owner-wakeup or polling")
-	flag.Float64Var(&cfg.wakeCoalesceMS, "wake-coalesce-ms", 5, "wake coalesce milliseconds")
+	flag.Float64Var(&cfg.wakeCoalesceMS, "wake-coalesce-ms", 0, "wake coalesce milliseconds")
 	flag.BoolVar(&cfg.claimAny, "claim-any", false, "claim globally")
 	flag.BoolVar(&cfg.completeBatch, "complete-batch", true, "use COMPLETE_MANY in many transport")
 	flag.IntVar(&cfg.steps, "steps", 10, "serial latency steps")
 	flag.IntVar(&cfg.iterations, "iterations", 100, "serial latency iterations")
+	flag.StringVar(&cfg.cpuProfile, "cpu-profile", "", "write Go CPU profile to file")
+	flag.StringVar(&cfg.memProfile, "mem-profile", "", "write Go heap profile to file after benchmark")
 	flag.Parse()
 
 	if err := validate(cfg); err != nil {
@@ -628,6 +675,22 @@ func main() {
 	}
 
 	ctx := context.Background()
+	if cfg.cpuProfile != "" {
+		file, err := os.Create(cfg.cpuProfile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := pprof.StartCPUProfile(file); err != nil {
+			_ = file.Close()
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer func() {
+			pprof.StopCPUProfile()
+			_ = file.Close()
+		}()
+	}
 	var result map[string]any
 	var err error
 	if cfg.mode == "queued" {
@@ -638,6 +701,20 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if cfg.memProfile != "" {
+		file, err := os.Create(cfg.memProfile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		runtime.GC()
+		if err := pprof.WriteHeapProfile(file); err != nil {
+			_ = file.Close()
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		_ = file.Close()
 	}
 	encoded, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(encoded))
@@ -654,7 +731,8 @@ func validate(cfg config) error {
 		return fmt.Errorf("invalid --worker-mode %q", cfg.workerMode)
 	}
 	if cfg.flows <= 0 || cfg.workers <= 0 || cfg.producers <= 0 || cfg.partitions <= 0 ||
-		cfg.claimBatchSize <= 0 || cfg.createBatchSize <= 0 || cfg.steps <= 0 || cfg.iterations <= 0 {
+		cfg.claimBatchSize <= 0 || cfg.claimPartitionBatchSize <= 0 ||
+		cfg.createBatchSize <= 0 || cfg.steps <= 0 || cfg.iterations <= 0 {
 		return fmt.Errorf("numeric options must be positive")
 	}
 	if cfg.payloadBytes < 0 || cfg.idleSleepMS < 0 || cfg.maxIdleSleepMS < 0 || cfg.wakeCoalesceMS < 0 {
@@ -682,7 +760,41 @@ func partitionFor(index, partitions int, prefix string) string {
 	if partitions <= 0 {
 		partitions = 1
 	}
-	return fmt.Sprintf("%s:partition:%d", prefix, index%partitions)
+	return prefix + ":partition:" + strconv.Itoa(index%partitions)
+}
+
+func flowID(prefix string, index int) string {
+	return prefix + ":flow:" + strconv.Itoa(index)
+}
+
+func workerID(prefix string, index int) string {
+	return prefix + ":worker:" + strconv.Itoa(index)
+}
+
+func partitionKeysFor(indices []int, partitions int, prefix string) []string {
+	keys := make([]string, 0, len(indices))
+	for _, index := range indices {
+		keys = append(keys, partitionFor(index, partitions, prefix))
+	}
+	return keys
+}
+
+func removeInts(values []int, remove []int) []int {
+	if len(values) == 0 || len(remove) == 0 {
+		return values
+	}
+	removeSet := make(map[int]struct{}, len(remove))
+	for _, value := range remove {
+		removeSet[value] = struct{}{}
+	}
+	out := values[:0]
+	for _, value := range values {
+		if _, ok := removeSet[value]; ok {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }
 
 func partitionIndexForClaim(workerIndex, workerCount, partitions, claimRound int) int {

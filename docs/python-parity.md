@@ -10,7 +10,9 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 | `command` | `Command` | Covered |
 | `pipeline` | `Pipeline` | Covered |
 | `close` | `Close` | Covered |
-| `autobatch` producer | `BufferedExecutor` | Partial: low-level buffered executor, not the Python background producer API |
+| `autobatch` producer | `NewAutoBatchClient`, `AutoBatchExecutor`, `BufferedExecutor` | Covered |
+
+Default behavior matches the Python SDK for normal client usage: one native protocol connection, 30s request timeout, 30s TCP keepalive/idle heartbeat, no hidden auto-batching, worker batch size 10, worker concurrency 1, and 30s claim lease.
 
 ## FerricFlow Commands
 
@@ -36,6 +38,9 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 | `rewind` | `Rewind` | Covered |
 | `get` | `Get` | Covered |
 | `list` | `List` | Covered |
+| `stats` | `Stats` | Covered |
+| `attributes` | `Attributes` | Covered |
+| `attribute_values` | `AttributeValues` | Covered |
 | `terminals` | `Terminals` | Covered |
 | `failures` | `Failures` | Covered |
 | `by_parent` | `ByParent` | Covered |
@@ -52,6 +57,39 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 | `install_policy` | `InstallPolicy` | Covered |
 | `policy_get` | `PolicyGet` | Covered |
 | `retention_cleanup` | `RetentionCleanup` | Covered |
+| `schedule_create` | `ScheduleCreate` | Covered |
+| `schedule_get` | `ScheduleGet` | Covered |
+| `schedule_fire` | `ScheduleFire` | Covered |
+| `schedule_pause` | `SchedulePause` | Covered |
+| `schedule_resume` | `ScheduleResume` | Covered |
+| `schedule_delete` | `ScheduleDelete` | Covered |
+| `schedule_fire_due` | `ScheduleFireDue` | Covered |
+| `schedule_list` | `ScheduleList` | Covered |
+| `effect_reserve` | `EffectReserve` | Covered |
+| `effect_confirm` | `EffectConfirm` | Covered |
+| `effect_fail` | `EffectFail` | Covered |
+| `effect_compensate` | `EffectCompensate` | Covered |
+| `effect_get` | `EffectGet` | Covered |
+| `governance_ledger` | `GovernanceLedger` | Covered |
+| `approval_request` | `ApprovalRequest` | Covered |
+| `approval_approve` | `ApprovalApprove` | Covered |
+| `approval_reject` | `ApprovalReject` | Covered |
+| `approval_get` | `ApprovalGet` | Covered |
+| `approval_list` | `ApprovalList` | Covered |
+| `governance_overview` | `GovernanceOverview` | Covered |
+| `circuit_open` | `CircuitOpen` | Covered |
+| `circuit_close` | `CircuitClose` | Covered |
+| `circuit_get` | `CircuitGet` | Covered |
+| `budget_reserve` | `BudgetReserve` | Covered |
+| `budget_commit` | `BudgetCommit` | Covered |
+| `budget_release` | `BudgetRelease` | Covered |
+| `budget_get` | `BudgetGet` | Covered |
+| `budget_list` | `BudgetList` | Covered |
+| `limit_lease` | `LimitLease` | Covered |
+| `limit_spend` | `LimitSpend` | Covered |
+| `limit_release` | `LimitRelease` | Covered |
+| `limit_get` | `LimitGet` | Covered |
+| `limit_list` | `LimitList` | Covered |
 
 ## Queue And Workflow Helpers
 
@@ -82,9 +120,8 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 | Bitmap | `Bitmap()` | Covered |
 | HyperLogLog | `HyperLogLog()` | Covered |
 | Geo | `Geo()` | Broad typed coverage |
-| JSON | `JSON()` | Basic helpers only: `JSON.SET`, `JSON.GET`, `JSON.DEL`; advanced JSON helpers intentionally left to `Command` |
 | Bloom, Cuckoo, CMS, TopK, TDigest | `Bloom()`, `Cuckoo()`, `CountMinSketch()`, `TopK()`, `TDigest()` | Broad typed coverage |
-| Every supported command as a typed method | `Command` fallback | Broad non-JSON coverage; advanced JSON and true connection-state APIs remain raw/native |
+| Every supported command as a typed method | `Command` fallback | Broad coverage; true connection-state APIs remain raw/native |
 
 ## Locks, CAS, Rate Limit, Admin
 
@@ -115,10 +152,20 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 | `ferricstore_metrics` | `FerricStoreMetrics` | Covered |
 | `ferricstore_blobgc` | `FerricStoreBlobGC` | Covered |
 | `ferricstore_doctor` | `FerricStoreDoctor` | Covered |
+| `watch`, `unwatch` | `Watch`, `Unwatch` | Covered |
+| `multi`, `exec`, `discard` | `Multi`, `Exec`, `Discard`, `Transaction` | Covered |
+| transaction command queueing | `Transaction.Command`, `CommandExec` | Covered |
+| `publish`, `subscribe`, `unsubscribe` | `Publish`, `Subscribe`, `Unsubscribe` | Covered |
+| `psubscribe`, `punsubscribe` | `PSubscribe`, `PUnsubscribe` | Covered |
+| long-lived pub/sub consumption | `NewPubSub`, `NewPubSubFromURL`, `OpenPubSub`, `PubSub.Next` | Covered; uses native multiplexed `request_id=0` events |
+| native event subscriptions | `SubscribeEvents`, `UnsubscribeEvents`, `NextEvent` | Covered |
+| `subscribe_flow_wake` | `SubscribeFlowWake` | Covered |
+| `CLIENT.SETNAME`, `CLIENT.INFO` | `ClientSetName`, `ClientInfo` | Covered |
+| `ACL` management | `ACL`, `ACLSetUser`, `ACLDelUser`, `ACLGetUser`, `ACLList`, `ACLSave` | Covered |
 
 ## Current Gaps
 
-- Advanced JSON command helpers are intentionally not added yet; use `Command` for `JSON.TYPE`, `JSON.ARRAPPEND`, `JSON.NUMINCRBY`, and related commands.
-- Low-level connection-state command families such as ACL user management, CLIENT connection modes, SUBSCRIBE connection state, and MULTI/EXEC connection state remain available through `Command` where appropriate.
-- Python's background autobatcher is not ported as a matching API; Go currently exposes `BufferedExecutor` and `Pipeline`.
+- FerricStore JSON document commands are not part of the current server command surface, so the Go SDK intentionally does not expose a `JSON()` store helper.
+- Go autobatching is opt-in through `NewAutoBatchClient` / `AutoBatchExecutor`. The DBOS-style benchmark still defaults to FerricFlow batch commands because that is the current optimized Go workflow throughput path.
+- Go supports compact native pipeline payloads for hot homogeneous KV `SET` and `GET` pipelines. Other pipeline shapes use native AST frames or `COMMAND_EXEC` fallback depending on command support.
 - Integration tests need a live FerricStore server and are kept separate from unit tests.

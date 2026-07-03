@@ -2,6 +2,7 @@ package ferricstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -92,6 +93,9 @@ type QueueWorker struct {
 }
 
 func (w *QueueWorker) RunOnce(ctx context.Context) (QueueWorkerResult, error) {
+	if w.Handler == nil {
+		return QueueWorkerResult{}, errors.New("queue worker handler is nil")
+	}
 	opts := w.Options
 	if opts.BatchSize == 0 {
 		opts.BatchSize = 10
@@ -126,6 +130,7 @@ func (w *QueueWorker) RunOnce(ctx context.Context) (QueueWorkerResult, error) {
 	}
 	var mu sync.Mutex
 	var firstErr error
+	completedJobs := make([]ClaimedItem, 0, len(jobs))
 	recordErr := func(err error) {
 		if err == nil {
 			return
@@ -139,20 +144,14 @@ func (w *QueueWorker) RunOnce(ctx context.Context) (QueueWorkerResult, error) {
 	run := func(job FlowRecord) {
 		handlerErr := w.Handler(ctx, job)
 		if handlerErr == nil {
-			_, err := w.client.Complete(ctx, CompleteOptions{
-				ID:           job.ID,
-				LeaseToken:   job.LeaseToken,
-				FencingToken: job.FencingToken,
-				PartitionKey: job.PartitionKey,
-				Result:       "ok",
-			})
-			if err != nil {
-				recordErr(err)
-				return
-			}
 			mu.Lock()
 			defer mu.Unlock()
-			result.Completed++
+			completedJobs = append(completedJobs, ClaimedItem{
+				ID:           job.ID,
+				PartitionKey: job.PartitionKey,
+				LeaseToken:   job.LeaseToken,
+				FencingToken: job.FencingToken,
+			})
 			return
 		}
 		if opts.ErrorPolicy == ErrorPolicyReturn {
@@ -192,7 +191,34 @@ func (w *QueueWorker) RunOnce(ctx context.Context) (QueueWorkerResult, error) {
 		result.Retried++
 	}
 	runConcurrent(jobs, opts.Concurrency, run)
-	return result, firstErr
+	if firstErr != nil {
+		return result, firstErr
+	}
+	if err := w.completeSuccessfulJobs(ctx, completedJobs); err != nil {
+		return result, err
+	}
+	result.Completed = len(completedJobs)
+	return result, nil
+}
+
+func (w *QueueWorker) completeSuccessfulJobs(ctx context.Context, jobs []ClaimedItem) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+	if len(jobs) == 1 {
+		job := jobs[0]
+		_, err := w.client.Complete(ctx, CompleteOptions{
+			ID:           job.ID,
+			LeaseToken:   job.LeaseToken,
+			FencingToken: job.FencingToken,
+			PartitionKey: job.PartitionKey,
+		})
+		return err
+	}
+	_, err := w.client.CompleteMany(ctx, CompleteManyOptions{
+		Items: jobs,
+	})
+	return err
 }
 
 func runConcurrent(jobs []FlowRecord, concurrency int, fn func(FlowRecord)) {

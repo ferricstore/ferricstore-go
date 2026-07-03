@@ -86,6 +86,10 @@ func TestIntegrationNativeHelpersAndDiagnostics(t *testing.T) {
 
 	requireString(t, must[string](t)(client.Ping(ctx)), "PONG")
 	requireString(t, must[string](t)(client.Echo(ctx, "hello")), "hello")
+	if err := client.ClientSetName(ctx, "go-sdk-"+runID); err != nil {
+		t.Fatal(err)
+	}
+	requireMap(t, must[map[string]any](t)(client.ClientInfo(ctx)))
 
 	encodedOld := must[any](t)(client.Codec().Encode("old"))
 	pipeline := must[[]any](t)(client.Pipeline(ctx, [][]any{
@@ -154,7 +158,6 @@ func TestIntegrationTypedStoreFamilies(t *testing.T) {
 	assertHashCommands(t, ctx, client, prefix)
 	assertListSetSortedSetCommands(t, ctx, client, prefix)
 	assertStreamBitmapHllGeoCommands(t, ctx, client, prefix, runID)
-	assertUnsupportedJSONCommands(t, ctx, client, prefix)
 }
 
 func TestIntegrationProbabilisticHelpers(t *testing.T) {
@@ -273,6 +276,19 @@ func TestIntegrationAdminMetadataAndExpectedErrors(t *testing.T) {
 	}
 	requireNonNegative(t, must[int64](t)(client.PubSubNumPat(ctx)))
 
+	aclUser := strings.NewReplacer(":", "_", "-", "_").Replace("go_sdk_" + runID)
+	if err := client.ACLSetUser(ctx, aclUser, "on", ">secret", "+@all"); err != nil {
+		t.Fatal(err)
+	}
+	requireMap(t, must[map[string]any](t)(client.ACLGetUser(ctx, aclUser)))
+	if users := must[[]string](t)(client.ACLList(ctx)); !containsRuleForUser(users, aclUser) {
+		t.Fatalf("expected ACL LIST to include %q, got %#v", aclUser, users)
+	}
+	requireNonNegative(t, must[int64](t)(client.ACLDelUser(ctx, aclUser)))
+	if err := client.ACLSave(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	requireCommandError(t, client.Select(ctx, 0))
 	_, err := client.ClusterJoin(ctx, "127.0.0.1:1", false)
 	requireCommandError(t, err)
@@ -290,6 +306,118 @@ func TestIntegrationAdminMetadataAndExpectedErrors(t *testing.T) {
 	}
 	if err := client.FlushAll(ctx, ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIntegrationNativePubSubAndFlowWakeEvents(t *testing.T) {
+	ctx, cancel := integrationContext(t)
+	defer cancel()
+
+	client := integrationClient(JSONCodec{})
+	defer client.Close()
+	eventClient := integrationDirectClient(JSONCodec{})
+	defer eventClient.Close()
+
+	pubsub, err := eventClient.OpenPubSub()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runID := integrationSuffix("events")
+	channel := "go-sdk:events:" + runID
+	ack, err := pubsub.Subscribe(ctx, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordIntegrationCommand([]any{"SUBSCRIBE"})
+	if ack.Kind != "subscribe" || ack.Channel != channel || ack.Count < 1 {
+		t.Fatalf("unexpected subscribe ack: %#v", ack)
+	}
+
+	requireNonNegative(t, must[int64](t)(client.Publish(ctx, channel, "hello")))
+	message, err := pubsub.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Kind != "message" || message.Channel != channel || asString(message.Payload) != "hello" {
+		t.Fatalf("unexpected pubsub message: %#v", message)
+	}
+	unack, err := pubsub.Unsubscribe(ctx, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordIntegrationCommand([]any{"UNSUBSCRIBE"})
+	if unack.Kind != "unsubscribe" || unack.Channel != channel {
+		t.Fatalf("unexpected unsubscribe ack: %#v", unack)
+	}
+
+	pattern := "go-sdk:events:" + runID + ":*"
+	patternChannel := "go-sdk:events:" + runID + ":pattern"
+	pack, err := pubsub.PSubscribe(ctx, pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordIntegrationCommand([]any{"PSUBSCRIBE"})
+	if pack.Kind != "psubscribe" || pack.Pattern != pattern {
+		t.Fatalf("unexpected psubscribe ack: %#v", pack)
+	}
+	requireNonNegative(t, must[int64](t)(client.Publish(ctx, patternChannel, "pattern-message")))
+	pmessage, err := pubsub.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pmessage.Kind != "pmessage" || pmessage.Pattern != pattern || pmessage.Channel != patternChannel || asString(pmessage.Payload) != "pattern-message" {
+		t.Fatalf("unexpected pattern pubsub message: %#v", pmessage)
+	}
+	punack, err := pubsub.PUnsubscribe(ctx, pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordIntegrationCommand([]any{"PUNSUBSCRIBE"})
+	if punack.Kind != "punsubscribe" || punack.Pattern != pattern {
+		t.Fatalf("unexpected punsubscribe ack: %#v", punack)
+	}
+
+	typeName := "go-sdk-wake-" + runID
+	partition := "go-sdk:wake:" + runID + ":partition"
+	sub, err := pubsub.SubscribeFlowWake(ctx, FlowWakeSubscriptionOptions{
+		Type:  typeName,
+		State: "queued",
+		Limit: Int(10),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordIntegrationCommand([]any{"SUBSCRIBE_EVENTS"})
+	if !contains(sub.Subscribed, "FLOW_WAKE") {
+		t.Fatalf("expected FLOW_WAKE subscription: %#v", sub)
+	}
+
+	now := time.Now().UnixMilli()
+	_ = must[*FlowRecord](t)(client.Create(ctx, CreateOptions{
+		ID:           "go-sdk:wake:" + runID,
+		Type:         typeName,
+		State:        "queued",
+		PartitionKey: partition,
+		RunAtMS:      now,
+		NowMS:        now,
+		Idempotent:   Bool(true),
+	}))
+	event, err := pubsub.NextEvent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Name != "FLOW_WAKE" || asString(event.Payload["type"]) != typeName || asInt64(event.Payload["credit"]) <= 0 {
+		t.Fatalf("unexpected flow wake event: %#v", event)
+	}
+
+	unsub, err := pubsub.UnsubscribeEvents(ctx, "FLOW_WAKE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordIntegrationCommand([]any{"UNSUBSCRIBE_EVENTS"})
+	if contains(unsub.Subscribed, "FLOW_WAKE") {
+		t.Fatalf("expected FLOW_WAKE to be unsubscribed: %#v", unsub)
 	}
 }
 
@@ -334,6 +462,135 @@ func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 	requireMap(t, must[map[string]any](t)(client.Info(ctx, typeName, "", nil, nil)))
 	requireLenAtLeast(t, must[[]any](t)(client.History(ctx, HistoryOptions{ID: signalID, PartitionKey: signalPartition, Count: 5})), 1)
 	requireMap(t, must[map[string]any](t)(client.RetentionCleanup(ctx, RetentionCleanupOptions{Limit: Int(10)})))
+}
+
+func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
+	ctx, cancel := integrationContext(t)
+	defer cancel()
+
+	client := integrationClient(JSONCodec{})
+	defer client.Close()
+
+	runID := integrationSuffix("latest")
+	typeName := "go-sdk-latest-" + runID
+	partition := "go-sdk:latest:" + runID + ":partition"
+	now := time.Now().UnixMilli()
+
+	attrID := "go-sdk:attr:" + runID
+	_ = must[*FlowRecord](t)(client.Create(ctx, CreateOptions{
+		ID:           attrID,
+		Type:         typeName,
+		State:        "attr",
+		PartitionKey: partition,
+		Payload:      map[string]any{"step": "attr"},
+		Attributes:   map[string]any{"tenant": "acme", "tier": "gold"},
+		RunAtMS:      now,
+		NowMS:        now,
+		Idempotent:   Bool(true),
+	}))
+	listed := must[[]FlowRecord](t)(client.List(ctx, typeName, ReadOptions{
+		State:                "attr",
+		PartitionKey:         partition,
+		Attributes:           map[string]any{"tenant": "acme"},
+		ConsistentProjection: Bool(true),
+		Count:                Int(10),
+	}))
+	if !hasRecordID(listed, attrID) {
+		t.Fatalf("attribute list did not include %s: %#v", attrID, listed)
+	}
+	requireMap(t, must[map[string]any](t)(client.Stats(ctx, typeName, ReadOptions{State: "attr", PartitionKey: partition, Attributes: map[string]any{"tenant": "acme"}, ConsistentProjection: Bool(true)})))
+	requireValue(t, must[[]map[string]any](t)(client.Attributes(ctx, typeName, ReadOptions{State: "attr", PartitionKey: partition, ConsistentProjection: Bool(true), Count: Int(10)})))
+	requireValue(t, must[[]map[string]any](t)(client.AttributeValues(ctx, typeName, "tenant", ReadOptions{State: "attr", PartitionKey: partition, ConsistentProjection: Bool(true), Count: Int(10)})))
+
+	scheduleID := "go-sdk:schedule:" + runID
+	scheduledFlowID := "go-sdk:scheduled:" + runID
+	_ = must[ScheduleResult](t)(client.ScheduleCreate(ctx, scheduleID, ScheduleOptions{
+		Kind: "one_shot",
+		AtMS: Int64(now + 60_000),
+		Target: map[string]any{
+			"id":            scheduledFlowID,
+			"type":          typeName,
+			"state":         "scheduled",
+			"partition_key": partition,
+			"payload":       map[string]any{"scheduled": true},
+		},
+		Overwrite: Bool(true),
+		NowMS:     Int64(now),
+	}))
+	if got := must[*ScheduleResult](t)(client.ScheduleGet(ctx, scheduleID, nil)); got == nil || got.ID == "" {
+		t.Fatalf("schedule get = %#v", got)
+	}
+	_ = must[ScheduleResult](t)(client.SchedulePause(ctx, scheduleID, Int64(now+1)))
+	_ = must[ScheduleResult](t)(client.ScheduleResume(ctx, scheduleID, Int64(now+2)))
+	requireValue(t, must[[]ScheduleResult](t)(client.ScheduleList(ctx, ScheduleListOptions{Count: Int(10)})))
+	_ = must[ScheduleResult](t)(client.ScheduleFire(ctx, scheduleID, Int64(now+3)))
+	_ = must[ScheduleResult](t)(client.ScheduleFireDue(ctx, Int64(now+4), "go-sdk-scheduler", nil, Int(1)))
+	deleteScheduleID := "go-sdk:schedule-delete:" + runID
+	_ = must[ScheduleResult](t)(client.ScheduleCreate(ctx, deleteScheduleID, ScheduleOptions{
+		Kind:      "one_shot",
+		AtMS:      Int64(now + 120_000),
+		Target:    map[string]any{"id": scheduledFlowID + ":delete", "type": typeName, "state": "scheduled", "partition_key": partition},
+		Overwrite: Bool(true),
+		NowMS:     Int64(now),
+	}))
+	_ = must[ScheduleResult](t)(client.ScheduleDelete(ctx, deleteScheduleID, Int64(now+5)))
+
+	gov := createAndClaim(t, ctx, client, typeName, runID, "governance", "queued", now, 30_000)
+	effectKey := "send-email"
+	_ = must[EffectResult](t)(client.EffectReserve(ctx, gov.id, effectKey, "email.send", EffectReserveOptions{
+		PartitionKey:    gov.partitionKey,
+		LeaseToken:      gov.job.LeaseToken,
+		FencingToken:    &gov.job.FencingToken,
+		OperationDigest: "digest-1",
+		IdempotencyKey:  "idem:" + runID,
+		NowMS:           Int64(now + 10),
+	}))
+	_ = must[EffectResult](t)(client.EffectConfirm(ctx, gov.id, effectKey, EffectStatusOptions{PartitionKey: gov.partitionKey, LeaseToken: gov.job.LeaseToken, FencingToken: &gov.job.FencingToken, ExternalID: "mail-1", LatencyMS: Int64(12), NowMS: Int64(now + 11)}))
+	if effect := must[*EffectResult](t)(client.EffectGet(ctx, gov.id, effectKey, gov.partitionKey)); effect == nil || effect.Status == "" {
+		t.Fatalf("effect get = %#v", effect)
+	}
+	_ = must[EffectResult](t)(client.EffectReserve(ctx, gov.id, "send-push", "push.send", EffectReserveOptions{PartitionKey: gov.partitionKey, LeaseToken: gov.job.LeaseToken, FencingToken: &gov.job.FencingToken, OperationDigest: "digest-2", IdempotencyKey: "idem:" + runID + ":push", NowMS: Int64(now + 12)}))
+	_ = must[EffectResult](t)(client.EffectCompensate(ctx, gov.id, "send-push", EffectStatusOptions{PartitionKey: gov.partitionKey, LeaseToken: gov.job.LeaseToken, FencingToken: &gov.job.FencingToken, Reason: "rollback", NowMS: Int64(now + 13)}))
+	_ = must[EffectResult](t)(client.EffectReserve(ctx, gov.id, "send-sms", "sms.send", EffectReserveOptions{PartitionKey: gov.partitionKey, LeaseToken: gov.job.LeaseToken, FencingToken: &gov.job.FencingToken, OperationDigest: "digest-3", IdempotencyKey: "idem:" + runID + ":sms", NowMS: Int64(now + 14)}))
+	_ = must[EffectResult](t)(client.EffectFail(ctx, gov.id, "send-sms", EffectStatusOptions{PartitionKey: gov.partitionKey, LeaseToken: gov.job.LeaseToken, FencingToken: &gov.job.FencingToken, Reason: "provider-error", LatencyMS: Int64(20), NowMS: Int64(now + 15)}))
+	requireValue(t, must[[]map[string]any](t)(client.GovernanceLedger(ctx, gov.id, ReadOptions{PartitionKey: gov.partitionKey, Count: Int(10)})))
+
+	approvalScope := "approval:" + runID
+	approvalID := "go-sdk:approval:" + runID
+	_ = must[ApprovalResult](t)(client.ApprovalRequest(ctx, approvalID, ApprovalRequestOptions{FlowID: gov.id, Scope: approvalScope, Reason: "manual check", RequestedBy: "integration", Assignees: []string{"ops"}, NowMS: Int64(now + 16)}))
+	if approval := must[*ApprovalResult](t)(client.ApprovalGet(ctx, approvalID)); approval == nil || approval.Status == "" {
+		t.Fatalf("approval get = %#v", approval)
+	}
+	requireValue(t, must[[]ApprovalResult](t)(client.ApprovalList(ctx, ApprovalListOptions{Scope: approvalScope, Limit: Int(10)})))
+	_ = must[ApprovalResult](t)(client.ApprovalApprove(ctx, approvalID, "ops", "ok", Int64(now+17)))
+	rejectedID := "go-sdk:approval-reject:" + runID
+	_ = must[ApprovalResult](t)(client.ApprovalRequest(ctx, rejectedID, ApprovalRequestOptions{FlowID: gov.id, Scope: approvalScope, Reason: "manual reject", RequestedBy: "integration", NowMS: Int64(now + 18)}))
+	_ = must[ApprovalResult](t)(client.ApprovalReject(ctx, rejectedID, "ops", "no", Int64(now+19)))
+
+	circuitScope := "circuit:" + runID
+	_ = must[CircuitBreakerStatus](t)(client.CircuitOpen(ctx, circuitScope, Int64(1_000), Int64(3), Int64(now+20)))
+	if circuit := must[*CircuitBreakerStatus](t)(client.CircuitGet(ctx, circuitScope)); circuit == nil || circuit.Status == "" {
+		t.Fatalf("circuit get = %#v", circuit)
+	}
+	_ = must[CircuitBreakerStatus](t)(client.CircuitClose(ctx, circuitScope, Int64(now+21)))
+
+	budgetScope := "budget:" + runID
+	_ = must[BudgetResult](t)(client.BudgetReserve(ctx, budgetScope, 5, Int64(100), Int64(60_000), "reservation:"+runID+":commit", Int64(now+22)))
+	_ = must[BudgetResult](t)(client.BudgetCommit(ctx, budgetScope, "reservation:"+runID+":commit", 4, map[string]any{"tokens": 4}, Int64(now+23)))
+	_ = must[BudgetResult](t)(client.BudgetReserve(ctx, budgetScope, 3, Int64(100), Int64(60_000), "reservation:"+runID+":release", Int64(now+24)))
+	_ = must[BudgetResult](t)(client.BudgetRelease(ctx, budgetScope, "reservation:"+runID+":release", Int64(now+25)))
+	if budget := must[*BudgetResult](t)(client.BudgetGet(ctx, budgetScope)); budget == nil || budget.Scope == "" {
+		t.Fatalf("budget get = %#v", budget)
+	}
+	requireValue(t, must[[]BudgetResult](t)(client.BudgetList(ctx, budgetScope, "", Int(10))))
+
+	limitScope := "limit:" + runID
+	requireValue(t, must[LimitResult](t)(client.LimitLease(ctx, limitScope, 0, 5, 30_000, Int64(10), Int64(now+26))))
+	requireValue(t, must[LimitResult](t)(client.LimitSpend(ctx, limitScope, 0, 2, Int64(now+27))))
+	requireValue(t, must[LimitResult](t)(client.LimitRelease(ctx, limitScope, 0, 1)))
+	requireValue(t, must[*LimitResult](t)(client.LimitGet(ctx, limitScope, Int64(now+28))))
+	requireValue(t, must[[]LimitResult](t)(client.LimitList(ctx, limitScope, "", Int(10), Int64(now+29))))
+	requireValue(t, must[GovernanceOverview](t)(client.GovernanceOverview(ctx, ApprovalListOptions{Limit: Int(10)})))
 }
 
 func TestIntegrationQueueAndWorkflowWrappers(t *testing.T) {
@@ -622,17 +879,6 @@ func assertStreamBitmapHllGeoCommands(t *testing.T, ctx context.Context, client 
 	requireNonNegative(t, must[int64](t)(client.Geo().SearchStore(ctx, prefix+"geo-dst", geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}}, false)))
 }
 
-func assertUnsupportedJSONCommands(t *testing.T, ctx context.Context, client *Client, prefix string) {
-	t.Helper()
-
-	key := prefix + "json"
-	requireCommandError(t, client.JSON().Set(ctx, key, "$", map[string]any{"value": true}))
-	_, err := client.JSON().Get(ctx, key, "$")
-	requireCommandError(t, err)
-	_, err = client.JSON().Del(ctx, key, "$")
-	requireCommandError(t, err)
-}
-
 func assertBatchFlowCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
 	t.Helper()
 
@@ -838,6 +1084,14 @@ func integrationClient(codec Codec) *Client {
 	return newIntegrationTrackedClient(addr, codec)
 }
 
+func integrationDirectClient(codec Codec) *Client {
+	addr := os.Getenv("FERRICSTORE_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:6388"
+	}
+	return NewClient(addr, WithCodec(codec))
+}
+
 func integrationSuffix(name string) string {
 	return fmt.Sprintf("%s:%d", name, time.Now().UnixNano())
 }
@@ -978,6 +1232,16 @@ func hasRecordPrefix(records []FlowRecord, prefix string) bool {
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsRuleForUser(values []string, username string) bool {
+	prefix := "user " + username + " "
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
 			return true
 		}
 	}

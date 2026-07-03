@@ -21,21 +21,6 @@ func TestKeyValueStoreBuildsCommands(t *testing.T) {
 	assertCall(t, exec, []any{"INCR", "counter"})
 }
 
-func TestJSONStoreGetAppendsOptionalPath(t *testing.T) {
-	exec := &fakeExecutor{value: []byte(`"ok"`)}
-	client := NewClientWithExecutor(exec)
-
-	value, err := client.JSON().Get(context.Background(), "doc:1", "$.status")
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	if value != "ok" {
-		t.Fatalf("expected decoded status, got %#v", value)
-	}
-	assertCall(t, exec, []any{"JSON.GET", "doc:1", "$.status"})
-}
-
 func TestFlowValuePutBuildsCommand(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("ref-1")}
 	client := NewClientWithExecutor(exec)
