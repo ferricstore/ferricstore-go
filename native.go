@@ -575,8 +575,9 @@ func (e *NativeExecutor) ensureConnectedLocked(ctx context.Context) error {
 		conn = tlsConn
 	}
 
+	reader := bufio.NewReader(conn)
 	e.conn = conn
-	e.reader = bufio.NewReader(conn)
+	e.reader = reader
 	e.writer = bufio.NewWriter(conn)
 
 	startup := map[string]any{
@@ -608,7 +609,7 @@ func (e *NativeExecutor) ensureConnectedLocked(ctx context.Context) error {
 	_ = conn.SetDeadline(time.Time{})
 	e.deadlineSet = false
 	e.lastActivityUnixNano.Store(time.Now().UnixNano())
-	go e.readerLoop(conn)
+	go e.readerLoop(conn, reader)
 	e.startHeartbeatLocked()
 	return nil
 }
@@ -704,7 +705,7 @@ func (e *NativeExecutor) requestLocked(ctx context.Context, opcode uint16, laneI
 		return nil, err
 	}
 
-	frame, err := e.readResponseLocked()
+	frame, err := readNativeResponse(e.reader)
 	if err != nil {
 		_ = e.closeConnLocked()
 		return nil, err
@@ -753,10 +754,10 @@ func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetWriteDeadline(deadline)
-		defer conn.SetWriteDeadline(time.Time{})
+		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
 	} else if e.opts.Timeout > 0 {
 		_ = conn.SetWriteDeadline(time.Now().Add(e.opts.Timeout))
-		defer conn.SetWriteDeadline(time.Time{})
+		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
 	}
 
 	header := make([]byte, nativeHeaderLen)
@@ -779,9 +780,9 @@ func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID
 	return writer.Flush()
 }
 
-func (e *NativeExecutor) readerLoop(conn net.Conn) {
+func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader) {
 	for {
-		frame, err := e.readResponseLocked()
+		frame, err := readNativeResponse(reader)
 		if err != nil {
 			e.closeConnAndFailPendingIfCurrent(conn, err)
 			return
@@ -821,16 +822,6 @@ func (e *NativeExecutor) removePending(requestID uint64) {
 	e.mu.Lock()
 	delete(e.pending, requestID)
 	e.mu.Unlock()
-}
-
-func (e *NativeExecutor) failPending(err error) {
-	e.mu.Lock()
-	pending := e.pending
-	e.pending = make(map[uint64]chan nativeResponse)
-	e.mu.Unlock()
-	for _, responseCh := range pending {
-		responseCh <- nativeResponse{err: err}
-	}
 }
 
 func (e *NativeExecutor) deliverEvent(value any) {
@@ -892,8 +883,8 @@ func (e *NativeExecutor) setDeadlineLocked(ctx context.Context) error {
 	return e.conn.SetDeadline(deadline)
 }
 
-func (e *NativeExecutor) readResponseLocked() (nativeResponse, error) {
-	first, err := readNativeFrame(e.reader)
+func readNativeResponse(reader *bufio.Reader) (nativeResponse, error) {
+	first, err := readNativeFrame(reader)
 	if err != nil {
 		return nativeResponse{}, err
 	}
@@ -901,7 +892,7 @@ func (e *NativeExecutor) readResponseLocked() (nativeResponse, error) {
 	flags := first.flags
 
 	for flags&nativeFlagMoreChunks != 0 {
-		next, err := readNativeFrame(e.reader)
+		next, err := readNativeFrame(reader)
 		if err != nil {
 			return nativeResponse{}, err
 		}

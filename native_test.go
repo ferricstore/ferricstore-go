@@ -224,7 +224,7 @@ func TestNewClientFromURLUsesNativeScheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	exec, ok := client.exec.(*NativeExecutor)
 	if !ok {
@@ -253,10 +253,10 @@ func TestNativeOptionsCanDisableHeartbeat(t *testing.T) {
 
 func TestNativeStaleReaderDoesNotFailNewConnectionPendingRequests(t *testing.T) {
 	oldClient, oldServer := net.Pipe()
-	defer oldClient.Close()
-	defer oldServer.Close()
+	defer func() { _ = oldClient.Close() }()
+	defer func() { _ = oldServer.Close() }()
 	newClient, newServer := net.Pipe()
-	defer newServer.Close()
+	defer func() { _ = newServer.Close() }()
 
 	pending := make(chan nativeResponse, 1)
 	exec := &NativeExecutor{
@@ -299,7 +299,7 @@ func TestNativeExecutorCommandExecWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	errc := make(chan error, 1)
 	go func() {
@@ -308,12 +308,12 @@ func TestNativeExecutorCommandExecWire(t *testing.T) {
 			errc <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		errc <- serveNativeWireTest(conn)
 	}()
 
 	client := NewClient(listener.Addr().String())
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -433,7 +433,7 @@ func TestNativeExecutorPipelineWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	errc := make(chan error, 1)
 	go func() {
@@ -442,7 +442,7 @@ func TestNativeExecutorPipelineWire(t *testing.T) {
 			errc <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)
 
@@ -493,7 +493,7 @@ func TestNativeExecutorPipelineWire(t *testing.T) {
 	}()
 
 	client := NewClient(listener.Addr().String())
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	got, err := client.Pipeline(ctx, [][]any{
@@ -516,7 +516,7 @@ func TestNativeExecutorPipelineCompactSETWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	errc := make(chan error, 1)
 	go func() {
@@ -525,7 +525,7 @@ func TestNativeExecutorPipelineCompactSETWire(t *testing.T) {
 			errc <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)
 
@@ -561,7 +561,7 @@ func TestNativeExecutorPipelineCompactSETWire(t *testing.T) {
 	}()
 
 	client := NewClient(listener.Addr().String())
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	got, err := client.Pipeline(ctx, [][]any{
@@ -584,7 +584,7 @@ func TestNativeExecutorPipelineCompactGETWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	errc := make(chan error, 1)
 	go func() {
@@ -593,7 +593,7 @@ func TestNativeExecutorPipelineCompactGETWire(t *testing.T) {
 			errc <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)
 
@@ -638,7 +638,7 @@ func TestNativeExecutorPipelineCompactGETWire(t *testing.T) {
 	}()
 
 	client := NewClient(listener.Addr().String())
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	got, err := client.Pipeline(ctx, [][]any{
@@ -661,7 +661,7 @@ func TestNativeExecutorPipelineCompactResponseWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	errc := make(chan error, 1)
 	go func() {
@@ -670,7 +670,7 @@ func TestNativeExecutorPipelineCompactResponseWire(t *testing.T) {
 			errc <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)
 
@@ -706,7 +706,7 @@ func TestNativeExecutorPipelineCompactResponseWire(t *testing.T) {
 	}()
 
 	client := NewClient(listener.Addr().String())
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	got, err := client.Pipeline(ctx, [][]any{

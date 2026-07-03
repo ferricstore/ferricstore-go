@@ -57,7 +57,7 @@ func TestAutoBatchExecutorFlushesAtMaxSize(t *testing.T) {
 	pipeline := &fakePipelineExecutor{prefix: "ok:"}
 	base := NewClientWithExecutor(pipeline)
 	exec := NewAutoBatchExecutor(base, AutoBatchOptions{MaxSize: 2, FlushInterval: time.Hour})
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	type result struct {
 		value any
@@ -92,7 +92,7 @@ func TestAutoBatchExecutorFlushesByInterval(t *testing.T) {
 	pipeline := &fakePipelineExecutor{prefix: "ok:"}
 	base := NewClientWithExecutor(pipeline)
 	exec := NewAutoBatchExecutor(base, AutoBatchOptions{MaxSize: 10, FlushInterval: time.Millisecond})
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -114,7 +114,7 @@ func TestAutoBatchExecutorPropagatesPipelineError(t *testing.T) {
 	pipeline := &fakePipelineExecutor{err: wantErr}
 	base := NewClientWithExecutor(pipeline)
 	exec := NewAutoBatchExecutor(base, AutoBatchOptions{MaxSize: 1, FlushInterval: time.Hour})
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	_, err := exec.Do(context.Background(), "PING")
 

@@ -14,7 +14,7 @@ func TestNativePubSubReceivesMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	errc := make(chan error, 1)
 	go func() {
@@ -23,7 +23,7 @@ func TestNativePubSubReceivesMessages(t *testing.T) {
 			errc <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)
@@ -58,7 +58,7 @@ func TestNativePubSubReceivesMessages(t *testing.T) {
 	defer cancel()
 
 	client := NewClient(listener.Addr().String())
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	pubsub, err := client.OpenPubSub()
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestNativeSubscribeFlowWakeUsesMultiplexedEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	errc := make(chan error, 1)
 	go func() {
@@ -99,7 +99,7 @@ func TestNativeSubscribeFlowWakeUsesMultiplexedEvents(t *testing.T) {
 			errc <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)
@@ -161,7 +161,7 @@ func TestNativeSubscribeFlowWakeUsesMultiplexedEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	client := NewClient(listener.Addr().String())
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	pubsub, err := client.OpenPubSub()
 	if err != nil {
 		t.Fatal(err)
@@ -240,7 +240,7 @@ func TestNativeExecutorMultiplexesConcurrentRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	errc := make(chan error, 1)
 	go func() {
@@ -249,7 +249,7 @@ func TestNativeExecutorMultiplexesConcurrentRequests(t *testing.T) {
 			errc <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)
@@ -287,7 +287,7 @@ func TestNativeExecutorMultiplexesConcurrentRequests(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	client := NewClient(listener.Addr().String())
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
