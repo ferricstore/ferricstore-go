@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/url"
@@ -95,16 +96,17 @@ const (
 type nativeCompactOKCount int
 
 type NativeOptions struct {
-	Addr              string
-	Username          string
-	Password          string
-	TLS               bool
-	TLSConfig         *tls.Config
-	ClientName        string
-	Timeout           time.Duration
-	Dialer            *net.Dialer
-	HeartbeatInterval time.Duration
-	HeartbeatTimeout  time.Duration
+	Addr                string
+	Username            string
+	Password            string
+	TLS                 bool
+	TLSConfig           *tls.Config
+	ClientName          string
+	Timeout             time.Duration
+	Dialer              *net.Dialer
+	HeartbeatInterval   time.Duration
+	HeartbeatTimeout    time.Duration
+	ReconnectMaxRetries int
 }
 
 type NativeOption func(*NativeOptions)
@@ -146,6 +148,15 @@ func WithNativeHeartbeat(interval, timeout time.Duration) NativeOption {
 	}
 }
 
+func WithNativeReconnect(maxRetries int) NativeOption {
+	return func(opts *NativeOptions) {
+		if maxRetries < 0 {
+			maxRetries = 0
+		}
+		opts.ReconnectMaxRetries = maxRetries
+	}
+}
+
 type NativeExecutor struct {
 	opts NativeOptions
 
@@ -168,6 +179,8 @@ type NativeError struct {
 	Status uint16
 	Value  any
 }
+
+var errNativeConnectionUnavailable = errors.New("ferricstore native connection unavailable")
 
 func (e NativeError) Error() string {
 	if message := nativeErrorMessage(e.Value); message != "" {
@@ -400,8 +413,34 @@ func (e *NativeExecutor) request(ctx context.Context, opcode uint16, laneID uint
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	maxRetries := e.opts.ReconnectMaxRetries
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	for attempt := 0; ; attempt++ {
+		value, err, retryable := e.requestOnce(ctx, opcode, laneID, payload, flags)
+		if err == nil {
+			return value, nil
+		}
+		if !retryable || attempt >= maxRetries || ctx.Err() != nil {
+			return nil, err
+		}
+		e.mu.Lock()
+		if e.isClosed {
+			e.mu.Unlock()
+			return nil, err
+		}
+		_ = e.closeConnLocked()
+		e.mu.Unlock()
+	}
+}
+
+func (e *NativeExecutor) requestOnce(ctx context.Context, opcode uint16, laneID uint32, payload any, flags byte) (any, error, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := e.ensureConnectedLocked(ctx); err != nil {
-		return nil, err
+		return nil, err, isNativeReconnectableTransportError(err)
 	}
 	requestID := atomic.AddUint64(&e.nextID, 1)
 	responseCh := make(chan nativeResponse, 1)
@@ -417,29 +456,36 @@ func (e *NativeExecutor) request(ctx context.Context, opcode uint16, laneID uint
 		e.mu.Lock()
 		_ = e.closeConnLocked()
 		e.mu.Unlock()
-		return nil, err
+		return nil, err, errors.Is(err, errNativeConnectionUnavailable)
 	}
 
 	select {
 	case frame := <-responseCh:
 		if frame.err != nil {
-			return nil, frame.err
+			return nil, frame.err, false
 		}
 		if frame.opcode != opcode || frame.laneID != laneID {
 			e.mu.Lock()
 			_ = e.closeConnLocked()
 			e.mu.Unlock()
-			return nil, fmt.Errorf("ferricstore native response mismatch: got lane=%d opcode=%d request=%d", frame.laneID, frame.opcode, frame.requestID)
+			return nil, fmt.Errorf("ferricstore native response mismatch: got lane=%d opcode=%d request=%d", frame.laneID, frame.opcode, frame.requestID), false
 		}
 		if frame.status != nativeStatusOK {
-			return nil, NativeError{Status: frame.status, Value: frame.value}
+			return nil, NativeError{Status: frame.status, Value: frame.value}, false
 		}
 		e.lastActivityUnixNano.Store(time.Now().UnixNano())
-		return frame.value, nil
+		return frame.value, nil, false
 	case <-ctx.Done():
 		e.removePending(requestID)
-		return nil, ctx.Err()
+		return nil, ctx.Err(), false
 	}
+}
+
+func isNativeReconnectableTransportError(err error) bool {
+	return errors.Is(err, errNativeConnectionUnavailable) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func (e *NativeExecutor) ensureConnectedLocked(ctx context.Context) error {
@@ -664,7 +710,7 @@ func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID
 	writer := e.writer
 	e.mu.Unlock()
 	if conn == nil || writer == nil {
-		return net.ErrClosed
+		return fmt.Errorf("%w: %w", errNativeConnectionUnavailable, net.ErrClosed)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetWriteDeadline(deadline)
@@ -893,13 +939,14 @@ func defaultNativeOptions(addr string, tlsEnabled bool) NativeOptions {
 	}
 	timeout := 30 * time.Second
 	return NativeOptions{
-		Addr:              nativeAddressWithPort(addr, defaultPort),
-		TLS:               tlsEnabled,
-		ClientName:        "ferricstore-go",
-		Timeout:           timeout,
-		Dialer:            &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second},
-		HeartbeatInterval: 30 * time.Second,
-		HeartbeatTimeout:  30 * time.Second,
+		Addr:                nativeAddressWithPort(addr, defaultPort),
+		TLS:                 tlsEnabled,
+		ClientName:          "ferricstore-go",
+		Timeout:             timeout,
+		Dialer:              &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second},
+		HeartbeatInterval:   30 * time.Second,
+		HeartbeatTimeout:    30 * time.Second,
+		ReconnectMaxRetries: 1,
 	}
 }
 

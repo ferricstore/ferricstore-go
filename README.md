@@ -40,14 +40,22 @@ client, err := ferricstore.NewClientFromURL("ferric://127.0.0.1:6388")
 Use `ferrics://` for TLS when credentials leave a trusted local network:
 
 ```go
-client, err := ferricstore.NewClientFromURL("ferrics://default:password@ferricstore.example.com:6389")
+client, err := ferricstore.NewClientFromURL(
+	"ferrics://ferricstore.example.com:6389",
+	ferricstore.WithNativeOptions(
+		ferricstore.WithNativeCredentials("default", password),
+	),
+)
 ```
+
+Avoid putting production passwords in URLs because URLs are commonly copied into logs, shell history, and process metadata.
 
 Default client behavior matches the Python SDK:
 
 - one native protocol connection per `Client`
 - 30s request timeout
 - 30s TCP keepalive and idle protocol heartbeat
+- one safe reconnect retry for closed-connection failures before a command reaches the server
 - no hidden auto-batching; use `Pipeline` or high-level worker APIs when you want batching
 - queue/workflow workers default to batch size 10, concurrency 1, and a 30s claim lease
 
@@ -179,9 +187,31 @@ if event.Name == "FLOW_WAKE" {
 }
 ```
 
-Use `OpenPubSub` when you want events on the existing native multiplexed connection. Use `NewPubSub` or `NewPubSubFromURL` when you want an isolated long-lived pub/sub connection.
+Use `OpenPubSub` when you want events on the existing native multiplexed connection. Use one shared pub/sub consumer per client; multiple shared consumers compete for the same event buffer. Use `NewPubSub` or `NewPubSubFromURL` when you want an isolated long-lived pub/sub connection.
 
 Shared native events are delivered through a bounded client buffer. If the buffer is full, the SDK drops new events instead of blocking normal command responses. Check `client.DroppedEvents()` or `pubsub.DroppedEvents()` if wake/event loss matters to your worker loop.
+
+Reconnect is enabled by default with one conservative retry. The SDK reconnects when the socket is already closed or startup failed before the command was accepted. It does not retry server errors, context cancellation, or requests that may already have reached FerricStore. Disable it with `ferricstore.WithNativeReconnect(0)`.
+
+```go
+client := ferricstore.NewClient(
+	"127.0.0.1:6388",
+	ferricstore.WithNativeOptions(ferricstore.WithNativeReconnect(0)),
+)
+```
+
+Native options also configure timeout, heartbeat, TLS, credentials, and client name:
+
+```go
+client := ferricstore.NewClient(
+	"ferricstore.example.com:6389",
+	ferricstore.WithNativeOptions(
+		ferricstore.WithNativeTLS(tlsConfig),
+		ferricstore.WithNativeCredentials("default", password),
+		ferricstore.WithNativeClientName("orders-api"),
+	),
+)
+```
 
 ## Stores
 

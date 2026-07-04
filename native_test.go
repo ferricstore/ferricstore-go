@@ -284,12 +284,22 @@ func TestNewClientFromURLUsesNativeScheme(t *testing.T) {
 	if exec.opts.HeartbeatInterval != 30*time.Second || exec.opts.HeartbeatTimeout != 30*time.Second {
 		t.Fatalf("unexpected heartbeat defaults: interval=%s timeout=%s", exec.opts.HeartbeatInterval, exec.opts.HeartbeatTimeout)
 	}
+	if exec.opts.ReconnectMaxRetries != 1 {
+		t.Fatalf("unexpected reconnect default: %d", exec.opts.ReconnectMaxRetries)
+	}
 }
 
 func TestNativeOptionsCanDisableHeartbeat(t *testing.T) {
 	exec := NewNativeExecutor("127.0.0.1:6388", WithNativeHeartbeat(0, 0))
 	if exec.opts.HeartbeatInterval != 0 || exec.opts.HeartbeatTimeout != 0 {
 		t.Fatalf("unexpected heartbeat override: interval=%s timeout=%s", exec.opts.HeartbeatInterval, exec.opts.HeartbeatTimeout)
+	}
+}
+
+func TestNativeOptionsCanDisableReconnect(t *testing.T) {
+	exec := NewNativeExecutor("127.0.0.1:6388", WithNativeReconnect(0))
+	if exec.opts.ReconnectMaxRetries != 0 {
+		t.Fatalf("unexpected reconnect override: %d", exec.opts.ReconnectMaxRetries)
 	}
 }
 
@@ -368,6 +378,104 @@ func TestNativeExecutorCommandExecWire(t *testing.T) {
 	}
 	if err := <-errc; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNativeExecutorReconnectsAfterFailedStartup(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	errc := make(chan error, 1)
+	go func() {
+		first, err := listener.Accept()
+		if err != nil {
+			errc <- err
+			return
+		}
+		_, _ = readNativeRequestFrame(bufio.NewReader(first))
+		_ = first.Close()
+
+		second, err := listener.Accept()
+		if err != nil {
+			errc <- err
+			return
+		}
+		defer func() { _ = second.Close() }()
+		errc <- serveNativeWireTest(second)
+	}()
+
+	client := NewClient(listener.Addr().String())
+	defer func() { _ = client.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := client.Ping(ctx, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "PONG" {
+		t.Fatalf("expected PONG, got %q", got)
+	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNativeExecutorDoesNotReconnectAfterRequestWriteStarted(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	accepted := make(chan struct{}, 2)
+	errc := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			errc <- err
+			return
+		}
+		accepted <- struct{}{}
+		reader := bufio.NewReader(conn)
+		writer := bufio.NewWriter(conn)
+		startup, err := readNativeRequestFrame(reader)
+		if err != nil {
+			_ = conn.Close()
+			errc <- err
+			return
+		}
+		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+			_ = conn.Close()
+			errc <- err
+			return
+		}
+		if _, err := readNativeRequestFrame(reader); err != nil {
+			_ = conn.Close()
+			errc <- err
+			return
+		}
+		_ = conn.Close()
+		errc <- nil
+	}()
+
+	client := NewClient(listener.Addr().String())
+	defer func() { _ = client.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.Ping(ctx, "hello")
+	if err == nil {
+		t.Fatal("expected closed connection error")
+	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	if got := len(accepted); got != 1 {
+		t.Fatalf("expected one accepted connection, got %d", got)
 	}
 }
 

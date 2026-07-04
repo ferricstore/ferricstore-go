@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 type fakeExecutor struct {
@@ -27,6 +28,44 @@ func (f *fakeExecutor) Do(ctx context.Context, args ...any) (any, error) {
 		return f.values[index], nil
 	}
 	return f.value, nil
+}
+
+func TestWithNativeOptionsAppliesToNewClient(t *testing.T) {
+	client := NewClient("127.0.0.1:6388",
+		WithNativeOptions(
+			WithNativeReconnect(0),
+			WithNativeHeartbeat(0, 0),
+			WithNativeTimeout(2*time.Second),
+		),
+	)
+	defer func() { _ = client.Close() }()
+
+	exec, ok := client.exec.(*NativeExecutor)
+	if !ok {
+		t.Fatalf("expected native executor, got %T", client.exec)
+	}
+	if exec.opts.ReconnectMaxRetries != 0 {
+		t.Fatalf("unexpected reconnect retries: %d", exec.opts.ReconnectMaxRetries)
+	}
+	if exec.opts.HeartbeatInterval != 0 || exec.opts.HeartbeatTimeout != 0 {
+		t.Fatalf("unexpected heartbeat: interval=%s timeout=%s", exec.opts.HeartbeatInterval, exec.opts.HeartbeatTimeout)
+	}
+	if exec.opts.Timeout != 2*time.Second || exec.opts.Dialer.Timeout != 2*time.Second {
+		t.Fatalf("unexpected timeout: opts=%s dialer=%s", exec.opts.Timeout, exec.opts.Dialer.Timeout)
+	}
+}
+
+func TestWithNativeOptionsIgnoredForCustomExecutor(t *testing.T) {
+	exec := &fakeExecutor{value: []byte("PONG")}
+	client := NewClientWithExecutor(exec, WithNativeOptions(WithNativeReconnect(0)))
+
+	got, err := client.Ping(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "PONG" {
+		t.Fatalf("expected PONG, got %q", got)
+	}
 }
 
 func TestCreateBuildsCommandDefaults(t *testing.T) {

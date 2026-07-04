@@ -24,6 +24,20 @@ func WithCodec(codec Codec) ClientOption {
 	}
 }
 
+func WithNativeOptions(opts ...NativeOption) ClientOption {
+	return func(c *Client) {
+		native, ok := c.exec.(*NativeExecutor)
+		if !ok || native == nil {
+			return
+		}
+		for _, opt := range opts {
+			if opt != nil {
+				opt(&native.opts)
+			}
+		}
+	}
+}
+
 type Client struct {
 	exec   Executor
 	closer func() error
