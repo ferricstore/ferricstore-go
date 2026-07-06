@@ -176,6 +176,8 @@ func TestACLHelpersBuildCommands(t *testing.T) {
 		[]any{[]byte("user default on +@all ~*")},
 		[]any{[]byte("flags"), []any{[]byte("on")}},
 		[]byte("OK"),
+		[]byte("default"),
+		[]byte("OK"),
 	}}
 	client := NewClientWithExecutor(exec)
 	ctx := context.Background()
@@ -198,8 +200,15 @@ func TestACLHelpersBuildCommands(t *testing.T) {
 	if err := client.ACLSave(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if deleted != 1 || len(users) != 1 || len(user) == 0 {
-		t.Fatalf("unexpected ACL results deleted=%d users=%#v user=%#v", deleted, users, user)
+	whoami, err := client.ACLWhoAmI(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ACLLoad(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 || len(users) != 1 || len(user) == 0 || whoami != "default" {
+		t.Fatalf("unexpected ACL results deleted=%d users=%#v user=%#v whoami=%q", deleted, users, user, whoami)
 	}
 
 	want := [][]any{
@@ -208,6 +217,91 @@ func TestACLHelpersBuildCommands(t *testing.T) {
 		{"ACL", "LIST"},
 		{"ACL", "GETUSER", "default"},
 		{"ACL", "SAVE"},
+		{"ACL", "WHOAMI"},
+		{"ACL", "LOAD"},
+	}
+	for i := range want {
+		if !reflect.DeepEqual(exec.calls[i], want[i]) {
+			t.Fatalf("unexpected call %d\n got: %#v\nwant: %#v", i, exec.calls[i], want[i])
+		}
+	}
+}
+
+func TestManagementHelpersBuildNarrowCommands(t *testing.T) {
+	exec := &fakeExecutor{values: []any{
+		map[string]any{"sdk": true, "quota_management": false},
+		[]byte("OK"),
+		map[string]any{"prefix": "tenant:a:"},
+		[]any{map[string]any{"prefix": "tenant:a:"}},
+		[]byte("OK"),
+		[]byte("OK"),
+		map[string]any{"keys": int64(100)},
+		map[string]any{"keys": int64(3)},
+		map[string]any{"nodes": int64(1)},
+		map[string]any{"bytes": int64(8)},
+		[]any{map[string]any{"id": "flow-1"}},
+		[]any{map[string]any{"event": "created"}},
+	}}
+	client := NewClientWithExecutor(exec)
+	ctx := context.Background()
+
+	capabilities, err := client.Capabilities(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capabilities["sdk"] != true || capabilities["quota_management"] != false {
+		t.Fatalf("unexpected capabilities: %#v", capabilities)
+	}
+	if _, err := client.EnsureNamespace(ctx, "tenant:a:", map[string]any{"durability": "disk", "limit": int64(10), "skip": nil}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetNamespace(ctx, "tenant:a:"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ListNamespaces(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DeleteNamespace(ctx, "tenant:a:"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SetQuota(ctx, "tenant:a:", map[string]any{"bytes": int64(1024), "ops_per_sec": 20}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetQuota(ctx, "tenant:a:"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.QuotaUsage(ctx, "tenant:a:"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ClusterInfo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.NamespaceUsage(ctx, "tenant:a:"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.FlowQuery(ctx, map[string]any{"type": "order", "state": "queued"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.FlowHistory(ctx, "flow-1", map[string]any{"max_events": 10}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := [][]any{
+		{"FERRICSTORE.CAPABILITIES"},
+		{"FERRICSTORE.NAMESPACE", "ENSURE", "tenant:a:", "DURABILITY", "disk", "LIMIT", int64(10)},
+		{"FERRICSTORE.NAMESPACE", "GET", "tenant:a:"},
+		{"FERRICSTORE.NAMESPACE", "LIST"},
+		{"FERRICSTORE.NAMESPACE", "DELETE", "tenant:a:"},
+		{"FERRICSTORE.QUOTA", "SET", "tenant:a:", "BYTES", int64(1024), "OPS_PER_SEC", 20},
+		{"FERRICSTORE.QUOTA", "GET", "tenant:a:"},
+		{"FERRICSTORE.QUOTA", "USAGE", "tenant:a:"},
+		{"FERRICSTORE.TELEMETRY", "CLUSTER_INFO"},
+		{"FERRICSTORE.TELEMETRY", "NAMESPACE_USAGE", "tenant:a:"},
+		{"FERRICSTORE.TELEMETRY", "FLOW_QUERY", "STATE", "queued", "TYPE", "order"},
+		{"FERRICSTORE.TELEMETRY", "FLOW_HISTORY", "flow-1", "MAX_EVENTS", 10},
+	}
+	if len(exec.calls) != len(want) {
+		t.Fatalf("unexpected calls: %#v", exec.calls)
 	}
 	for i := range want {
 		if !reflect.DeepEqual(exec.calls[i], want[i]) {

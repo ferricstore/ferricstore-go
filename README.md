@@ -213,6 +213,22 @@ client := ferricstore.NewClient(
 )
 ```
 
+For clustered servers, use the topology-aware executor. It probes `SHARDS`, routes single-shard key commands to the learned leader endpoint, and rejects learned endpoints unless they match an exact seed host+port or an explicit trusted host.
+
+```go
+exec, err := ferricstore.NewTopologyNativeExecutor(
+	[]string{"ferrics://ferricstore.example.com:6389"},
+	ferricstore.WithTopologyNativeOptions(
+		ferricstore.WithNativeCredentials("default", password),
+	),
+)
+if err != nil {
+	return err
+}
+client := ferricstore.NewClientWithExecutor(exec, ferricstore.WithCodec(ferricstore.JSONCodec{}))
+defer client.Close()
+```
+
 ## Stores
 
 Typed helpers cover common FerricStore data structures:
@@ -324,6 +340,13 @@ Run the Docker-backed integration suite against the released FerricStore image:
 
 ```bash
 ./scripts/integration-docker.sh
+```
+
+For release gating against a server image that should support every current command,
+enable strict command coverage:
+
+```bash
+FERRICSTORE_STRICT_COMMAND_COVERAGE=1 FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version> ./scripts/integration-docker.sh
 ```
 
 ## Examples

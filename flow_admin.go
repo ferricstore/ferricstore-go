@@ -58,6 +58,17 @@ func (c *Client) Stats(ctx context.Context, flowType string, opt ReadOptions) (m
 	return mapResult(c.Command(ctx, args...))
 }
 
+func (c *Client) CountByState(ctx context.Context, flowType, state string, opt ReadOptions) (int64, error) {
+	opt.State = state
+	opt.Count = nil
+
+	stats, err := c.Stats(ctx, flowType, opt)
+	if err != nil {
+		return 0, err
+	}
+	return statsCount(stats)
+}
+
 func (c *Client) Attributes(ctx context.Context, flowType string, opt ReadOptions) ([]map[string]any, error) {
 	args := []any{"FLOW.ATTRIBUTES", flowType}
 	appendReadOptions(&args, opt)
@@ -537,6 +548,20 @@ func appendAttributes(args *[]any, attributes, attributesMerge map[string]any, a
 	}
 }
 
+func appendStateMeta(args *[]any, stateMeta map[string]any) {
+	for name, value := range stateMeta {
+		*args = append(*args, "STATE_META", name, value)
+	}
+}
+
+func appendSearchStateMeta(args *[]any, stateMeta map[string]map[string]any) {
+	for state, meta := range stateMeta {
+		for name, value := range meta {
+			*args = append(*args, "STATE_META", state, name, value)
+		}
+	}
+}
+
 func sharedCreateManyAttributes(items []CreateItem, attributes map[string]any) (map[string]any, error) {
 	var first map[string]any
 	for _, item := range items {
@@ -560,6 +585,29 @@ func sharedCreateManyAttributes(items []CreateItem, attributes map[string]any) (
 	return first, nil
 }
 
+func sharedCreateManyStateMeta(items []CreateItem, stateMeta map[string]any) (map[string]any, error) {
+	var first map[string]any
+	for _, item := range items {
+		if len(item.StateMeta) == 0 {
+			continue
+		}
+		if first == nil {
+			first = item.StateMeta
+			continue
+		}
+		if !reflect.DeepEqual(first, item.StateMeta) {
+			return nil, errors.New("create_many supports shared state_meta only; use CreateManyOptions.StateMeta or separate Create calls for per-item state_meta")
+		}
+	}
+	if first == nil {
+		return stateMeta, nil
+	}
+	if stateMeta != nil && !reflect.DeepEqual(stateMeta, first) {
+		return nil, errors.New("create_many item state_meta must match shared state_meta when both are provided")
+	}
+	return first, nil
+}
+
 func boolDefault(value *bool, fallback bool) bool {
 	if value == nil {
 		return fallback
@@ -572,6 +620,55 @@ func mapResult(value any, err error) (map[string]any, error) {
 		return nil, err
 	}
 	return nativeMap(value)
+}
+
+func statsCount(stats map[string]any) (int64, error) {
+	value, ok := stats["count"]
+	if !ok {
+		return 0, errors.New("FLOW.STATS response missing count")
+	}
+	switch v := value.(type) {
+	case int64:
+		return v, nil
+	case int:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case int16:
+		return int64(v), nil
+	case int8:
+		return int64(v), nil
+	case uint64:
+		if v > uint64(^uint64(0)>>1) {
+			return 0, errors.New("FLOW.STATS response count overflows int64")
+		}
+		return int64(v), nil
+	case uint:
+		if uint64(v) > uint64(^uint64(0)>>1) {
+			return 0, errors.New("FLOW.STATS response count overflows int64")
+		}
+		return int64(v), nil
+	case uint32:
+		return int64(v), nil
+	case uint16:
+		return int64(v), nil
+	case uint8:
+		return int64(v), nil
+	case string:
+		count, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, errors.New("FLOW.STATS response count is not numeric")
+		}
+		return count, nil
+	case []byte:
+		count, err := strconv.ParseInt(string(v), 10, 64)
+		if err != nil {
+			return 0, errors.New("FLOW.STATS response count is not numeric")
+		}
+		return count, nil
+	default:
+		return 0, errors.New("FLOW.STATS response count is not numeric")
+	}
 }
 
 func mapList(value any, err error) ([]map[string]any, error) {

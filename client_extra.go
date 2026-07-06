@@ -1,6 +1,10 @@
 package ferricstore
 
-import "context"
+import (
+	"context"
+	"sort"
+	"strings"
+)
 
 func (c *Client) Type(ctx context.Context, key string) (string, error) {
 	value, err := c.Command(ctx, "TYPE", key)
@@ -211,6 +215,135 @@ func (c *Client) ACLList(ctx context.Context) ([]string, error) {
 func (c *Client) ACLSave(ctx context.Context) error {
 	_, err := c.ACL(ctx, "SAVE")
 	return err
+}
+
+func (c *Client) ACLWhoAmI(ctx context.Context) (string, error) {
+	value, err := c.ACL(ctx, "WHOAMI")
+	return asString(value), err
+}
+
+func (c *Client) ACLLoad(ctx context.Context) error {
+	_, err := c.ACL(ctx, "LOAD")
+	return err
+}
+
+func (c *Client) Capabilities(ctx context.Context) (map[string]any, error) {
+	value, err := c.Command(ctx, "FERRICSTORE.CAPABILITIES")
+	if err != nil {
+		return nil, err
+	}
+	return nativeMap(normalizeAdminResponse(value))
+}
+
+func (c *Client) EnsureNamespace(ctx context.Context, prefix string, attrs map[string]any) (any, error) {
+	args := []any{"FERRICSTORE.NAMESPACE", "ENSURE", prefix}
+	args = append(args, managementPairArgs(attrs)...)
+	value, err := c.Command(ctx, args...)
+	return normalizeAdminResponse(value), err
+}
+
+func (c *Client) GetNamespace(ctx context.Context, prefix string) (any, error) {
+	value, err := c.Command(ctx, "FERRICSTORE.NAMESPACE", "GET", prefix)
+	return normalizeAdminResponse(value), err
+}
+
+func (c *Client) ListNamespaces(ctx context.Context) (any, error) {
+	value, err := c.Command(ctx, "FERRICSTORE.NAMESPACE", "LIST")
+	return normalizeAdminResponse(value), err
+}
+
+func (c *Client) DeleteNamespace(ctx context.Context, prefix string) (any, error) {
+	value, err := c.Command(ctx, "FERRICSTORE.NAMESPACE", "DELETE", prefix)
+	return normalizeAdminResponse(value), err
+}
+
+func (c *Client) SetQuota(ctx context.Context, namespace string, quotaSpec map[string]any) (any, error) {
+	args := []any{"FERRICSTORE.QUOTA", "SET", namespace}
+	args = append(args, managementPairArgs(quotaSpec)...)
+	value, err := c.Command(ctx, args...)
+	return normalizeAdminResponse(value), err
+}
+
+func (c *Client) GetQuota(ctx context.Context, namespace string) (any, error) {
+	value, err := c.Command(ctx, "FERRICSTORE.QUOTA", "GET", namespace)
+	return normalizeAdminResponse(value), err
+}
+
+func (c *Client) QuotaUsage(ctx context.Context, namespace string) (any, error) {
+	value, err := c.Command(ctx, "FERRICSTORE.QUOTA", "USAGE", namespace)
+	return normalizeAdminResponse(value), err
+}
+
+func (c *Client) ClusterInfo(ctx context.Context) (map[string]any, error) {
+	value, err := c.Command(ctx, "FERRICSTORE.TELEMETRY", "CLUSTER_INFO")
+	if err != nil {
+		return nil, err
+	}
+	return nativeMap(normalizeAdminResponse(value))
+}
+
+func (c *Client) NamespaceUsage(ctx context.Context, prefix string) (map[string]any, error) {
+	value, err := c.Command(ctx, "FERRICSTORE.TELEMETRY", "NAMESPACE_USAGE", prefix)
+	if err != nil {
+		return nil, err
+	}
+	return nativeMap(normalizeAdminResponse(value))
+}
+
+func (c *Client) FlowQuery(ctx context.Context, attrs map[string]any) ([]any, error) {
+	args := []any{"FERRICSTORE.TELEMETRY", "FLOW_QUERY"}
+	args = append(args, managementPairArgs(attrs)...)
+	value, err := c.Command(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	return adminArrayResponse(value)
+}
+
+func (c *Client) FlowHistory(ctx context.Context, id string, attrs map[string]any) ([]any, error) {
+	args := []any{"FERRICSTORE.TELEMETRY", "FLOW_HISTORY", id}
+	args = append(args, managementPairArgs(attrs)...)
+	value, err := c.Command(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	return adminArrayResponse(value)
+}
+
+func managementPairArgs(pairs map[string]any) []any {
+	if len(pairs) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(pairs))
+	for key, value := range pairs {
+		if value != nil {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return strings.ToUpper(keys[i]) < strings.ToUpper(keys[j])
+	})
+	args := make([]any, 0, len(keys)*2)
+	for _, key := range keys {
+		args = append(args, strings.ToUpper(key), pairs[key])
+	}
+	return args
+}
+
+func normalizeAdminResponse(value any) any {
+	return normalizeNative(value)
+}
+
+func adminArrayResponse(value any) ([]any, error) {
+	value = normalizeAdminResponse(value)
+	if value == nil {
+		return nil, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, nil
+	}
+	return append([]any(nil), items...), nil
 }
 
 func (c *Client) SlowLogGet(ctx context.Context, count *int) (any, error) {

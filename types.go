@@ -1,25 +1,27 @@
 package ferricstore
 
 type FlowRecord struct {
-	ID            string
-	Type          string
-	State         string
-	PartitionKey  string
-	Payload       any
-	LeaseToken    string
-	FencingToken  int64
-	Version       int64
-	ParentFlowID  string
-	RootFlowID    string
-	CorrelationID string
-	RunState      string
-	Attributes    map[string]any
-	Values        map[string]any
-	ValueRefs     map[string]any
-	ValueSizes    map[string]any
-	ValueOmitted  map[string]any
-	ValueMissing  map[string]any
-	Raw           map[string]any
+	ID               string
+	Type             string
+	State            string
+	PartitionKey     string
+	Payload          any
+	LeaseToken       string
+	FencingToken     int64
+	Version          int64
+	ParentFlowID     string
+	RootFlowID       string
+	CorrelationID    string
+	RunState         string
+	Attributes       map[string]any
+	StateMeta        map[string]any
+	IndexedStateMeta string
+	Values           map[string]any
+	ValueRefs        map[string]any
+	ValueSizes       map[string]any
+	ValueOmitted     map[string]any
+	ValueMissing     map[string]any
+	Raw              map[string]any
 }
 
 type CreateItem struct {
@@ -29,6 +31,7 @@ type CreateItem struct {
 	Values       map[string]any
 	ValueRefs    map[string]string
 	Attributes   map[string]any
+	StateMeta    map[string]any
 }
 
 type ChildSpec struct {
@@ -112,6 +115,7 @@ type CreateOptions struct {
 	Values         map[string]any
 	ValueRefs      map[string]string
 	Attributes     map[string]any
+	StateMeta      map[string]any
 	ReturnRecord   bool
 }
 
@@ -129,6 +133,7 @@ type CreateManyOptions struct {
 	Values         map[string]any
 	ValueRefs      map[string]string
 	Attributes     map[string]any
+	StateMeta      map[string]any
 }
 
 type ClaimDueOptions struct {
@@ -181,6 +186,82 @@ type NamedValues struct {
 	AttributesDelete []string
 }
 
+type StartAndClaimOptions struct {
+	ID             string
+	Type           string
+	InitialState   string
+	Worker         string
+	LeaseMS        int64
+	Payload        any
+	PartitionKey   string
+	ParentFlowID   string
+	RootFlowID     string
+	CorrelationID  string
+	NowMS          int64
+	Priority       *int64
+	RetentionTTLMS *int64
+	Values         map[string]any
+	ValueRefs      map[string]string
+	Attributes     map[string]any
+	StateMeta      map[string]any
+}
+
+type StepContinueOptions struct {
+	ID           string
+	LeaseToken   string
+	FromState    string
+	ToState      string
+	FencingToken int64
+	LeaseMS      int64
+	PartitionKey string
+	Payload      any
+	Worker       string
+	NowMS        int64
+	StateMeta    map[string]any
+	NamedValues
+}
+
+type RunStepsItem struct {
+	ID           string
+	PartitionKey string
+}
+
+type RunStepsManyOptions struct {
+	Items          []RunStepsItem
+	Type           string
+	States         []string
+	Steps          int
+	Worker         string
+	LeaseMS        int64
+	NowMS          int64
+	Payload        any
+	Result         any
+	PartitionKey   string
+	RetentionTTLMS *int64
+}
+
+type SearchOptions struct {
+	Type                 string
+	State                string
+	PartitionKey         string
+	Count                *int
+	FromMS               *int64
+	ToMS                 *int64
+	Rev                  *bool
+	TerminalOnly         *bool
+	IncludeCold          *bool
+	ConsistentProjection *bool
+	Attributes           map[string]any
+	StateMeta            map[string]map[string]any
+}
+
+type PolicyOptions struct {
+	Retry             *RetryPolicy
+	States            map[string]RetryPolicy
+	IndexedAttributes []string
+	IndexedStateMeta  string
+}
+
 type CompleteOptions struct {
 	ID           string
 	LeaseToken   string
@@ -191,6 +272,7 @@ type CompleteOptions struct {
 	TTLMS        *int64
 	NowMS        int64
 	ReturnRecord bool
+	StateMeta    map[string]any
 	NamedValues
 }
 
@@ -206,6 +288,7 @@ type TransitionOptions struct {
 	NowMS        int64
 	Priority     *int64
 	ReturnRecord bool
+	StateMeta    map[string]any
 	NamedValues
 }
 
@@ -219,6 +302,7 @@ type RetryOptions struct {
 	RunAtMS      int64
 	NowMS        int64
 	ReturnRecord bool
+	StateMeta    map[string]any
 	NamedValues
 }
 
@@ -232,6 +316,7 @@ type FailOptions struct {
 	TTLMS        *int64
 	NowMS        int64
 	ReturnRecord bool
+	StateMeta    map[string]any
 	NamedValues
 }
 
@@ -244,6 +329,7 @@ type CancelOptions struct {
 	TTLMS        *int64
 	NowMS        int64
 	ReturnRecord bool
+	StateMeta    map[string]any
 	NamedValues
 }
 
@@ -266,6 +352,7 @@ type CompleteManyOptions struct {
 	TTLMS        *int64
 	NowMS        int64
 	Independent  *bool
+	StateMeta    map[string]any
 	NamedValues
 }
 
@@ -279,6 +366,7 @@ type TransitionManyOptions struct {
 	NowMS        int64
 	Priority     *int64
 	Independent  *bool
+	StateMeta    map[string]any
 	NamedValues
 }
 
@@ -290,6 +378,7 @@ type RetryManyOptions struct {
 	RunAtMS      int64
 	NowMS        int64
 	Independent  *bool
+	StateMeta    map[string]any
 	NamedValues
 }
 
@@ -301,6 +390,7 @@ type FailManyOptions struct {
 	TTLMS        *int64
 	NowMS        int64
 	Independent  *bool
+	StateMeta    map[string]any
 	NamedValues
 }
 
@@ -311,6 +401,7 @@ type CancelManyOptions struct {
 	TTLMS        *int64
 	NowMS        int64
 	Independent  *bool
+	StateMeta    map[string]any
 	NamedValues
 }
 

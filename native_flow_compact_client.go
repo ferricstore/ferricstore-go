@@ -157,6 +157,8 @@ func createManyCompactEligible(opt CreateManyOptions) bool {
 		len(opt.Values) == 0 &&
 		len(opt.ValueRefs) == 0 &&
 		len(opt.Attributes) == 0 &&
+		len(opt.StateMeta) == 0 &&
+		!anyCreateItemStateMeta(opt.Items) &&
 		!anyCreateItemValues(opt.Items)
 }
 
@@ -173,6 +175,7 @@ func completeManyCompactEligible(opt CompleteManyOptions) bool {
 	return opt.Result == nil &&
 		opt.Payload == nil &&
 		opt.TTLMS == nil &&
+		len(opt.StateMeta) == 0 &&
 		namedValuesEmpty(opt.NamedValues)
 }
 

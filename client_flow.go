@@ -32,6 +32,7 @@ func (c *Client) Create(ctx context.Context, opt CreateOptions) (*FlowRecord, er
 	appendBoolPtr(&args, "IDEMPOTENT", opt.Idempotent)
 	appendInt64Ptr(&args, "RETENTION_TTL_MS", opt.RetentionTTLMS)
 	appendAttributes(&args, opt.Attributes, nil, nil)
+	appendStateMeta(&args, opt.StateMeta)
 	if err := c.appendNamedValues(&args, NamedValues{Values: opt.Values, ValueRefs: opt.ValueRefs}); err != nil {
 		return nil, err
 	}
@@ -87,6 +88,11 @@ func (c *Client) CreateMany(ctx context.Context, opt CreateManyOptions) ([]FlowR
 		return nil, err
 	}
 	appendAttributes(&args, attrs, nil, nil)
+	stateMeta, err := sharedCreateManyStateMeta(opt.Items, opt.StateMeta)
+	if err != nil {
+		return nil, err
+	}
+	appendStateMeta(&args, stateMeta)
 	extended := anyCreateItemValues(opt.Items)
 	if extended {
 		args = append(args, "ITEMS_EXT", len(opt.Items))
@@ -229,6 +235,45 @@ func (c *Client) Signal(ctx context.Context, opt SignalOptions) (any, error) {
 
 func (c *Client) FlowSignal(ctx context.Context, opt SignalOptions) (any, error) {
 	return c.Signal(ctx, opt)
+}
+
+func (c *Client) StartAndClaim(ctx context.Context, opt StartAndClaimOptions) (*FlowRecord, error) {
+	leaseMS := opt.LeaseMS
+	if leaseMS == 0 {
+		leaseMS = 30000
+	}
+	now := opt.NowMS
+	if now == 0 {
+		now = nowMS()
+	}
+	args := []any{
+		"FLOW.START_AND_CLAIM", opt.ID,
+		"TYPE", opt.Type,
+		"INITIAL_STATE", opt.InitialState,
+		"WORKER", opt.Worker,
+		"LEASE_MS", leaseMS,
+		"NOW", now,
+	}
+	appendOpt(&args, "PARTITION", opt.PartitionKey)
+	if err := c.appendEncoded(&args, "PAYLOAD", opt.Payload); err != nil {
+		return nil, err
+	}
+	appendOpt(&args, "PARENT_FLOW_ID", opt.ParentFlowID)
+	appendOpt(&args, "ROOT_FLOW_ID", opt.RootFlowID)
+	appendOpt(&args, "CORRELATION_ID", opt.CorrelationID)
+	appendInt64Ptr(&args, "PRIORITY", opt.Priority)
+	appendInt64Ptr(&args, "RETENTION_TTL_MS", opt.RetentionTTLMS)
+	appendAttributes(&args, opt.Attributes, nil, nil)
+	appendStateMeta(&args, opt.StateMeta)
+	if err := c.appendNamedValues(&args, NamedValues{Values: opt.Values, ValueRefs: opt.ValueRefs}); err != nil {
+		return nil, err
+	}
+	value, err := c.Command(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	record, err := recordOrNil(value, c.codec)
+	return c.recordOrGet(ctx, record, err, opt.ID, opt.PartitionKey)
 }
 
 func (c *Client) ClaimDue(ctx context.Context, opt ClaimDueOptions) ([]FlowRecord, error) {
@@ -399,12 +444,45 @@ func (c *Client) Transition(ctx context.Context, opt TransitionOptions) (*FlowRe
 		return nil, err
 	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
 	value, err := c.Command(ctx, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
 	}
 	record, err := recordOrNil(value, c.codec)
 	return c.recordOrGet(ctx, record, err, opt.ID, opt.PartitionKey)
+}
+
+func (c *Client) StepContinue(ctx context.Context, opt StepContinueOptions) (*FlowRecord, error) {
+	leaseMS := opt.LeaseMS
+	if leaseMS == 0 {
+		leaseMS = 30000
+	}
+	now := opt.NowMS
+	if now == 0 {
+		now = nowMS()
+	}
+	args := []any{
+		"FLOW.STEP_CONTINUE", opt.ID, opt.LeaseToken, opt.FromState, opt.ToState,
+		"FENCING", opt.FencingToken,
+		"LEASE_MS", leaseMS,
+		"NOW", now,
+	}
+	appendOpt(&args, "PARTITION", opt.PartitionKey)
+	appendOpt(&args, "WORKER", opt.Worker)
+	if err := c.appendEncoded(&args, "PAYLOAD", opt.Payload); err != nil {
+		return nil, err
+	}
+	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
+		return nil, err
+	}
+	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
+	value, err := c.Command(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	return recordOrNil(value, c.codec)
 }
 
 func (c *Client) Complete(ctx context.Context, opt CompleteOptions) (*FlowRecord, error) {
@@ -421,6 +499,7 @@ func (c *Client) Complete(ctx context.Context, opt CompleteOptions) (*FlowRecord
 		return nil, err
 	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
 	value, err := c.Command(ctx, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
@@ -444,6 +523,7 @@ func (c *Client) Retry(ctx context.Context, opt RetryOptions) (*FlowRecord, erro
 		return nil, err
 	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
 	value, err := c.Command(ctx, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
@@ -465,6 +545,7 @@ func (c *Client) Fail(ctx context.Context, opt FailOptions) (*FlowRecord, error)
 		return nil, err
 	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
 	value, err := c.Command(ctx, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
@@ -484,6 +565,7 @@ func (c *Client) Cancel(ctx context.Context, opt CancelOptions) (*FlowRecord, er
 		return nil, err
 	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
 	value, err := c.Command(ctx, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err
@@ -529,6 +611,7 @@ func (c *Client) CompleteMany(ctx context.Context, opt CompleteManyOptions) ([]F
 		return nil, err
 	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
 	if err := appendClaimedItems(&args, opt.PartitionKey, opt.Items, "FLOW.COMPLETE_MANY"); err != nil {
 		return nil, err
 	}
@@ -557,6 +640,7 @@ func (c *Client) TransitionMany(ctx context.Context, opt TransitionManyOptions) 
 		return nil, err
 	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
 	if err := appendFencedItems(&args, opt.PartitionKey, opt.Items, "FLOW.TRANSITION_MANY", true); err != nil {
 		return nil, err
 	}
@@ -587,6 +671,7 @@ func (c *Client) RetryMany(ctx context.Context, opt RetryManyOptions) ([]FlowRec
 		return nil, err
 	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
 	if err := appendClaimedItems(&args, opt.PartitionKey, opt.Items, "FLOW.RETRY_MANY"); err != nil {
 		return nil, err
 	}
@@ -615,6 +700,7 @@ func (c *Client) FailMany(ctx context.Context, opt FailManyOptions) ([]FlowRecor
 		return nil, err
 	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
 	if err := appendClaimedItems(&args, opt.PartitionKey, opt.Items, "FLOW.FAIL_MANY"); err != nil {
 		return nil, err
 	}
@@ -640,6 +726,7 @@ func (c *Client) CancelMany(ctx context.Context, opt CancelManyOptions) ([]FlowR
 		return nil, err
 	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
+	appendStateMeta(&args, opt.StateMeta)
 	if err := appendFencedItems(&args, opt.PartitionKey, opt.Items, "FLOW.CANCEL_MANY", false); err != nil {
 		return nil, err
 	}
@@ -648,6 +735,39 @@ func (c *Client) CancelMany(ctx context.Context, opt CancelManyOptions) ([]FlowR
 		return nil, err
 	}
 	return recordsOrNil(value, c.codec)
+}
+
+func (c *Client) RunStepsMany(ctx context.Context, opt RunStepsManyOptions) error {
+	if len(opt.Items) == 0 {
+		return nil
+	}
+	if (len(opt.States) == 0) == (opt.Steps == 0) {
+		return errors.New("run_steps_many requires exactly one of states or steps")
+	}
+	if opt.Steps < 0 {
+		return errors.New("run_steps_many steps must be positive")
+	}
+	leaseMS := opt.LeaseMS
+	if leaseMS == 0 {
+		leaseMS = 30000
+	}
+	args := []any{"FLOW.RUN_STEPS_MANY", "TYPE", opt.Type}
+	if len(opt.States) > 0 {
+		args = append(args, "STATES", opt.States)
+	} else {
+		args = append(args, "STEPS", opt.Steps)
+	}
+	args = append(args, "WORKER", opt.Worker, "LEASE_MS", leaseMS, "NOW", valueOrNow(opt.NowMS))
+	if err := c.appendEncoded(&args, "PAYLOAD", opt.Payload); err != nil {
+		return err
+	}
+	if err := c.appendEncoded(&args, "RESULT", opt.Result); err != nil {
+		return err
+	}
+	appendInt64Ptr(&args, "RETENTION_TTL_MS", opt.RetentionTTLMS)
+	args = append(args, "ITEMS", runStepsItems(opt.Items, opt.PartitionKey))
+	_, err := c.Command(ctx, args...)
+	return err
 }
 
 func (c *Client) Get(ctx context.Context, id string, partitionKey string, values []string, valueMaxBytes *int64) (*FlowRecord, error) {
@@ -683,6 +803,41 @@ func (c *Client) List(ctx context.Context, flowType string, opt ReadOptions) ([]
 		return nil, err
 	}
 	return recordsFromNative(value, c.codec)
+}
+
+func (c *Client) Search(ctx context.Context, opt SearchOptions) ([]FlowRecord, error) {
+	args := []any{"FLOW.SEARCH"}
+	appendOpt(&args, "TYPE", opt.Type)
+	appendOpt(&args, "STATE", opt.State)
+	appendIntPtr(&args, "COUNT", opt.Count)
+	appendOpt(&args, "PARTITION", opt.PartitionKey)
+	appendInt64Ptr(&args, "FROM_MS", opt.FromMS)
+	appendInt64Ptr(&args, "TO_MS", opt.ToMS)
+	appendBoolPtr(&args, "REV", opt.Rev)
+	appendBoolPtr(&args, "TERMINAL_ONLY", opt.TerminalOnly)
+	appendBoolPtr(&args, "INCLUDE_COLD", opt.IncludeCold)
+	appendBoolPtr(&args, "CONSISTENT_PROJECTION", opt.ConsistentProjection)
+	appendAttributes(&args, opt.Attributes, nil, nil)
+	appendSearchStateMeta(&args, opt.StateMeta)
+	value, err := c.Command(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	return recordsFromNative(value, c.codec)
+}
+
+func (c *Client) Exists(ctx context.Context, flowType string, opt ReadOptions) (bool, error) {
+	opt.Count = nil
+
+	stats, err := c.Stats(ctx, flowType, opt)
+	if err != nil {
+		return false, err
+	}
+	count, err := statsCount(stats)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (c *Client) Terminals(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
@@ -851,11 +1006,19 @@ func (c *Client) SpawnChildren(ctx context.Context, opt SpawnChildrenOptions) (a
 }
 
 func (c *Client) InstallPolicy(ctx context.Context, flowType string, retry *RetryPolicy, states map[string]RetryPolicy) (any, error) {
+	return c.SetPolicy(ctx, flowType, PolicyOptions{Retry: retry, States: states})
+}
+
+func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptions) (any, error) {
 	args := []any{"FLOW.POLICY.SET", flowType}
-	if retry != nil {
-		appendRetryPolicy(&args, *retry)
+	if len(opt.IndexedAttributes) > 0 {
+		appendOpt(&args, "INDEXED_ATTRIBUTES", opt.IndexedAttributes)
 	}
-	for state, policy := range states {
+	appendOpt(&args, "INDEXED_STATE_META", opt.IndexedStateMeta)
+	if opt.Retry != nil {
+		appendRetryPolicy(&args, *opt.Retry)
+	}
+	for state, policy := range opt.States {
 		args = append(args, "STATE", state)
 		appendRetryPolicy(&args, policy)
 	}

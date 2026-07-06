@@ -272,6 +272,45 @@ func assertBatchFlowCommands(t *testing.T, ctx context.Context, client *Client, 
 	requireLen(t, jobs, 2)
 }
 
+func assertSearchCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
+	t.Helper()
+
+	partition := "go-sdk:search:" + runID + ":partition"
+	id := "go-sdk:search:" + runID
+	marker := "marker-" + runID
+	_ = must[*FlowRecord](t)(client.Create(ctx, CreateOptions{
+		ID:           id,
+		Type:         typeName,
+		State:        "searchable",
+		PartitionKey: partition,
+		Payload:      map[string]any{"kind": "search"},
+		Attributes:   map[string]any{"search_marker": marker},
+		Idempotent:   Bool(true),
+		RunAtMS:      now,
+		NowMS:        now,
+	}))
+
+	records, err := client.Search(ctx, SearchOptions{
+		Type:                 typeName,
+		State:                "searchable",
+		PartitionKey:         partition,
+		Count:                Int(10),
+		ConsistentProjection: Bool(true),
+		Attributes:           map[string]any{"search_marker": marker},
+	})
+	if err != nil {
+		if isUnsupportedFlowSearchCommand(err) {
+			t.Logf("skipping FLOW.SEARCH integration against this server image: %v", err)
+			skipIntegrationCommandCoverage("server image does not support FLOW.SEARCH", "FLOW.SEARCH")
+			return
+		}
+		t.Fatal(err)
+	}
+	if !hasRecordID(records, id) {
+		t.Fatalf("FLOW.SEARCH = %#v", records)
+	}
+}
+
 func assertSingleMutationCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
 	t.Helper()
 
@@ -299,6 +338,135 @@ func assertSingleMutationCommands(t *testing.T, ctx context.Context, client *Cli
 		t.Fatalf("cancelled record = %#v", record)
 	}
 	_ = must[[]FlowRecord](t)(client.Terminals(ctx, typeName, ReadOptions{Count: Int(50)}))
+}
+
+func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
+	t.Helper()
+
+	partition := "go-sdk:fused:" + runID + ":partition"
+	startID := "go-sdk:fused-start:" + runID
+	started, err := client.StartAndClaim(ctx, StartAndClaimOptions{
+		ID:           startID,
+		Type:         typeName,
+		InitialState: "step-a",
+		Worker:       "go-sdk-fused-worker",
+		PartitionKey: partition,
+		Payload:      map[string]any{"step": "a"},
+		StateMeta:    map[string]any{"version": "1"},
+		NowMS:        now,
+	})
+	if err != nil {
+		if isUnsupportedFusedFlowCommand(err) {
+			t.Logf("skipping fused Flow integration against this server image: %v", err)
+			skipIntegrationCommandCoverage(
+				"server image does not support fused Flow AST",
+				"FLOW.RUN_STEPS_MANY",
+				"FLOW.STEP_CONTINUE",
+			)
+			return
+		}
+		t.Fatal(err)
+	}
+	if started == nil || started.ID != startID || started.RunState != "step-a" || flowStateMetaValue(started, "step-a", "version") != "1" {
+		t.Fatalf("FLOW.START_AND_CLAIM = %#v", started)
+	}
+
+	indexed, err := client.Search(ctx, SearchOptions{
+		Type:                 typeName,
+		PartitionKey:         partition,
+		Count:                Int(10),
+		ConsistentProjection: Bool(true),
+		StateMeta:            map[string]map[string]any{"step-a": {"version": "1"}},
+	})
+	if err != nil {
+		if isUnsupportedFusedFlowCommand(err) || isUnsupportedFlowSearchCommand(err) {
+			t.Logf("skipping fused Flow search integration against this server image: %v", err)
+			return
+		}
+		t.Fatal(err)
+	}
+	if !hasRecordID(indexed, startID) {
+		t.Fatalf("FLOW.SEARCH state_meta = %#v", indexed)
+	}
+
+	continued, err := client.StepContinue(ctx, StepContinueOptions{
+		ID:           started.ID,
+		LeaseToken:   started.LeaseToken,
+		FromState:    "step-a",
+		ToState:      "step-b",
+		FencingToken: started.FencingToken,
+		Worker:       "go-sdk-fused-worker",
+		PartitionKey: partition,
+		Payload:      map[string]any{"step": "b"},
+		StateMeta:    map[string]any{"version": "2"},
+		NowMS:        now + 1,
+	})
+	if err != nil {
+		if isUnsupportedFusedFlowCommand(err) {
+			t.Logf("skipping fused Flow continuation integration against this server image: %v", err)
+			return
+		}
+		t.Fatal(err)
+	}
+	if continued == nil || continued.RunState != "step-b" || flowStateMetaValue(continued, "step-b", "version") != "2" {
+		t.Fatalf("FLOW.STEP_CONTINUE = %#v", continued)
+	}
+	_ = must[*FlowRecord](t)(client.Complete(ctx, CompleteOptions{ID: continued.ID, LeaseToken: continued.LeaseToken, FencingToken: continued.FencingToken, PartitionKey: continued.PartitionKey, Result: map[string]any{"done": true}}))
+
+	runIDPrefix := "go-sdk:fused-run:" + runID
+	if err := client.RunStepsMany(ctx, RunStepsManyOptions{
+		Type:         typeName,
+		States:       []string{"bulk-a", "bulk-b", "bulk-done"},
+		Worker:       "go-sdk-fused-run-worker",
+		PartitionKey: partition,
+		NowMS:        now + 2,
+		Result:       map[string]any{"bulk": true},
+		Items: []RunStepsItem{
+			{ID: runIDPrefix + ":a"},
+			{ID: runIDPrefix + ":b"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{runIDPrefix + ":a", runIDPrefix + ":b"} {
+		record := must[*FlowRecord](t)(client.Get(ctx, id, partition, nil, nil))
+		if record == nil || record.State != "completed" || record.RunState != "bulk-done" {
+			t.Fatalf("FLOW.RUN_STEPS_MANY record %s = %#v", id, record)
+		}
+	}
+}
+
+func isUnsupportedFusedFlowCommand(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unsupported command ast") ||
+		strings.Contains(message, "unknown flow option state_meta") ||
+		strings.Contains(message, "unknown command flow.start_and_claim") ||
+		strings.Contains(message, "unknown command flow.step_continue") ||
+		strings.Contains(message, "unknown command flow.run_steps_many")
+}
+
+func isUnsupportedFlowSearchCommand(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unknown command 'flow.search'") ||
+		strings.Contains(message, "unknown command flow.search") ||
+		strings.Contains(message, "native unsupported opcode") ||
+		strings.Contains(message, "is not indexed for broad search")
+}
+
+func isUnsupportedNativePolicyOption(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "native unknown flow option indexed_attributes") ||
+		strings.Contains(message, "native unknown flow option indexed_state_meta") ||
+		strings.Contains(message, "native unknown flow option retry")
 }
 
 func assertManyMutationCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
@@ -600,6 +768,14 @@ func hasRecordPrefix(records []FlowRecord, prefix string) bool {
 		}
 	}
 	return false
+}
+
+func flowStateMetaValue(record *FlowRecord, state, name string) string {
+	if record == nil || record.StateMeta == nil {
+		return ""
+	}
+	meta, _ := record.StateMeta[state].(map[string]any)
+	return asString(meta[name])
 }
 
 func contains(values []string, target string) bool {

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -15,9 +16,11 @@ import (
 
 var integrationCommandCoverage = struct {
 	sync.Mutex
-	seen map[string]struct{}
+	seen    map[string]struct{}
+	skipped map[string]string
 }{
-	seen: map[string]struct{}{},
+	seen:    map[string]struct{}{},
+	skipped: map[string]string{},
 }
 
 type integrationTrackingExecutor struct {
@@ -64,6 +67,14 @@ func recordIntegrationCommand(args []any) {
 	integrationCommandCoverage.Unlock()
 }
 
+func skipIntegrationCommandCoverage(reason string, commands ...string) {
+	integrationCommandCoverage.Lock()
+	defer integrationCommandCoverage.Unlock()
+	for _, command := range commands {
+		integrationCommandCoverage.skipped[command] = reason
+	}
+}
+
 func integrationCommandKey(args []any) string {
 	if len(args) == 0 {
 		return ""
@@ -89,6 +100,26 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func TestMissingIntegrationCommandsTreatsSkippedCommandsAsMissingWhenStrict(t *testing.T) {
+	seen := map[string]struct{}{
+		"PING":        {},
+		"FLOW.SEARCH": {},
+	}
+	skipped := map[string]string{
+		"FLOW.SEARCH": "old server image",
+	}
+	expected := []string{"PING", "FLOW.SEARCH"}
+
+	if missing := missingIntegrationCommandsFrom(expected, seen, skipped, false); len(missing) != 0 {
+		t.Fatalf("non-strict coverage should allow skipped commands, got %v", missing)
+	}
+
+	missing := missingIntegrationCommandsFrom(expected, seen, skipped, true)
+	if !reflect.DeepEqual(missing, []string{"FLOW.SEARCH"}) {
+		t.Fatalf("strict coverage should report skipped commands, got %v", missing)
+	}
+}
+
 func shouldCheckIntegrationCommandCoverage() bool {
 	if os.Getenv("FERRICSTORE_SKIP_COMMAND_COVERAGE") == "1" {
 		return false
@@ -104,14 +135,33 @@ func missingIntegrationCommands() []string {
 	integrationCommandCoverage.Lock()
 	defer integrationCommandCoverage.Unlock()
 
+	return missingIntegrationCommandsFrom(
+		expectedIntegrationCommands(),
+		integrationCommandCoverage.seen,
+		integrationCommandCoverage.skipped,
+		strictIntegrationCommandCoverage(),
+	)
+}
+
+func missingIntegrationCommandsFrom(expected []string, seen map[string]struct{}, skipped map[string]string, strict bool) []string {
 	var missing []string
-	for _, command := range expectedIntegrationCommands() {
-		if _, ok := integrationCommandCoverage.seen[command]; !ok {
+	for _, command := range expected {
+		if _, skipped := skipped[command]; skipped {
+			if strict {
+				missing = append(missing, command)
+			}
+			continue
+		}
+		if _, ok := seen[command]; !ok {
 			missing = append(missing, command)
 		}
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+func strictIntegrationCommandCoverage() bool {
+	return os.Getenv("FERRICSTORE_STRICT_COMMAND_COVERAGE") == "1"
 }
 
 func expectedIntegrationCommands() []string {
@@ -246,6 +296,7 @@ func expectedIntegrationCommands() []string {
 		"FLOW.RETRY",
 		"FLOW.RETRY_MANY",
 		"FLOW.REWIND",
+		"FLOW.RUN_STEPS_MANY",
 		"FLOW.SCHEDULE.CREATE",
 		"FLOW.SCHEDULE.DELETE",
 		"FLOW.SCHEDULE.FIRE",
@@ -254,9 +305,12 @@ func expectedIntegrationCommands() []string {
 		"FLOW.SCHEDULE.LIST",
 		"FLOW.SCHEDULE.PAUSE",
 		"FLOW.SCHEDULE.RESUME",
+		"FLOW.SEARCH",
 		"FLOW.SIGNAL",
 		"FLOW.SPAWN_CHILDREN",
+		"FLOW.START_AND_CLAIM",
 		"FLOW.STATS",
+		"FLOW.STEP_CONTINUE",
 		"FLOW.STUCK",
 		"FLOW.TERMINALS",
 		"FLOW.TRANSITION",

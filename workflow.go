@@ -11,37 +11,41 @@ type Outcome interface {
 }
 
 type TransitionResult struct {
-	ToState  string
-	Payload  any
-	RunAtMS  int64
-	Priority *int64
+	ToState   string
+	Payload   any
+	RunAtMS   int64
+	Priority  *int64
+	StateMeta map[string]any
 	NamedValues
 }
 
 func (TransitionResult) kind() string { return "transition" }
 
 type CompleteResult struct {
-	Result  any
-	Payload any
-	TTLMS   *int64
+	Result    any
+	Payload   any
+	TTLMS     *int64
+	StateMeta map[string]any
 	NamedValues
 }
 
 func (CompleteResult) kind() string { return "complete" }
 
 type RetryResult struct {
-	Error   any
-	Payload any
-	RunAtMS int64
+	Error     any
+	Payload   any
+	RunAtMS   int64
+	StateMeta map[string]any
 	NamedValues
 }
 
 func (RetryResult) kind() string { return "retry" }
 
 type FailResult struct {
-	Error   any
-	Payload any
-	TTLMS   *int64
+	Error     any
+	Payload   any
+	TTLMS     *int64
+	StateMeta map[string]any
 	NamedValues
 }
 
@@ -244,6 +248,7 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName st
 			Payload:      value.Payload,
 			RunAtMS:      value.RunAtMS,
 			Priority:     value.Priority,
+			StateMeta:    value.StateMeta,
 			NamedValues:  value.NamedValues,
 		})
 	case CompleteResult:
@@ -255,6 +260,7 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName st
 			Result:       value.Result,
 			Payload:      value.Payload,
 			TTLMS:        value.TTLMS,
+			StateMeta:    value.StateMeta,
 			NamedValues:  value.NamedValues,
 		})
 	case RetryResult:
@@ -266,6 +272,7 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName st
 			Error:        value.Error,
 			Payload:      value.Payload,
 			RunAtMS:      value.RunAtMS,
+			StateMeta:    value.StateMeta,
 			NamedValues:  value.NamedValues,
 		})
 	case FailResult:
@@ -277,6 +284,7 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName st
 			Error:        value.Error,
 			Payload:      value.Payload,
 			TTLMS:        value.TTLMS,
+			StateMeta:    value.StateMeta,
 			NamedValues:  value.NamedValues,
 		})
 	default:

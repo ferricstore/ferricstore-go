@@ -64,10 +64,18 @@ func NewPubSubFromURL(rawurl string, opts ...NativeOption) (*PubSub, error) {
 // OpenPubSub opens a pub/sub view over the client's existing multiplexed native connection.
 func (c *Client) OpenPubSub() (*PubSub, error) {
 	native, ok := c.exec.(*NativeExecutor)
-	if !ok {
-		return nil, errors.New("pubsub requires a native client executor")
+	if ok {
+		return &PubSub{exec: native}, nil
 	}
-	return &PubSub{exec: native}, nil
+	topology, ok := c.exec.(*TopologyNativeExecutor)
+	if ok {
+		control, err := topology.controlAdapter(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		return &PubSub{exec: control}, nil
+	}
+	return nil, errors.New("pubsub requires a native client executor")
 }
 
 // Close closes isolated pub/sub connections. Shared client pub/sub views are left open.

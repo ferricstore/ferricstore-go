@@ -50,6 +50,11 @@ const (
 	nativeOpFlowClaimDue           = 0x0203
 	nativeOpFlowCreateMany         = 0x020F
 	nativeOpFlowCompleteMany       = 0x0210
+	nativeOpFlowPolicySet          = 0x021E
+	nativeOpFlowPolicyGet          = 0x021F
+	nativeOpFlowStepContinue       = 0x0222
+	nativeOpFlowStartAndClaim      = 0x0223
+	nativeOpFlowRunStepsMany       = 0x0224
 	nativeOpFlowScheduleCreate     = 0x0225
 	nativeOpFlowScheduleGet        = 0x0226
 	nativeOpFlowScheduleDelete     = 0x0227
@@ -268,6 +273,10 @@ func (e *NativeExecutor) command(ctx context.Context, args ...any) (any, error) 
 	if err != nil {
 		return nil, err
 	}
+	return e.doNativeCommand(ctx, command)
+}
+
+func (e *NativeExecutor) doNativeCommand(ctx context.Context, command nativeCommand) (any, error) {
 	value, err := e.request(ctx, command.opcode, command.laneID, command.payload, command.flags)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", command.name, err)
@@ -275,7 +284,16 @@ func (e *NativeExecutor) command(ctx context.Context, args ...any) (any, error) 
 	return value, nil
 }
 
+func (e *NativeExecutor) doNativeCommandOnLane(ctx context.Context, command nativeCommand, laneID uint32) (any, error) {
+	command.laneID = laneID
+	return e.doNativeCommand(ctx, command)
+}
+
 func (e *NativeExecutor) Pipeline(ctx context.Context, commands [][]any) ([]any, error) {
+	return e.pipelineOnLane(ctx, commands, 1)
+}
+
+func (e *NativeExecutor) pipelineOnLane(ctx context.Context, commands [][]any, laneID uint32) ([]any, error) {
 	if len(commands) == 0 {
 		return nil, nil
 	}
@@ -283,7 +301,7 @@ func (e *NativeExecutor) Pipeline(ctx context.Context, commands [][]any) ([]any,
 		if err != nil {
 			return nil, err
 		}
-		value, err := e.request(ctx, nativeOpPipeline, 1, payload, nativeFlagCustomPayload)
+		value, err := e.request(ctx, nativeOpPipeline, laneID, payload, nativeFlagCustomPayload)
 		if err != nil {
 			return nil, fmt.Errorf("PIPELINE: %w", err)
 		}
@@ -305,7 +323,7 @@ func (e *NativeExecutor) Pipeline(ctx context.Context, commands [][]any) ([]any,
 			"body":       command.payload,
 		})
 	}
-	value, err := e.request(ctx, nativeOpPipeline, 1, map[string]any{
+	value, err := e.request(ctx, nativeOpPipeline, laneID, map[string]any{
 		"atomicity": "none",
 		"commands":  items,
 		"return":    "compact",

@@ -70,6 +70,15 @@ func anyCreateItemValues(items []CreateItem) bool {
 	return false
 }
 
+func anyCreateItemStateMeta(items []CreateItem) bool {
+	for _, item := range items {
+		if len(item.StateMeta) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func anyChildPartition(items []ChildSpec) bool {
 	for _, item := range items {
 		if item.PartitionKey != "" {
@@ -108,4 +117,18 @@ func mergeRefs(base, item map[string]string) map[string]string {
 		merged[key] = value
 	}
 	return merged
+}
+
+func runStepsItems(items []RunStepsItem, partitionKey string) []map[string]string {
+	out := make([]map[string]string, 0, len(items))
+	for _, item := range items {
+		entry := map[string]string{"id": item.ID}
+		if item.PartitionKey != "" {
+			entry["partition_key"] = item.PartitionKey
+		} else if partitionKey != "" {
+			entry["partition_key"] = partitionKey
+		}
+		out = append(out, entry)
+	}
+	return out
 }

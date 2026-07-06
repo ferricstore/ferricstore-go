@@ -31,6 +31,103 @@ func TestScheduleCreateBuildsCommand(t *testing.T) {
 	}
 }
 
+func TestCountByStateBuildsStatsCommand(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"count": int64(42)}}
+	client := NewClientWithExecutor(exec)
+	consistent := false
+
+	count, err := client.CountByState(context.Background(), "gitea.queue.default", "queued", ReadOptions{
+		PartitionKey:         "queue-partition",
+		Count:                Int(999),
+		ConsistentProjection: &consistent,
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 42 {
+		t.Fatalf("unexpected count: %d", count)
+	}
+	want := []any{"FLOW.STATS", "gitea.queue.default", "PARTITION", "queue-partition", "STATE", "queued", "CONSISTENT_PROJECTION", "false"}
+	if !reflect.DeepEqual(exec.calls[0], want) {
+		t.Fatalf("unexpected call\n got: %#v\nwant: %#v", exec.calls[0], want)
+	}
+}
+
+func TestExistsBuildsStatsCommand(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"count": int64(1)}}
+	client := NewClientWithExecutor(exec)
+
+	exists, err := client.Exists(context.Background(), "gitea.queue.default", ReadOptions{
+		PartitionKey: "queue-partition",
+		Count:        Int(500),
+		State:        "queued",
+		Attributes:   map[string]any{"gitea_payload_hash": "hash-1"},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatal("expected matching workflow to exist")
+	}
+	want := []any{
+		"FLOW.STATS", "gitea.queue.default",
+		"PARTITION", "queue-partition",
+		"STATE", "queued",
+		"ATTRIBUTE", "gitea_payload_hash", "hash-1",
+	}
+	if !reflect.DeepEqual(exec.calls[0], want) {
+		t.Fatalf("unexpected call\n got: %#v\nwant: %#v", exec.calls[0], want)
+	}
+}
+
+func TestCountByStateRejectsMalformedStatsCount(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"type": "gitea.queue.default"}}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.CountByState(context.Background(), "gitea.queue.default", "queued", ReadOptions{})
+
+	if err == nil {
+		t.Fatal("expected malformed stats count to fail")
+	}
+}
+
+func TestExistsRejectsMalformedStatsCount(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"count": "not-a-number"}}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.Exists(context.Background(), "gitea.queue.default", ReadOptions{State: "queued"})
+
+	if err == nil {
+		t.Fatal("expected malformed stats count to fail")
+	}
+}
+
+func TestSetPolicyBuildsIndexedStateMetaCommand(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"type": "order", "indexed_state_meta": "version"}}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.SetPolicy(context.Background(), "order", PolicyOptions{
+		IndexedAttributes: []string{"tenant"},
+		IndexedStateMeta:  "version",
+		Retry:             &RetryPolicy{MaxRetries: 2},
+		States: map[string]RetryPolicy{
+			"queued": {MaxRetries: 5},
+		},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(exec.calls[0], []any{"FLOW.POLICY.SET", "order", "INDEXED_ATTRIBUTES", []string{"tenant"}, "INDEXED_STATE_META", "version", "MAX_RETRIES", 2}) {
+		t.Fatalf("missing indexed policy options in %#v", exec.calls[0])
+	}
+	if !containsSubsequence(exec.calls[0], []any{"STATE", "queued", "MAX_RETRIES", 5}) {
+		t.Fatalf("missing state policy in %#v", exec.calls[0])
+	}
+}
+
 func TestGovernanceHelpersBuildCommands(t *testing.T) {
 	exec := &fakeExecutor{values: []any{
 		map[string]any{"id": "approval-1", "status": "pending", "scope": "tenant:1"},

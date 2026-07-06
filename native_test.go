@@ -196,6 +196,208 @@ func TestNativeFlowCompleteManyFallsBackWhenResultIsPresent(t *testing.T) {
 	}
 }
 
+func TestNativeFlowStateMetaAndStepBuilders(t *testing.T) {
+	start, err := buildNativeCommand([]any{
+		"FLOW.START_AND_CLAIM", "f1",
+		"TYPE", "order",
+		"INITIAL_STATE", "reserve",
+		"WORKER", "worker-1",
+		"LEASE_MS", int64(30_000),
+		"PAYLOAD", []byte("payload"),
+		"PARTITION", "tenant:1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start.opcode != nativeOpFlowStartAndClaim || start.laneID != 1 {
+		t.Fatalf("unexpected start_and_claim routing: %#v", start)
+	}
+	startPayload := start.payload.(map[string]any)
+	if startPayload["id"] != "f1" || startPayload["type"] != "order" || startPayload["initial_state"] != "reserve" {
+		t.Fatalf("unexpected start_and_claim payload: %#v", startPayload)
+	}
+
+	step, err := buildNativeCommand([]any{
+		"FLOW.STEP_CONTINUE", "f1", "lease-1", "reserve", "charge",
+		"FENCING", int64(7),
+		"LEASE_MS", int64(45_000),
+		"PAYLOAD", []byte("next"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step.opcode != nativeOpFlowStepContinue || step.laneID != 1 {
+		t.Fatalf("unexpected step_continue routing: %#v", step)
+	}
+	stepPayload := step.payload.(map[string]any)
+	if stepPayload["id"] != "f1" || stepPayload["lease_token"] != "lease-1" || stepPayload["from_state"] != "reserve" || stepPayload["to_state"] != "charge" {
+		t.Fatalf("unexpected step_continue payload: %#v", stepPayload)
+	}
+}
+
+func TestNativeFlowStateMetaFallsBackToCommandExec(t *testing.T) {
+	command, err := buildNativeCommand([]any{
+		"FLOW.START_AND_CLAIM", "f1",
+		"TYPE", "order",
+		"INITIAL_STATE", "reserve",
+		"WORKER", "worker-1",
+		"LEASE_MS", int64(30_000),
+		"STATE_META", "version", int64(1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.opcode != nativeOpCommandExec || command.laneID != 1 {
+		t.Fatalf("expected command_exec fallback for state_meta mutation, got %#v", command)
+	}
+	payload := command.payload.(map[string]any)
+	if payload["command"] != "FLOW.START_AND_CLAIM" {
+		t.Fatalf("unexpected command_exec payload: %#v", payload)
+	}
+}
+
+func TestNativeFlowRunStepsManyBuilder(t *testing.T) {
+	command, err := buildNativeCommand([]any{
+		"FLOW.RUN_STEPS_MANY",
+		"TYPE", "order",
+		"STATES", []string{"reserve", "charge", "email"},
+		"WORKER", "worker-1",
+		"LEASE_MS", int64(30_000),
+		"NOW", int64(123),
+		"RESULT", []byte("ok"),
+		"ITEMS", []map[string]string{{"id": "f1", "partition_key": "p1"}, {"id": "f2"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.opcode != nativeOpFlowRunStepsMany || command.laneID != 1 {
+		t.Fatalf("unexpected run_steps_many routing: %#v", command)
+	}
+	payload := command.payload.(map[string]any)
+	if payload["type"] != "order" || payload["worker"] != "worker-1" || !reflect.DeepEqual(payload["states"], []string{"reserve", "charge", "email"}) {
+		t.Fatalf("unexpected run_steps_many payload: %#v", payload)
+	}
+	if _, ok := payload["items"].([]map[string]string); !ok {
+		t.Fatalf("unexpected run_steps_many items payload: %#v", payload["items"])
+	}
+}
+
+func TestNativeFlowSearchFallsBackToCommandExec(t *testing.T) {
+	command, err := buildNativeCommand([]any{
+		"FLOW.SEARCH",
+		"TYPE", "order",
+		"STATE", "completed",
+		"PARTITION", "tenant:1",
+		"COUNT", 10,
+		"REV", true,
+		"CONSISTENT_PROJECTION", true,
+		"ATTRIBUTE", "tenant", "acme",
+		"STATE_META", "completed", "version", 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.opcode != nativeOpCommandExec || command.laneID != 1 {
+		t.Fatalf("expected command_exec fallback for flow search, got %#v", command)
+	}
+	payload := command.payload.(map[string]any)
+	if payload["command"] != "FLOW.SEARCH" {
+		t.Fatalf("unexpected flow search command_exec payload: %#v", payload)
+	}
+	wantArgs := []any{
+		"TYPE", "order",
+		"STATE", "completed",
+		"PARTITION", "tenant:1",
+		"COUNT", 10,
+		"REV", true,
+		"CONSISTENT_PROJECTION", true,
+		"ATTRIBUTE", "tenant", "acme",
+		"STATE_META", "completed", "version", 3,
+	}
+	if !reflect.DeepEqual(payload["args"], wantArgs) {
+		t.Fatalf("unexpected flow search command_exec args: %#v", payload)
+	}
+}
+
+func TestNativeFlowPolicySetBuilderIncludesIndexes(t *testing.T) {
+	command, err := buildNativeCommand([]any{
+		"FLOW.POLICY.SET", "order",
+		"INDEXED_ATTRIBUTES", []string{"tenant", "region"},
+		"INDEXED_STATE_META", "version",
+		"MAX_RETRIES", 5,
+		"BACKOFF", "exponential",
+		"BASE_MS", 100,
+		"STATE", "queued",
+		"MAX_RETRIES", 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.opcode != nativeOpFlowPolicySet || command.laneID != 1 {
+		t.Fatalf("unexpected policy set routing: %#v", command)
+	}
+	payload := command.payload.(map[string]any)
+	if payload["type"] != "order" || payload["indexed_state_meta"] != "version" {
+		t.Fatalf("unexpected policy set payload: %#v", payload)
+	}
+	if !reflect.DeepEqual(payload["indexed_attributes"], []string{"tenant", "region"}) {
+		t.Fatalf("unexpected indexed attributes: %#v", payload)
+	}
+	retry := payload["retry"].(map[string]any)
+	if retry["max_retries"] != 5 {
+		t.Fatalf("unexpected retry payload: %#v", retry)
+	}
+	backoff := retry["backoff"].(map[string]any)
+	if backoff["kind"] != "exponential" || backoff["base_ms"] != 100 {
+		t.Fatalf("unexpected backoff payload: %#v", retry)
+	}
+	states := payload["states"].(map[string]any)
+	queued := states["queued"].(map[string]any)
+	queuedRetry := queued["retry"].(map[string]any)
+	if queuedRetry["max_retries"] != 2 {
+		t.Fatalf("unexpected state retry payload: %#v", queued)
+	}
+}
+
+func TestNativeFlowPolicySetBuilderRejectsStateLevelIndexes(t *testing.T) {
+	tests := []struct {
+		name string
+		args []any
+		want string
+	}{
+		{
+			name: "indexed attributes",
+			args: []any{
+				"FLOW.POLICY.SET", "order",
+				"STATE", "queued",
+				"INDEXED_ATTRIBUTES", []string{"tenant"},
+			},
+			want: "ERR flow indexed_attributes is type-level only",
+		},
+		{
+			name: "indexed state meta",
+			args: []any{
+				"FLOW.POLICY.SET", "order",
+				"STATE", "queued",
+				"INDEXED_STATE_META", "version",
+			},
+			want: "ERR flow indexed_state_meta is type-level only",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := buildNativeCommand(tt.args)
+			if err == nil {
+				t.Fatal("expected state-level index option to fail")
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestNativeExecutorPipelineRejectsEmptyCommandWithoutPanic(t *testing.T) {
 	exec := NewNativeExecutor("127.0.0.1:1")
 

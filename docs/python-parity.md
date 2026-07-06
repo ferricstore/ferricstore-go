@@ -7,6 +7,7 @@ This checklist compares the Go SDK against the Python SDK command surface. Go na
 | Python SDK | Go SDK | Status |
 | --- | --- | --- |
 | `from_url` | `NewClientFromURL` | Covered |
+| topology-aware native pool | `NewTopologyNativeExecutor`, `NewTopologyClientFromURLs` | Covered |
 | `command` | `Command` | Covered |
 | `pipeline` | `Pipeline` | Covered |
 | `close` | `Close` | Covered |
@@ -38,6 +39,7 @@ Default behavior matches the Python SDK for normal client usage: one native prot
 | `rewind` | `Rewind` | Covered |
 | `get` | `Get` | Covered |
 | `list` | `List` | Covered |
+| `search` | `Search` | Covered |
 | `stats` | `Stats` | Covered |
 | `attributes` | `Attributes` | Covered |
 | `attribute_values` | `AttributeValues` | Covered |
@@ -161,7 +163,11 @@ Default behavior matches the Python SDK for normal client usage: one native prot
 | native event subscriptions | `SubscribeEvents`, `UnsubscribeEvents`, `NextEvent` | Covered |
 | `subscribe_flow_wake` | `SubscribeFlowWake` | Covered |
 | `CLIENT.SETNAME`, `CLIENT.INFO` | `ClientSetName`, `ClientInfo` | Covered |
-| `ACL` management | `ACL`, `ACLSetUser`, `ACLDelUser`, `ACLGetUser`, `ACLList`, `ACLSave` | Covered |
+| `ACL` management | `ACL`, `ACLSetUser`, `ACLDelUser`, `ACLGetUser`, `ACLList`, `ACLSave`, `ACLWhoAmI`, `ACLLoad` | Covered |
+| `capabilities` | `Capabilities` | Covered |
+| namespace management | `EnsureNamespace`, `GetNamespace`, `ListNamespaces`, `DeleteNamespace` | Covered |
+| quota management | `SetQuota`, `GetQuota`, `QuotaUsage` | Covered |
+| safe management telemetry | `ClusterInfo`, `NamespaceUsage`, `FlowQuery`, `FlowHistory` | Covered |
 
 ## Current Gaps
 

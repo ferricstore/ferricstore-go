@@ -116,6 +116,47 @@ func TestCreateBuildsAttributes(t *testing.T) {
 	}
 }
 
+func TestFlowMutationCommandsBuildStateMeta(t *testing.T) {
+	exec := &fakeExecutor{values: []any{
+		[]byte("OK"),
+		map[string]any{"id": "f2", "type": "order", "state": "running"},
+		[]byte("OK"),
+		map[string]any{"id": "f1", "type": "order", "state": "running"},
+		[]byte("OK"),
+		[]byte("OK"),
+		[]byte("OK"),
+		[]byte("OK"),
+		[]byte("OK"),
+		[]byte("OK"),
+		[]byte("OK"),
+		[]byte("OK"),
+	}}
+	client := NewClientWithExecutor(exec)
+	claimed := []ClaimedItem{{ID: "f1", PartitionKey: "tenant:1", LeaseToken: "lease", FencingToken: 7}}
+	fenced := []FencedItem{{ID: "f1", PartitionKey: "tenant:1", LeaseToken: "lease", FencingToken: 7}}
+
+	_, _ = client.Create(context.Background(), CreateOptions{ID: "f1", Type: "order", NowMS: 100, StateMeta: map[string]any{"version": 1}})
+	_, _ = client.StartAndClaim(context.Background(), StartAndClaimOptions{ID: "f2", Type: "order", InitialState: "accept", Worker: "worker-1", NowMS: 101, StateMeta: map[string]any{"version": 2}})
+	_, _ = client.Transition(context.Background(), TransitionOptions{ID: "f1", FromState: "queued", ToState: "charged", LeaseToken: "lease", FencingToken: 7, NowMS: 102, StateMeta: map[string]any{"version": 3}})
+	_, _ = client.StepContinue(context.Background(), StepContinueOptions{ID: "f1", LeaseToken: "lease", FromState: "charged", ToState: "settled", FencingToken: 7, NowMS: 103, StateMeta: map[string]any{"version": 4}})
+	_, _ = client.Complete(context.Background(), CompleteOptions{ID: "f1", LeaseToken: "lease", FencingToken: 7, StateMeta: map[string]any{"version": 5}})
+	_, _ = client.Retry(context.Background(), RetryOptions{ID: "f1", LeaseToken: "lease", FencingToken: 7, StateMeta: map[string]any{"version": 6}})
+	_, _ = client.Fail(context.Background(), FailOptions{ID: "f1", LeaseToken: "lease", FencingToken: 7, StateMeta: map[string]any{"version": 7}})
+	_, _ = client.Cancel(context.Background(), CancelOptions{ID: "f1", LeaseToken: "lease", FencingToken: 7, StateMeta: map[string]any{"version": 8}})
+	_, _ = client.CompleteMany(context.Background(), CompleteManyOptions{PartitionKey: "tenant:1", Items: claimed, StateMeta: map[string]any{"version": 9}})
+	_, _ = client.TransitionMany(context.Background(), TransitionManyOptions{PartitionKey: "tenant:1", FromState: "queued", ToState: "charged", Items: fenced, StateMeta: map[string]any{"version": 10}})
+	_, _ = client.RetryMany(context.Background(), RetryManyOptions{PartitionKey: "tenant:1", Items: claimed, StateMeta: map[string]any{"version": 11}})
+	_, _ = client.FailMany(context.Background(), FailManyOptions{PartitionKey: "tenant:1", Items: claimed, StateMeta: map[string]any{"version": 12}})
+	_, _ = client.CancelMany(context.Background(), CancelManyOptions{PartitionKey: "tenant:1", Items: fenced, StateMeta: map[string]any{"version": 13}})
+
+	for idx, call := range exec.calls {
+		want := []any{"STATE_META", "version", idx + 1}
+		if !containsSubsequence(call, want) {
+			t.Fatalf("call %d missing state_meta %v in %#v", idx, want, call)
+		}
+	}
+}
+
 func TestCreateManyMixedBuildsItems(t *testing.T) {
 	exec := &fakeExecutor{value: []any{[]byte("OK"), []byte("OK")}}
 	client := NewClientWithExecutor(exec)
@@ -140,6 +181,209 @@ func TestCreateManyMixedBuildsItems(t *testing.T) {
 		"RUN_AT", int64(100), "INDEPENDENT", "true", "ITEMS",
 		"f1", "p1", []byte("a"),
 		"f2", "p2", []byte("b"),
+	}
+	assertCall(t, exec, want)
+}
+
+func TestCreateManyBuildsSharedStateMeta(t *testing.T) {
+	exec := &fakeExecutor{value: []any{[]byte("OK"), []byte("OK")}}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.CreateMany(context.Background(), CreateManyOptions{
+		Type:      "order",
+		State:     "queued",
+		NowMS:     100,
+		StateMeta: map[string]any{"version": 1, "owner": "risk"},
+		Items: []CreateItem{
+			{ID: "f1", Payload: []byte("a")},
+			{ID: "f2", Payload: []byte("b")},
+		},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := exec.calls[0]
+	if !containsSubsequence(got, []any{"STATE_META", "version", 1}) {
+		t.Fatalf("missing version state_meta in %#v", got)
+	}
+	if !containsSubsequence(got, []any{"STATE_META", "owner", "risk"}) {
+		t.Fatalf("missing owner state_meta in %#v", got)
+	}
+}
+
+func TestCreateManyRejectsMixedItemStateMeta(t *testing.T) {
+	exec := &fakeExecutor{value: []byte("OK")}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.CreateMany(context.Background(), CreateManyOptions{
+		Type:  "order",
+		NowMS: 100,
+		Items: []CreateItem{
+			{ID: "f1", StateMeta: map[string]any{"version": 1}},
+			{ID: "f2", StateMeta: map[string]any{"version": 2}},
+		},
+	})
+
+	if err == nil {
+		t.Fatal("expected mixed state_meta error")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("expected no command, got %d", len(exec.calls))
+	}
+}
+
+func TestStartAndClaimBuildsCommand(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"id": "f1", "type": "order", "state": "running", "run_state": "reserve"}}
+	client := NewClientWithExecutor(exec)
+
+	record, err := client.StartAndClaim(context.Background(), StartAndClaimOptions{
+		ID:            "f1",
+		Type:          "order",
+		InitialState:  "reserve",
+		Worker:        "worker-1",
+		LeaseMS:       45_000,
+		Payload:       []byte("payload"),
+		PartitionKey:  "tenant:1",
+		ParentFlowID:  "parent-1",
+		RootFlowID:    "root-1",
+		CorrelationID: "corr-1",
+		NowMS:         100,
+		Priority:      Int64(5),
+		StateMeta:     map[string]any{"version": 1},
+		Attributes:    map[string]any{"tenant": "acme"},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record == nil || record.RunState != "reserve" {
+		t.Fatalf("unexpected record: %#v", record)
+	}
+	want := []any{
+		"FLOW.START_AND_CLAIM", "f1", "TYPE", "order", "INITIAL_STATE", "reserve",
+		"WORKER", "worker-1", "LEASE_MS", int64(45_000), "NOW", int64(100),
+		"PARTITION", "tenant:1", "PAYLOAD", []byte("payload"),
+		"PARENT_FLOW_ID", "parent-1", "ROOT_FLOW_ID", "root-1", "CORRELATION_ID", "corr-1",
+		"PRIORITY", int64(5), "ATTRIBUTE", "tenant", "acme", "STATE_META", "version", 1,
+	}
+	assertCall(t, exec, want)
+}
+
+func TestStepContinueBuildsCommand(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"id": "f1", "type": "order", "state": "running", "run_state": "charged"}}
+	client := NewClientWithExecutor(exec)
+
+	record, err := client.StepContinue(context.Background(), StepContinueOptions{
+		ID:           "f1",
+		LeaseToken:   "lease-1",
+		FromState:    "reserve",
+		ToState:      "charged",
+		FencingToken: 7,
+		LeaseMS:      60_000,
+		PartitionKey: "tenant:1",
+		Payload:      []byte("payload"),
+		Worker:       "worker-1",
+		NowMS:        101,
+		StateMeta:    map[string]any{"version": 2},
+		NamedValues:  NamedValues{AttributesMerge: map[string]any{"phase": "charge"}},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record == nil || record.RunState != "charged" {
+		t.Fatalf("unexpected record: %#v", record)
+	}
+	want := []any{
+		"FLOW.STEP_CONTINUE", "f1", "lease-1", "reserve", "charged",
+		"FENCING", int64(7), "LEASE_MS", int64(60_000), "NOW", int64(101),
+		"PARTITION", "tenant:1", "WORKER", "worker-1", "PAYLOAD", []byte("payload"),
+		"ATTRIBUTE_MERGE", "phase", "charge", "STATE_META", "version", 2,
+	}
+	assertCall(t, exec, want)
+}
+
+func TestRunStepsManyBuildsCommand(t *testing.T) {
+	exec := &fakeExecutor{value: []byte("OK")}
+	client := NewClientWithExecutor(exec)
+
+	err := client.RunStepsMany(context.Background(), RunStepsManyOptions{
+		Type:    "order",
+		States:  []string{"reserve", "charge", "email"},
+		Worker:  "worker-1",
+		LeaseMS: 30_000,
+		NowMS:   123,
+		Result:  []byte("ok"),
+		Items:   []RunStepsItem{{ID: "f1", PartitionKey: "p1"}, {ID: "f2"}},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []any{
+		"FLOW.RUN_STEPS_MANY", "TYPE", "order", "STATES", []string{"reserve", "charge", "email"},
+		"WORKER", "worker-1", "LEASE_MS", int64(30_000), "NOW", int64(123),
+		"RESULT", []byte("ok"),
+		"ITEMS", []map[string]string{{"id": "f1", "partition_key": "p1"}, {"id": "f2"}},
+	}
+	assertCall(t, exec, want)
+}
+
+func TestRunStepsManyRequiresStatesOrSteps(t *testing.T) {
+	client := NewClientWithExecutor(&fakeExecutor{value: []byte("OK")})
+
+	if err := client.RunStepsMany(context.Background(), RunStepsManyOptions{Type: "order", Worker: "worker-1", Items: []RunStepsItem{{ID: "f1"}}}); err == nil {
+		t.Fatal("expected missing states/steps error")
+	}
+	if err := client.RunStepsMany(context.Background(), RunStepsManyOptions{Type: "order", States: []string{"a"}, Steps: 1, Worker: "worker-1", Items: []RunStepsItem{{ID: "f1"}}}); err == nil {
+		t.Fatal("expected mutually exclusive states/steps error")
+	}
+}
+
+func TestSearchBuildsCommand(t *testing.T) {
+	exec := &fakeExecutor{value: []any{map[string]any{"id": "f1", "type": "order", "state": "completed"}}}
+	client := NewClientWithExecutor(exec)
+	consistent := true
+	includeCold := true
+	rev := true
+	terminalOnly := true
+
+	records, err := client.Search(context.Background(), SearchOptions{
+		Type:                 "order",
+		State:                "completed",
+		PartitionKey:         "tenant:1",
+		Count:                Int(10),
+		FromMS:               Int64(100),
+		ToMS:                 Int64(200),
+		Rev:                  &rev,
+		TerminalOnly:         &terminalOnly,
+		IncludeCold:          &includeCold,
+		ConsistentProjection: &consistent,
+		Attributes:           map[string]any{"tenant": "acme"},
+		StateMeta:            map[string]map[string]any{"completed": {"version": 3}},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ID != "f1" {
+		t.Fatalf("unexpected search records: %#v", records)
+	}
+	want := []any{
+		"FLOW.SEARCH",
+		"TYPE", "order",
+		"STATE", "completed",
+		"COUNT", 10,
+		"PARTITION", "tenant:1",
+		"FROM_MS", int64(100),
+		"TO_MS", int64(200),
+		"REV", "true",
+		"TERMINAL_ONLY", "true",
+		"INCLUDE_COLD", "true",
+		"CONSISTENT_PROJECTION", "true",
+		"ATTRIBUTE", "tenant", "acme",
+		"STATE_META", "completed", "version", 3,
 	}
 	assertCall(t, exec, want)
 }
@@ -180,6 +424,7 @@ func TestClaimDueDecodesNativeMaps(t *testing.T) {
 				"root_flow_id":   []byte("root"),
 				"correlation_id": []byte("corr"),
 				"attributes":     map[string]any{"tenant": "acme"},
+				"state_meta":     map[string]any{"queued": map[string]any{"version": int64(1)}},
 			},
 		},
 	}
@@ -209,6 +454,9 @@ func TestClaimDueDecodesNativeMaps(t *testing.T) {
 	}
 	if record.Attributes["tenant"] != "acme" {
 		t.Fatalf("unexpected attributes: %#v", record.Attributes)
+	}
+	if record.StateMeta["queued"].(map[string]any)["version"] != int64(1) {
+		t.Fatalf("unexpected state_meta: %#v", record.StateMeta)
 	}
 
 	want := []any{

@@ -19,12 +19,27 @@ const (
 
 func buildFlowNativeCommand(name string, args []any) (nativeCommand, bool, error) {
 	switch name {
+	case "FLOW.POLICY.SET":
+		return buildFlowPolicySetNative(args)
+	case "FLOW.POLICY.GET":
+		return buildFlowAdminNative(name, nativeOpFlowPolicyGet, args, "type")
+	}
+	if hasFlowCommandOnlyOption(name, args) {
+		return nativeCommand{}, false, nil
+	}
+	switch name {
 	case "FLOW.CREATE_MANY":
 		return buildFlowCreateManyNative(args)
 	case "FLOW.CLAIM_DUE":
 		return buildFlowClaimDueNative(args)
 	case "FLOW.COMPLETE_MANY":
 		return buildFlowCompleteManyNative(args)
+	case "FLOW.START_AND_CLAIM":
+		return buildFlowAdminNative(name, nativeOpFlowStartAndClaim, args, "id")
+	case "FLOW.STEP_CONTINUE":
+		return buildFlowAdminNative(name, nativeOpFlowStepContinue, args, "id", "lease_token", "from_state", "to_state")
+	case "FLOW.RUN_STEPS_MANY":
+		return buildFlowAdminNative(name, nativeOpFlowRunStepsMany, args)
 	case "FLOW.SCHEDULE.CREATE":
 		return buildFlowScheduleCreateNative(args)
 	case "FLOW.SCHEDULE.GET":
@@ -94,6 +109,19 @@ func buildFlowNativeCommand(name string, args []any) (nativeCommand, bool, error
 	default:
 		return nativeCommand{}, false, nil
 	}
+}
+
+func hasFlowCommandOnlyOption(name string, args []any) bool {
+	for _, arg := range args {
+		token := strings.ToUpper(asString(arg))
+		if token == "INDEXED_STATE_META" {
+			return true
+		}
+		if name != "FLOW.SEARCH" && token == "STATE_META" {
+			return true
+		}
+	}
+	return false
 }
 
 func buildFlowCreateManyNative(args []any) (nativeCommand, bool, error) {
