@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -450,8 +451,12 @@ func (e *TopologyNativeExecutor) refreshCandidateURLs() []string {
 	seedURLs := append([]string(nil), e.seedURLs...)
 	e.mu.Unlock()
 
-	seen := make(map[string]struct{}, len(seedURLs))
-	urls := make([]string, 0, len(seedURLs)+len(topology.endpoints))
+	endpointCount := 0
+	if topology != nil {
+		endpointCount = len(topology.endpoints)
+	}
+	seen := make(map[string]struct{}, len(seedURLs)+endpointCount)
+	urls := make([]string, 0, len(seedURLs)+endpointCount)
 	for _, candidate := range seedURLs {
 		if _, ok := seen[candidate]; ok {
 			continue
@@ -757,7 +762,7 @@ func commandPart(value any) string {
 
 func routeSlotForKey(key any) int {
 	text := asString(key)
-	hashInput := text
+	var hashInput string
 	if strings.HasPrefix(text, "f:{") {
 		hashInput = flowHashTag(text[3:], text)
 	} else if strings.HasPrefix(text, "X:f:{") {
@@ -823,10 +828,18 @@ func parseFerricURL(raw string) (parsedFerricURL, error) {
 	}
 	port := 0
 	if parsed.Port() != "" {
-		fmt.Sscanf(parsed.Port(), "%d", &port)
+		parsedPort, err := strconv.Atoi(parsed.Port())
+		if err != nil {
+			return parsedFerricURL{}, fmt.Errorf("invalid FerricStore URL port %q", parsed.Port())
+		}
+		port = parsedPort
 	}
 	if port <= 0 {
-		fmt.Sscanf(defaultPort, "%d", &port)
+		defaultParsedPort, err := strconv.Atoi(defaultPort)
+		if err != nil {
+			return parsedFerricURL{}, fmt.Errorf("invalid default FerricStore URL port %q", defaultPort)
+		}
+		port = defaultParsedPort
 	}
 	password := ""
 	if parsed.User != nil {

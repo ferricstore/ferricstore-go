@@ -61,6 +61,12 @@ func TestRoutingTopologyRejectsLeaderUnknown(t *testing.T) {
 	}
 }
 
+func TestParseFerricURLRejectsInvalidPort(t *testing.T) {
+	if _, err := parseFerricURL("ferric://127.0.0.1:not-a-port"); err == nil {
+		t.Fatal("expected invalid URL port to fail")
+	}
+}
+
 func TestTopologyRoutingKeyMatchesLatestSDKs(t *testing.T) {
 	if key, ok := routingKeyForCommand([]any{"FLOW.SEARCH", "TYPE", "order"}); ok || key != nil {
 		t.Fatalf("unpartitioned FLOW.SEARCH should stay on control, got key=%#v ok=%v", key, ok)
