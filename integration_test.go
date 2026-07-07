@@ -345,7 +345,7 @@ func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Clie
 
 	partition := "go-sdk:fused:" + runID + ":partition"
 	startID := "go-sdk:fused-start:" + runID
-	started, err := client.StartAndClaim(ctx, StartAndClaimOptions{
+	startOptions := StartAndClaimOptions{
 		ID:           startID,
 		Type:         typeName,
 		InitialState: "step-a",
@@ -354,7 +354,16 @@ func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Clie
 		Payload:      map[string]any{"step": "a"},
 		StateMeta:    map[string]any{"version": "1"},
 		NowMS:        now,
-	})
+	}
+	started, err := client.StartAndClaim(ctx, startOptions)
+	stateMetaSupported := true
+	if err != nil && isUnsupportedFusedStateMetaOption(err) {
+		t.Logf("server image does not support fused Flow state_meta options: %v", err)
+		stateMetaSupported = false
+		startOptions.ID = "go-sdk:fused-start-core:" + runID
+		startOptions.StateMeta = nil
+		started, err = client.StartAndClaim(ctx, startOptions)
+	}
 	if err != nil {
 		if isUnsupportedFusedFlowCommand(err) {
 			t.Logf("skipping fused Flow integration against this server image: %v", err)
@@ -367,29 +376,33 @@ func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Clie
 		}
 		t.Fatal(err)
 	}
-	if started == nil || started.ID != startID || started.RunState != "step-a" || flowStateMetaValue(started, "step-a", "version") != "1" {
+	if started == nil || started.ID != startOptions.ID || started.RunState != "step-a" {
 		t.Fatalf("FLOW.START_AND_CLAIM = %#v", started)
 	}
+	if stateMetaSupported && flowStateMetaValue(started, "step-a", "version") != "1" {
+		t.Fatalf("FLOW.START_AND_CLAIM state_meta = %#v", started)
+	}
 
-	indexed, err := client.Search(ctx, SearchOptions{
-		Type:                 typeName,
-		PartitionKey:         partition,
-		Count:                Int(10),
-		ConsistentProjection: Bool(true),
-		StateMeta:            map[string]map[string]any{"step-a": {"version": "1"}},
-	})
-	if err != nil {
-		if isUnsupportedFusedFlowCommand(err) || isUnsupportedFlowSearchCommand(err) {
-			t.Logf("skipping fused Flow search integration against this server image: %v", err)
-			return
+	if stateMetaSupported {
+		indexed, err := client.Search(ctx, SearchOptions{
+			Type:                 typeName,
+			PartitionKey:         partition,
+			Count:                Int(10),
+			ConsistentProjection: Bool(true),
+			StateMeta:            map[string]map[string]any{"step-a": {"version": "1"}},
+		})
+		if err != nil {
+			if isUnsupportedFusedFlowCommand(err) || isUnsupportedFlowSearchCommand(err) {
+				t.Logf("skipping fused Flow search integration against this server image: %v", err)
+			} else {
+				t.Fatal(err)
+			}
+		} else if !hasRecordID(indexed, startOptions.ID) {
+			t.Fatalf("FLOW.SEARCH state_meta = %#v", indexed)
 		}
-		t.Fatal(err)
-	}
-	if !hasRecordID(indexed, startID) {
-		t.Fatalf("FLOW.SEARCH state_meta = %#v", indexed)
 	}
 
-	continued, err := client.StepContinue(ctx, StepContinueOptions{
+	stepOptions := StepContinueOptions{
 		ID:           started.ID,
 		LeaseToken:   started.LeaseToken,
 		FromState:    "step-a",
@@ -400,18 +413,32 @@ func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Clie
 		Payload:      map[string]any{"step": "b"},
 		StateMeta:    map[string]any{"version": "2"},
 		NowMS:        now + 1,
-	})
+	}
+	if !stateMetaSupported {
+		stepOptions.StateMeta = nil
+	}
+	continued, err := client.StepContinue(ctx, stepOptions)
+	if err != nil && stepOptions.StateMeta != nil && isUnsupportedFusedStateMetaOption(err) {
+		t.Logf("server image does not support fused Flow continuation state_meta options: %v", err)
+		stateMetaSupported = false
+		stepOptions.StateMeta = nil
+		continued, err = client.StepContinue(ctx, stepOptions)
+	}
 	if err != nil {
 		if isUnsupportedFusedFlowCommand(err) {
 			t.Logf("skipping fused Flow continuation integration against this server image: %v", err)
-			return
+			skipIntegrationCommandCoverage("server image does not support FLOW.STEP_CONTINUE", "FLOW.STEP_CONTINUE")
+		} else {
+			t.Fatal(err)
 		}
-		t.Fatal(err)
-	}
-	if continued == nil || continued.RunState != "step-b" || flowStateMetaValue(continued, "step-b", "version") != "2" {
+	} else if continued == nil || continued.RunState != "step-b" {
 		t.Fatalf("FLOW.STEP_CONTINUE = %#v", continued)
+	} else {
+		if stateMetaSupported && flowStateMetaValue(continued, "step-b", "version") != "2" {
+			t.Fatalf("FLOW.STEP_CONTINUE state_meta = %#v", continued)
+		}
+		_ = must[*FlowRecord](t)(client.Complete(ctx, CompleteOptions{ID: continued.ID, LeaseToken: continued.LeaseToken, FencingToken: continued.FencingToken, PartitionKey: continued.PartitionKey, Result: map[string]any{"done": true}}))
 	}
-	_ = must[*FlowRecord](t)(client.Complete(ctx, CompleteOptions{ID: continued.ID, LeaseToken: continued.LeaseToken, FencingToken: continued.FencingToken, PartitionKey: continued.PartitionKey, Result: map[string]any{"done": true}}))
 
 	runIDPrefix := "go-sdk:fused-run:" + runID
 	if err := client.RunStepsMany(ctx, RunStepsManyOptions{
@@ -426,6 +453,11 @@ func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Clie
 			{ID: runIDPrefix + ":b"},
 		},
 	}); err != nil {
+		if isUnsupportedFusedFlowCommand(err) {
+			t.Logf("skipping fused Flow run-steps integration against this server image: %v", err)
+			skipIntegrationCommandCoverage("server image does not support FLOW.RUN_STEPS_MANY", "FLOW.RUN_STEPS_MANY")
+			return
+		}
 		t.Fatal(err)
 	}
 	for _, id := range []string{runIDPrefix + ":a", runIDPrefix + ":b"} {
@@ -446,6 +478,16 @@ func isUnsupportedFusedFlowCommand(err error) bool {
 		strings.Contains(message, "unknown command flow.start_and_claim") ||
 		strings.Contains(message, "unknown command flow.step_continue") ||
 		strings.Contains(message, "unknown command flow.run_steps_many")
+}
+
+func isUnsupportedFusedStateMetaOption(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unknown flow option state_meta") ||
+		strings.Contains(message, "native unknown flow option state_meta") ||
+		strings.Contains(message, "unsupported command ast")
 }
 
 func isUnsupportedFlowSearchCommand(err error) bool {

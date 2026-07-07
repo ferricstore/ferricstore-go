@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.5 - 2026-07-07
+
+- Keep strict Docker integration coverage green against FerricStore `0.7.3` by exercising core fused Flow commands when state-meta Flow options are not supported by the server image.
+
 ## 0.1.4 - 2026-07-07
 
 - Move the SDK package to the module root import path.
