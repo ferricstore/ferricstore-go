@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.6 - 2026-07-08
+
 - Add opt-in FIFO/PARALLEL Flow state policies, queue/workflow policy installation, and FIFO priority guardrails.
 - Add invocation definition/create/read/list helpers with request-context support.
 - Encode `REQUEST_CONTEXT` into native `COMMAND_EXEC` payloads and fix explicit `COMMAND_EXEC` native payload shaping.
