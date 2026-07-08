@@ -101,8 +101,10 @@ Default behavior matches the Python SDK for normal client usage: one native prot
 | queue `worker` | `Queue.Worker` | Covered |
 | queue `run_once` | `QueueWorker.RunOnce` | Covered |
 | queue `run_forever`, `start`, `join`, `stop`, stats | `RunForever`, `Start`, handle `Join`/`Stop`/`Stats` | Covered |
+| queue `install_policy` | `Queue.InstallPolicy`, `QueueClient.InstallPolicy` | Covered |
 | `WorkflowClient.workflow` | `NewWorkflowClient(...).Workflow` | Covered |
 | workflow `state` handlers | `Workflow.State` | Covered |
+| workflow state mode policy | `Workflow.State(..., FlowStatePolicy{Mode: ...})`, `Workflow.InstallPolicy` | Covered |
 | workflow `start_flow`/`enqueue` | `Workflow.Start` | Covered |
 | workflow worker `run_once` | `WorkflowWorker.RunOnce` | Covered |
 | workflow `run`, `start`, `join`, `stop` | `RunForever`, `Start`, handle `Join`/`Stop`/`Stats` | Covered |
@@ -168,6 +170,8 @@ Default behavior matches the Python SDK for normal client usage: one native prot
 | namespace management | `EnsureNamespace`, `GetNamespace`, `ListNamespaces`, `DeleteNamespace` | Covered |
 | quota management | `SetQuota`, `GetQuota`, `QuotaUsage` | Covered |
 | safe management telemetry | `ClusterInfo`, `NamespaceUsage`, `FlowQuery`, `FlowHistory` | Covered |
+| invocation helpers | `InvocationDefinitionPut`, `InvocationDefinitionGet`, `InvocationDefinitionList`, `InvocationCreate`, `InvocationGet`, `InvocationPartitionList` | Covered |
+| invocation request context | `RequestContext`, `CommandExecWithContext` | Covered |
 
 ## Current Gaps
 

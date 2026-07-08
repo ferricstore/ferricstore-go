@@ -496,6 +496,48 @@ func TestClaimDueDefaultsNow(t *testing.T) {
 	}
 }
 
+func TestClaimJobsBuildsPartitionKeysAndDecodesFencing(t *testing.T) {
+	exec := &fakeExecutor{
+		value: []any{
+			map[string]any{
+				"id":            "flow-1",
+				"type":          "order",
+				"state":         "running",
+				"partition_key": "tenant:b",
+				"lease_token":   "lease-1",
+				"fencing_token": int64(42),
+			},
+		},
+	}
+	client := NewClientWithExecutor(exec)
+
+	jobs, err := client.ClaimJobs(context.Background(), ClaimDueOptions{
+		Type:          "order",
+		State:         "queued",
+		Worker:        "worker-1",
+		PartitionKeys: []string{"tenant:a", "tenant:b"},
+		Limit:         5,
+		NowMS:         100,
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected one claimed job, got %#v", jobs)
+	}
+	job := jobs[0]
+	if job.ID != "flow-1" || job.PartitionKey != "tenant:b" || job.LeaseToken != "lease-1" || job.FencingToken != 42 {
+		t.Fatalf("unexpected claimed job: %#v", job)
+	}
+	want := []any{
+		"FLOW.CLAIM_DUE", "order", "STATE", "queued", "WORKER", "worker-1",
+		"LEASE_MS", int64(30000), "LIMIT", 5, "NOW", int64(100),
+		"PARTITIONS", 2, "tenant:a", "tenant:b", "RETURN", "JOBS_COMPACT_ATTRS",
+	}
+	assertCall(t, exec, want)
+}
+
 func TestCompleteManyMixedBuildsItems(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("OK")}
 	client := NewClientWithExecutor(exec)

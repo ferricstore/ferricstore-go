@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add opt-in FIFO/PARALLEL Flow state policies, queue/workflow policy installation, and FIFO priority guardrails.
+- Add invocation definition/create/read/list helpers with request-context support.
+- Encode `REQUEST_CONTEXT` into native `COMMAND_EXEC` payloads and fix explicit `COMMAND_EXEC` native payload shaping.
+- Run Docker integration tests against FerricStore `0.7.5` by default.
+
 ## 0.1.5 - 2026-07-07
 
 - Keep strict Docker integration coverage green against FerricStore `0.7.3` by exercising core fused Flow commands when state-meta Flow options are not supported by the server image.

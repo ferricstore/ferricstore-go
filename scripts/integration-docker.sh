@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-image="${FERRICSTORE_IMAGE:-ghcr.io/ferricstore/ferricstore:0.7.2}"
+image="${FERRICSTORE_IMAGE:-ghcr.io/ferricstore/ferricstore:0.7.5}"
 name="${FERRICSTORE_TEST_CONTAINER:-ferricstore-go-integration-$$}"
 
 cleanup() {

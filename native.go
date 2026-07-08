@@ -12,6 +12,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -356,15 +357,34 @@ func buildNativeCommand(args []any) (nativeCommand, error) {
 	if built, ok, err := buildFlowNativeCommand(command, args[1:]); ok || err != nil {
 		return built, err
 	}
+	if command == "COMMAND_EXEC" {
+		if len(args) < 2 {
+			return nativeCommand{}, errors.New("COMMAND_EXEC requires command name")
+		}
+		return commandExecNativeCommand(strings.ToUpper(asString(args[1])), args[2:]), nil
+	}
+	return commandExecNativeCommand(command, args[1:]), nil
+}
+
+func commandExecNativeCommand(command string, args []any) nativeCommand {
+	payloadArgs := args
+	payload := map[string]any{
+		"command": command,
+		"args":    nativeCommandArgs(payloadArgs),
+	}
+	if len(args) >= 2 && strings.ToUpper(asString(args[len(args)-2])) == "REQUEST_CONTEXT" {
+		payloadArgs = args[:len(args)-2]
+		payload["args"] = nativeCommandArgs(payloadArgs)
+		if requestContext := normalizeRequestContext(args[len(args)-1]); len(requestContext) > 0 {
+			payload["request_context"] = requestContext
+		}
+	}
 	return nativeCommand{
-		name:   command,
-		opcode: nativeOpCommandExec,
-		laneID: 1,
-		payload: map[string]any{
-			"command": command,
-			"args":    nativeCommandArgs(args[1:]),
-		},
-	}, nil
+		name:    command,
+		opcode:  nativeOpCommandExec,
+		laneID:  1,
+		payload: payload,
+	}
 }
 
 func nativeCommandArgs(args []any) []any {
@@ -386,6 +406,92 @@ func nativeCommandArg(arg any) any {
 		}
 		return encoded
 	}
+}
+
+func normalizeRequestContext(value any) map[string]any {
+	out := map[string]any{}
+	mapping := requestContextMap(value)
+	if len(mapping) == 0 {
+		return out
+	}
+	if subject := strings.TrimSpace(asString(firstPresent(mapping, "subject", "Subject"))); subject != "" {
+		out["subject"] = subject
+	}
+	if tenant := strings.TrimSpace(asString(firstPresent(mapping, "tenant", "Tenant"))); tenant != "" {
+		out["tenant"] = tenant
+	}
+	if scopes := normalizeRequestContextScopes(firstPresent(mapping, "scopes", "Scopes")); len(scopes) > 0 {
+		out["scopes"] = scopes
+	}
+	return out
+}
+
+func requestContextMap(value any) map[string]any {
+	switch v := value.(type) {
+	case *RequestContext:
+		if v == nil {
+			return nil
+		}
+		return map[string]any{"subject": v.Subject, "tenant": v.Tenant, "scopes": v.Scopes}
+	case RequestContext:
+		return map[string]any{"subject": v.Subject, "tenant": v.Tenant, "scopes": v.Scopes}
+	case map[string]any:
+		return v
+	case map[interface{}]interface{}:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[asString(key)] = item
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func normalizeRequestContextScopes(value any) []string {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return uniqueNonEmptyStrings(strings.Fields(v))
+	case []byte:
+		return uniqueNonEmptyStrings(strings.Fields(string(v)))
+	case []string:
+		return uniqueNonEmptyStrings(v)
+	case []any:
+		values := make([]string, 0, len(v))
+		for _, item := range v {
+			values = append(values, asString(item))
+		}
+		return uniqueNonEmptyStrings(values)
+	default:
+		rv := reflect.ValueOf(value)
+		if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+			return nil
+		}
+		values := make([]string, 0, rv.Len())
+		for idx := 0; idx < rv.Len(); idx++ {
+			values = append(values, asString(rv.Index(idx).Interface()))
+		}
+		return uniqueNonEmptyStrings(values)
+	}
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func buildBasicNativeCommand(name string, args []any) (nativeCommand, bool, error) {

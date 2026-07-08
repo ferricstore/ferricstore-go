@@ -3,6 +3,7 @@ package ferricstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -96,19 +97,44 @@ func NewWorkflowClient(client *Client) *WorkflowClient {
 }
 
 func (c *WorkflowClient) Workflow(flowType, initialState string) *Workflow {
-	return &Workflow{client: c.client, Type: flowType, InitialState: initialState, handlers: map[string]WorkflowHandler{}}
+	return &Workflow{
+		client:        c.client,
+		Type:          flowType,
+		InitialState:  initialState,
+		handlers:      map[string]WorkflowHandler{},
+		statePolicies: map[string]FlowStatePolicy{},
+	}
 }
 
 type Workflow struct {
-	client       *Client
-	Type         string
-	InitialState string
-	handlers     map[string]WorkflowHandler
+	client        *Client
+	Type          string
+	InitialState  string
+	handlers      map[string]WorkflowHandler
+	statePolicies map[string]FlowStatePolicy
 }
 
-func (w *Workflow) State(name string, handler WorkflowHandler) *Workflow {
+func (w *Workflow) State(name string, handler WorkflowHandler, policy ...FlowStatePolicy) *Workflow {
 	w.handlers[name] = handler
+	if len(policy) > 0 {
+		w.statePolicies[name] = policy[0]
+	}
 	return w
+}
+
+func (w *Workflow) InstallPolicy(ctx context.Context, opt PolicyOptions) (any, error) {
+	statePolicies := map[string]FlowStatePolicy{}
+	for state, policy := range opt.StatePolicies {
+		statePolicies[state] = policy
+	}
+	for state, policy := range w.statePolicies {
+		if _, exists := opt.States[state]; exists {
+			return nil, fmt.Errorf("flow state %q appears in both States and workflow state policies", state)
+		}
+		statePolicies[state] = policy
+	}
+	opt.StatePolicies = statePolicies
+	return w.client.SetPolicy(ctx, w.Type, opt)
 }
 
 func (w *Workflow) Start(ctx context.Context, id string, payload any, opt CreateOptions) (*FlowRecord, error) {
@@ -238,6 +264,9 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName st
 	}
 	switch value := outcome.(type) {
 	case TransitionResult:
+		if value.Priority != nil && isFIFOStatePolicy(w.workflow.statePolicies[value.ToState]) {
+			return errors.New("priority is not supported for fifo state")
+		}
 		_, err = w.workflow.client.Transition(ctx, TransitionOptions{
 			ID:           job.ID,
 			FromState:    job.State,
@@ -291,4 +320,9 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName st
 		err = errors.New("workflow handler returned nil or unknown outcome")
 	}
 	return err
+}
+
+func isFIFOStatePolicy(policy FlowStatePolicy) bool {
+	mode, err := flowStateModeCommandToken(policy.Mode)
+	return err == nil && mode == string(FlowStateModeFIFO)
 }

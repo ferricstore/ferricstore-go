@@ -128,6 +128,65 @@ func TestSetPolicyBuildsIndexedStateMetaCommand(t *testing.T) {
 	}
 }
 
+func TestSetPolicyBuildsStateModeCommand(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"type": "order"}}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.SetPolicy(context.Background(), "order", PolicyOptions{
+		StatePolicies: map[string]FlowStatePolicy{
+			"queued": {Mode: FlowStateModeFIFO},
+			"ready":  {Mode: FlowStateModeParallel, Retry: &RetryPolicy{MaxRetries: 1}},
+		},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(exec.calls[0], []any{"STATE", "queued", "MODE", "FIFO"}) {
+		t.Fatalf("missing fifo state mode in %#v", exec.calls[0])
+	}
+	if !containsSubsequence(exec.calls[0], []any{"STATE", "ready", "MODE", "PARALLEL", "MAX_RETRIES", 1}) {
+		t.Fatalf("missing parallel state mode with retry policy in %#v", exec.calls[0])
+	}
+}
+
+func TestInstallPolicyUsesFullPolicyOptions(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"type": "order"}}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.InstallPolicy(context.Background(), "order", PolicyOptions{
+		IndexedStateMeta: "version",
+		StatePolicies: map[string]FlowStatePolicy{
+			"queued": {Mode: FlowStateModeFIFO},
+		},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(exec.calls[0], []any{"FLOW.POLICY.SET", "order", "INDEXED_STATE_META", "version", "STATE", "queued", "MODE", "FIFO"}) {
+		t.Fatalf("missing full install policy options in %#v", exec.calls[0])
+	}
+}
+
+func TestSetPolicyRejectsInvalidStateMode(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"type": "order"}}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.SetPolicy(context.Background(), "order", PolicyOptions{
+		StatePolicies: map[string]FlowStatePolicy{
+			"queued": {Mode: FlowStateMode("priority")},
+		},
+	})
+
+	if err == nil {
+		t.Fatal("expected invalid state mode error")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("expected invalid policy to be rejected before command execution, got %#v", exec.calls)
+	}
+}
+
 func TestGovernanceHelpersBuildCommands(t *testing.T) {
 	exec := &fakeExecutor{values: []any{
 		map[string]any{"id": "approval-1", "status": "pending", "scope": "tenant:1"},

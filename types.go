@@ -72,6 +72,44 @@ type RetryPolicy struct {
 	ExhaustedTo string
 }
 
+// FlowStateMode controls how FerricStore claims due work within one Flow state.
+type FlowStateMode string
+
+const (
+	// FlowStateModeParallel keeps the default parallel claim behavior for a state.
+	FlowStateModeParallel FlowStateMode = "PARALLEL"
+	// FlowStateModeFIFO opts a state into per-partition FIFO claiming.
+	FlowStateModeFIFO FlowStateMode = "FIFO"
+)
+
+// FlowStatePolicy configures state-scoped Flow policy such as FIFO mode and retry overrides.
+type FlowStatePolicy struct {
+	Mode  FlowStateMode
+	Retry *RetryPolicy
+}
+
+// RequestContext carries safe caller metadata for server-side policy checks.
+type RequestContext struct {
+	Subject string
+	Tenant  string
+	Scopes  []string
+}
+
+type RequestContextOptions struct {
+	RequestContext *RequestContext
+}
+
+type InvocationCreateOptions struct {
+	Context        map[string]any
+	IdempotencyKey string
+	RequestContext *RequestContext
+}
+
+type InvocationPartitionListOptions struct {
+	Scope          string
+	RequestContext *RequestContext
+}
+
 type RateLimitResult struct {
 	Status    string
 	Count     int64
@@ -256,8 +294,10 @@ type SearchOptions struct {
 }
 
 type PolicyOptions struct {
-	Retry             *RetryPolicy
-	States            map[string]RetryPolicy
+	Retry  *RetryPolicy
+	States map[string]RetryPolicy
+	// StatePolicies configures full state policies. Use this for FIFO/PARALLEL mode.
+	StatePolicies     map[string]FlowStatePolicy
 	IndexedAttributes []string
 	IndexedStateMeta  string
 }

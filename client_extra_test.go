@@ -2,6 +2,7 @@ package ferricstore
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -307,5 +308,74 @@ func TestManagementHelpersBuildNarrowCommands(t *testing.T) {
 		if !reflect.DeepEqual(exec.calls[i], want[i]) {
 			t.Fatalf("unexpected call %d\n got: %#v\nwant: %#v", i, exec.calls[i], want[i])
 		}
+	}
+}
+
+func TestInvocationHelpersBuildNarrowCommandsAndRequestContext(t *testing.T) {
+	exec := &fakeExecutor{values: []any{
+		map[string]any{"name": "send-email"},
+		map[string]any{"name": "send-email"},
+		[]any{map[string]any{"name": "send-email"}},
+		map[string]any{"invocation_id": "inv-1"},
+		map[string]any{"id": "inv-1"},
+		[]any{map[string]any{"scope": "tenant:acme"}},
+	}}
+	client := NewClientWithExecutor(exec)
+	ctx := context.Background()
+	requestContext := &RequestContext{
+		Subject: "proxy",
+		Tenant:  "acme",
+		Scopes:  []string{"invocation:create:*"},
+	}
+
+	if _, err := client.InvocationDefinitionPut(ctx, map[string]any{"name": "send-email", "acl": map[string]any{"scope_required": true}}, RequestContextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.InvocationDefinitionGet(ctx, "send-email", RequestContextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.InvocationDefinitionList(ctx, RequestContextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.InvocationCreate(ctx, "send-email", map[string]any{"tenant": "acme"}, InvocationCreateOptions{
+		Context:        map[string]any{"subject": "user-1"},
+		IdempotencyKey: "idem-1",
+		RequestContext: requestContext,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.InvocationGet(ctx, "inv-1", RequestContextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.InvocationPartitionList(ctx, "send-email", InvocationPartitionListOptions{Scope: "tenant:acme"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var definition map[string]any
+	if err := json.Unmarshal([]byte(asString(exec.calls[0][1])), &definition); err != nil {
+		t.Fatal(err)
+	}
+	if definition["name"] != "send-email" || definition["acl"].(map[string]any)["scope_required"] != true {
+		t.Fatalf("unexpected invocation definition: %#v", definition)
+	}
+
+	createCall := exec.calls[3]
+	if !reflect.DeepEqual(createCall[:2], []any{"INVOCATION.CREATE", "send-email"}) {
+		t.Fatalf("unexpected invocation create call: %#v", createCall)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(asString(createCall[2])), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope["attrs"].(map[string]any)["tenant"] != "acme" ||
+		envelope["context"].(map[string]any)["subject"] != "user-1" ||
+		envelope["idempotency_key"] != "idem-1" {
+		t.Fatalf("unexpected invocation envelope: %#v", envelope)
+	}
+	if !reflect.DeepEqual(createCall[3:], []any{"REQUEST_CONTEXT", requestContext}) {
+		t.Fatalf("missing request context: %#v", createCall)
+	}
+	if !reflect.DeepEqual(exec.calls[5], []any{"INVOCATION.PARTITION.LIST", "send-email", "SCOPE", "tenant:acme"}) {
+		t.Fatalf("unexpected partition list call: %#v", exec.calls[5])
 	}
 }

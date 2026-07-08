@@ -44,6 +44,14 @@ func (q *Queue) EnqueueMany(ctx context.Context, items []CreateItem, opt CreateM
 	return q.client.EnqueueMany(ctx, opt)
 }
 
+func (q *Queue) InstallPolicy(ctx context.Context, opt PolicyOptions) (any, error) {
+	return q.client.SetPolicy(ctx, q.Type, opt)
+}
+
+func (c *QueueClient) InstallPolicy(ctx context.Context, flowType string, opt PolicyOptions) (any, error) {
+	return c.client.SetPolicy(ctx, flowType, opt)
+}
+
 func (q *Queue) Worker(worker string, handler QueueHandler, opts WorkerOptions) *QueueWorker {
 	if opts.State == "" && len(opts.States) == 0 {
 		opts.State = q.State

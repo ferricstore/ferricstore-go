@@ -328,6 +328,7 @@ func TestNativeFlowPolicySetBuilderIncludesIndexes(t *testing.T) {
 		"BACKOFF", "exponential",
 		"BASE_MS", 100,
 		"STATE", "queued",
+		"MODE", "FIFO",
 		"MAX_RETRIES", 2,
 	})
 	if err != nil {
@@ -353,6 +354,9 @@ func TestNativeFlowPolicySetBuilderIncludesIndexes(t *testing.T) {
 	}
 	states := payload["states"].(map[string]any)
 	queued := states["queued"].(map[string]any)
+	if queued["mode"] != "fifo" {
+		t.Fatalf("unexpected state mode payload: %#v", queued)
+	}
 	queuedRetry := queued["retry"].(map[string]any)
 	if queuedRetry["max_retries"] != 2 {
 		t.Fatalf("unexpected state retry payload: %#v", queued)
@@ -690,6 +694,62 @@ func TestNativeCommandExecEncodesComplexRawArgs(t *testing.T) {
 	args := payload["args"].([]any)
 	if got := asString(args[1]); got != `{"type":"email"}` {
 		t.Fatalf("expected JSON encoded complex arg, got %#v", args[1])
+	}
+}
+
+func TestNativeCommandExecCarriesRequestContext(t *testing.T) {
+	command, err := buildNativeCommand([]any{
+		"INVOCATION.CREATE",
+		"send-email",
+		"{}",
+		"REQUEST_CONTEXT",
+		map[string]any{
+			"subject": "proxy",
+			"tenant":  "acme",
+			"scopes":  "invocation:create:* tenant:acme",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := command.payload.(map[string]any)
+	if payload["command"] != "INVOCATION.CREATE" {
+		t.Fatalf("unexpected command-exec command: %#v", payload)
+	}
+	if !reflect.DeepEqual(payload["args"], []any{"send-email", "{}"}) {
+		t.Fatalf("unexpected command-exec args: %#v", payload["args"])
+	}
+	requestContext := payload["request_context"].(map[string]any)
+	if requestContext["subject"] != "proxy" || requestContext["tenant"] != "acme" {
+		t.Fatalf("unexpected request context: %#v", requestContext)
+	}
+	if !reflect.DeepEqual(requestContext["scopes"], []string{"invocation:create:*", "tenant:acme"}) {
+		t.Fatalf("unexpected request context scopes: %#v", requestContext["scopes"])
+	}
+}
+
+func TestNativeExplicitCommandExecCarriesRequestContext(t *testing.T) {
+	command, err := buildNativeCommand([]any{
+		"COMMAND_EXEC",
+		"INVOCATION.CREATE",
+		"send-email",
+		"{}",
+		"REQUEST_CONTEXT",
+		&RequestContext{Subject: "proxy", Scopes: []string{"invocation:create:*", "invocation:create:*"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := command.payload.(map[string]any)
+	if payload["command"] != "INVOCATION.CREATE" {
+		t.Fatalf("unexpected explicit command-exec command: %#v", payload)
+	}
+	if !reflect.DeepEqual(payload["args"], []any{"send-email", "{}"}) {
+		t.Fatalf("unexpected explicit command-exec args: %#v", payload["args"])
+	}
+	requestContext := payload["request_context"].(map[string]any)
+	if !reflect.DeepEqual(requestContext, map[string]any{"subject": "proxy", "scopes": []string{"invocation:create:*"}}) {
+		t.Fatalf("unexpected explicit request context: %#v", requestContext)
 	}
 }
 

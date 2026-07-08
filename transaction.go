@@ -47,8 +47,15 @@ func (c *Client) Discard(ctx context.Context) error {
 }
 
 func (c *Client) CommandExec(ctx context.Context, command string, args ...any) (any, error) {
+	return c.CommandExecWithContext(ctx, command, nil, args...)
+}
+
+func (c *Client) CommandExecWithContext(ctx context.Context, command string, requestContext *RequestContext, args ...any) (any, error) {
 	payload := []any{"COMMAND_EXEC", command}
 	payload = append(payload, args...)
+	if requestContext != nil {
+		payload = append(payload, "REQUEST_CONTEXT", requestContext)
+	}
 	return c.Command(ctx, payload...)
 }
 

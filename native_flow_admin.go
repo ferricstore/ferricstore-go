@@ -36,18 +36,18 @@ func buildFlowPolicySetNative(args []any) (nativeCommand, bool, error) {
 			}
 			stateName := asString(args[idx+1])
 			idx += 2
+			statePolicy := map[string]any{}
 			stateRetry := map[string]any{}
 			stateRetention := map[string]any{}
 			for idx < len(args) && strings.ToUpper(asString(args[idx])) != "STATE" {
 				if idx+1 >= len(args) {
 					return nativeCommand{}, true, errors.New("FLOW.POLICY.SET options must be key/value pairs")
 				}
-				if err := putFlowPolicyOption(payload, stateRetry, stateRetention, args[idx], args[idx+1], true); err != nil {
+				if err := putFlowPolicyOption(payload, statePolicy, stateRetry, stateRetention, args[idx], args[idx+1], true); err != nil {
 					return nativeCommand{}, true, err
 				}
 				idx += 2
 			}
-			statePolicy := map[string]any{}
 			if len(stateRetry) > 0 {
 				statePolicy["retry"] = stateRetry
 			}
@@ -61,7 +61,7 @@ func buildFlowPolicySetNative(args []any) (nativeCommand, bool, error) {
 		if idx+1 >= len(args) {
 			return nativeCommand{}, true, errors.New("FLOW.POLICY.SET options must be key/value pairs")
 		}
-		if err := putFlowPolicyOption(payload, retry, retention, args[idx], args[idx+1], false); err != nil {
+		if err := putFlowPolicyOption(payload, payload, retry, retention, args[idx], args[idx+1], false); err != nil {
 			return nativeCommand{}, true, err
 		}
 		idx += 2
@@ -79,7 +79,7 @@ func buildFlowPolicySetNative(args []any) (nativeCommand, bool, error) {
 	return nativeCommand{name: "FLOW.POLICY.SET", opcode: nativeOpFlowPolicySet, laneID: 1, payload: payload}, true, nil
 }
 
-func putFlowPolicyOption(payload, retry, retention map[string]any, tokenValue, value any, stateScoped bool) error {
+func putFlowPolicyOption(payload, policy, retry, retention map[string]any, tokenValue, value any, stateScoped bool) error {
 	token := strings.ToUpper(asString(tokenValue))
 	switch token {
 	case "INDEXED_ATTRIBUTES":
@@ -92,6 +92,15 @@ func putFlowPolicyOption(payload, retry, retention map[string]any, tokenValue, v
 			return errors.New("ERR flow indexed_state_meta is type-level only")
 		}
 		payload["indexed_state_meta"] = value
+	case "MODE":
+		if !stateScoped {
+			return errors.New("ERR flow state mode is state-level only")
+		}
+		mode, err := flowStateModeNativeValue(value)
+		if err != nil {
+			return err
+		}
+		policy["mode"] = mode
 	case "RETENTION_TTL", "RETENTION_TTL_MS":
 		retention["ttl_ms"] = value
 	case "HISTORY_MAX_EVENTS":
@@ -114,6 +123,17 @@ func putFlowPolicyOption(payload, retry, retention map[string]any, tokenValue, v
 		return errors.New("ERR syntax error")
 	}
 	return nil
+}
+
+func flowStateModeNativeValue(value any) (string, error) {
+	switch strings.ToUpper(asString(value)) {
+	case string(FlowStateModeParallel):
+		return "parallel", nil
+	case string(FlowStateModeFIFO):
+		return "fifo", nil
+	default:
+		return "", errors.New("ERR flow state mode must be parallel or fifo")
+	}
 }
 
 func putFlowPolicyBackoff(retry map[string]any, key string, value any) {

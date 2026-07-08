@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 func (c *Client) Create(ctx context.Context, opt CreateOptions) (*FlowRecord, error) {
@@ -1005,7 +1006,11 @@ func (c *Client) SpawnChildren(ctx context.Context, opt SpawnChildrenOptions) (a
 	return c.Command(ctx, args...)
 }
 
-func (c *Client) InstallPolicy(ctx context.Context, flowType string, retry *RetryPolicy, states map[string]RetryPolicy) (any, error) {
+func (c *Client) InstallPolicy(ctx context.Context, flowType string, opt PolicyOptions) (any, error) {
+	return c.SetPolicy(ctx, flowType, opt)
+}
+
+func (c *Client) InstallRetryPolicy(ctx context.Context, flowType string, retry *RetryPolicy, states map[string]RetryPolicy) (any, error) {
 	return c.SetPolicy(ctx, flowType, PolicyOptions{Retry: retry, States: states})
 }
 
@@ -1019,8 +1024,24 @@ func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptio
 		appendRetryPolicy(&args, *opt.Retry)
 	}
 	for state, policy := range opt.States {
+		if _, exists := opt.StatePolicies[state]; exists {
+			return nil, fmt.Errorf("flow state %q appears in both States and StatePolicies", state)
+		}
 		args = append(args, "STATE", state)
 		appendRetryPolicy(&args, policy)
+	}
+	for state, policy := range opt.StatePolicies {
+		args = append(args, "STATE", state)
+		if policy.Mode != "" {
+			mode, err := flowStateModeCommandToken(policy.Mode)
+			if err != nil {
+				return nil, err
+			}
+			appendOpt(&args, "MODE", mode)
+		}
+		if policy.Retry != nil {
+			appendRetryPolicy(&args, *policy.Retry)
+		}
 	}
 	return c.Command(ctx, args...)
 }
@@ -1061,4 +1082,15 @@ func appendRetryPolicy(args *[]any, policy RetryPolicy) {
 		appendOpt(args, "JITTER_PCT", policy.JitterPct)
 	}
 	appendOpt(args, "EXHAUSTED_TO", policy.ExhaustedTo)
+}
+
+func flowStateModeCommandToken(mode FlowStateMode) (string, error) {
+	switch strings.ToUpper(string(mode)) {
+	case string(FlowStateModeParallel):
+		return string(FlowStateModeParallel), nil
+	case string(FlowStateModeFIFO):
+		return string(FlowStateModeFIFO), nil
+	default:
+		return "", errors.New("ERR flow state mode must be parallel or fifo")
+	}
 }

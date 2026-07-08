@@ -3,6 +3,7 @@ package ferricstore
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -102,6 +103,29 @@ func TestQueueWorkerRequiresHandler(t *testing.T) {
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("expected no claim call without handler, got %#v", exec.calls)
+	}
+}
+
+func TestQueuePolicyHelpersUseQueueType(t *testing.T) {
+	exec := &fakeExecutor{values: []any{[]byte("OK"), []byte("OK")}}
+	client := NewClientWithExecutor(exec)
+	queueClient := NewQueueClient(client)
+	queue := queueClient.Queue("email")
+
+	if _, err := queue.InstallPolicy(context.Background(), PolicyOptions{
+		StatePolicies: map[string]FlowStatePolicy{"queued": {Mode: FlowStateModeFIFO}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queueClient.InstallPolicy(context.Background(), "sms", PolicyOptions{Retry: &RetryPolicy{MaxRetries: 2}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !containsSubsequence(exec.calls[0], []any{"FLOW.POLICY.SET", "email", "STATE", "queued", "MODE", "FIFO"}) {
+		t.Fatalf("unexpected queue policy call: %#v", exec.calls[0])
+	}
+	if !reflect.DeepEqual(exec.calls[1], []any{"FLOW.POLICY.SET", "sms", "MAX_RETRIES", 2}) {
+		t.Fatalf("unexpected queue client policy call: %#v", exec.calls[1])
 	}
 }
 

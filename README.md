@@ -159,6 +159,19 @@ handle := worker.Start(ctx, time.Second)
 defer handle.Stop()
 ```
 
+FIFO Flow state policy is opt-in per state:
+
+```go
+workflow.State("validate", validateHandler)
+workflow.State("charge", chargeHandler, ferricstore.FlowStatePolicy{
+	Mode: ferricstore.FlowStateModeFIFO,
+})
+
+_, err := workflow.InstallPolicy(ctx, ferricstore.PolicyOptions{})
+```
+
+FIFO states require `PartitionKey`; priority is for parallel states.
+
 ## Native Events and Flow Wake Signals
 
 FerricStore can send native protocol events over the same multiplexed client connection. Use this for wake hints, then still claim work through FerricFlow so leases and fencing stay correct.
