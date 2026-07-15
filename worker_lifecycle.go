@@ -9,6 +9,7 @@ import (
 const defaultWorkerPollInterval = time.Second
 
 func (w *QueueWorker) RunForever(ctx context.Context, interval time.Duration) (QueueWorkerResult, error) {
+	ctx = normalizeWorkerContext(ctx)
 	if interval <= 0 {
 		interval = defaultWorkerPollInterval
 	}
@@ -22,6 +23,9 @@ func (w *QueueWorker) RunForever(ctx context.Context, interval time.Duration) (Q
 		result, err := w.RunOnce(ctx)
 		total.add(result)
 		if err != nil {
+			if ctx.Err() != nil {
+				return total, nil
+			}
 			return total, err
 		}
 		if result.Claimed > 0 {
@@ -34,6 +38,7 @@ func (w *QueueWorker) RunForever(ctx context.Context, interval time.Duration) (Q
 }
 
 func (w *QueueWorker) Start(ctx context.Context, interval time.Duration) *QueueWorkerHandle {
+	ctx = normalizeWorkerContext(ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	handle := &QueueWorkerHandle{cancel: cancel, done: make(chan struct{})}
 	go func() {
@@ -50,6 +55,9 @@ func (w *QueueWorker) Start(ctx context.Context, interval time.Duration) *QueueW
 			result, err := w.RunOnce(ctx)
 			handle.add(result)
 			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				handle.setError(err)
 				return
 			}
@@ -112,6 +120,7 @@ func (r *QueueWorkerResult) add(other QueueWorkerResult) {
 }
 
 func (w *WorkflowWorker) RunForever(ctx context.Context, interval time.Duration) (WorkflowWorkerResult, error) {
+	ctx = normalizeWorkerContext(ctx)
 	if interval <= 0 {
 		interval = defaultWorkerPollInterval
 	}
@@ -125,6 +134,9 @@ func (w *WorkflowWorker) RunForever(ctx context.Context, interval time.Duration)
 		result, err := w.RunOnce(ctx)
 		total.add(result)
 		if err != nil {
+			if ctx.Err() != nil {
+				return total, nil
+			}
 			return total, err
 		}
 		if result.Claimed > 0 {
@@ -137,6 +149,7 @@ func (w *WorkflowWorker) RunForever(ctx context.Context, interval time.Duration)
 }
 
 func (w *WorkflowWorker) Start(ctx context.Context, interval time.Duration) *WorkflowWorkerHandle {
+	ctx = normalizeWorkerContext(ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	handle := &WorkflowWorkerHandle{cancel: cancel, done: make(chan struct{})}
 	go func() {
@@ -153,6 +166,9 @@ func (w *WorkflowWorker) Start(ctx context.Context, interval time.Duration) *Wor
 			result, err := w.RunOnce(ctx)
 			handle.add(result)
 			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				handle.setError(err)
 				return
 			}
@@ -221,4 +237,11 @@ func sleepOrDone(ctx context.Context, interval time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+func normalizeWorkerContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }

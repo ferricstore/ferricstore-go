@@ -4,15 +4,10 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net"
-	"net/url"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,14 +15,18 @@ import (
 )
 
 const (
-	nativeMagic             = "FSNP"
-	nativeRequestVersion    = 0x01
-	nativeResponseVersion   = 0x81
-	nativeHeaderLen         = 24
-	nativeDefaultPort       = "6388"
-	nativeDefaultTLSPort    = "6389"
-	nativeMaxFrameBytes     = 128 * 1024 * 1024
-	nativeMaxContainerItems = 1_000_000
+	nativeMagic                     = "FSNP"
+	nativeRequestVersion            = 0x01
+	nativeResponseVersion           = 0x81
+	nativeHeaderLen                 = 24
+	nativeDefaultPort               = "6388"
+	nativeDefaultTLSPort            = "6389"
+	nativeMaxFrameBytes             = 128 * 1024 * 1024
+	nativeMaxContainerItems         = 1_000_000
+	nativeAutoLaneID                = math.MaxUint32
+	nativeDefaultGoAwayDrainTimeout = 30 * time.Second
+	nativeEventBufferCapacity       = 4096
+	nativeMaxBufferedEventBytes     = 16 * 1024 * 1024
 
 	nativeFlagCompressed    = 0x08
 	nativeFlagCustomPayload = 0x02
@@ -37,7 +36,9 @@ const (
 
 	nativeOpAuth                   = 0x0002
 	nativeOpPing                   = 0x0003
+	nativeOpGoAway                 = 0x000A
 	nativeOpStartup                = 0x000C
+	nativeOpWindowUpdate           = 0x000D
 	nativeOpPipeline               = 0x000E
 	nativeOpEvent                  = 0x0010
 	nativeOpSubscribeEvents        = 0x0011
@@ -112,7 +113,14 @@ type NativeOptions struct {
 	Dialer              *net.Dialer
 	HeartbeatInterval   time.Duration
 	HeartbeatTimeout    time.Duration
+	GoAwayDrainTimeout  time.Duration
 	ReconnectMaxRetries int
+	ProtocolLanes       uint32
+	MaxQueuedRequests   int
+	startupEvents       []string
+	eventHandler        func(nativeServerEvent)
+	addressInput        string
+	addressUsesDefault  bool
 }
 
 type NativeOption func(*NativeOptions)
@@ -133,6 +141,9 @@ func WithNativeTLS(config *tls.Config) NativeOption {
 
 func WithNativeTimeout(timeout time.Duration) NativeOption {
 	return func(opts *NativeOptions) {
+		if timeout < 0 {
+			timeout = 0
+		}
 		opts.Timeout = timeout
 		if opts.Dialer == nil {
 			opts.Dialer = &net.Dialer{}
@@ -163,92 +174,163 @@ func WithNativeReconnect(maxRetries int) NativeOption {
 	}
 }
 
+// WithNativeGoAwayDrainTimeout bounds how long an old connection may retain
+// live requests after it stops admitting new work. This is especially
+// important when another request on the connection blocks indefinitely.
+func WithNativeGoAwayDrainTimeout(timeout time.Duration) NativeOption {
+	return func(opts *NativeOptions) {
+		if timeout <= 0 {
+			timeout = nativeDefaultGoAwayDrainTimeout
+		}
+		opts.GoAwayDrainTimeout = timeout
+	}
+}
+
+// WithNativeLanes caps automatic data-lane use. The server-advertised STARTUP
+// limit may reduce this value further.
+func WithNativeLanes(lanes uint32) NativeOption {
+	return func(opts *NativeOptions) {
+		if lanes == 0 {
+			lanes = 1
+		}
+		opts.ProtocolLanes = lanes
+	}
+}
+
+// WithNativeMaxQueuedRequests bounds requests waiting for server-advertised
+// native flow-control credits. A zero limit rejects instead of queueing.
+func WithNativeMaxQueuedRequests(limit int) NativeOption {
+	return func(opts *NativeOptions) {
+		if limit < 0 {
+			limit = 0
+		}
+		opts.MaxQueuedRequests = limit
+	}
+}
+
+func withNativeEventSubscription(events []string, handler func(nativeServerEvent)) NativeOption {
+	return func(opts *NativeOptions) {
+		opts.startupEvents = append([]string(nil), events...)
+		opts.eventHandler = handler
+	}
+}
+
 type NativeExecutor struct {
 	opts NativeOptions
 
+	sessionGate          sessionGate
 	mu                   sync.Mutex
-	writeMu              sync.Mutex
+	writeEncodeMu        contextMutex
+	writeMu              contextMutex
 	conn                 net.Conn
 	reader               *bufio.Reader
 	writer               *bufio.Writer
 	nextID               uint64
+	nextLane             atomic.Uint32
+	maxRequestFrameBytes int
+	maxPipelineCommands  int
+	maxDataLanes         uint32
+	flow                 *nativeFlowController
+	replayWindowUpdate   map[string]any
+	connectInFlight      *nativeConnectAttempt
+	connectionDone       chan struct{}
+	connectionGeneration uint64
+	goAway               bool
+	goAwayDone           chan struct{}
 	isClosed             bool
-	deadlineSet          bool
+	retiring             bool
+	activeRequests       int
+	closed               chan struct{}
 	heartbeatStop        chan struct{}
 	lastActivityUnixNano atomic.Int64
-	pending              map[uint64]chan nativeResponse
-	events               chan any
+	pending              map[uint64]*nativePendingRequest
+	events               chan nativeQueuedEvent
+	eventDeliveryEnabled bool
+	eventBufferedBytes   int
 	droppedEvents        atomic.Uint64
+}
+
+type nativePendingRequest struct {
+	responseCh chan nativeResponse
+	opcode     uint16
+	laneID     uint32
+	flowCredit *nativeFlowController
+	abandoned  bool
+}
+
+type nativeConnectAttempt struct {
+	done    chan struct{}
+	cancel  context.CancelFunc
+	err     error
+	waiters int
+}
+
+type nativeConnectedTransport struct {
+	conn            net.Conn
+	reader          *bufio.Reader
+	writer          *bufio.Writer
+	startupResponse any
+	windowResponse  any
 }
 
 type NativeError struct {
 	Status uint16
+	Kind   string
 	Value  any
 }
 
-var errNativeConnectionUnavailable = errors.New("ferricstore native connection unavailable")
+var (
+	errNativeConnectionUnavailable = errors.New("ferricstore native connection unavailable")
+	errNativeGoAway                = errors.New("ferricstore native connection is draining after GOAWAY")
+)
 
 func (e NativeError) Error() string {
 	if message := nativeErrorMessage(e.Value); message != "" {
 		return message
+	}
+	if e.Kind != "" {
+		return fmt.Sprintf("ferricstore native %s status %d", e.Kind, e.Status)
 	}
 	return fmt.Sprintf("ferricstore native error status %d", e.Status)
 }
 
 func NewNativeExecutor(addr string, opts ...NativeOption) *NativeExecutor {
 	options := defaultNativeOptions(addr, false)
-	for _, opt := range opts {
-		opt(&options)
-	}
-	if options.Addr == "" {
-		options.Addr = nativeAddressWithPort(addr, nativeDefaultPort)
-	}
-	return &NativeExecutor{opts: options}
+	applyNativeOptions(&options, opts...)
+	return newNativeExecutor(options)
 }
 
 func NewNativeExecutorFromURL(rawurl string, opts ...NativeOption) (*NativeExecutor, error) {
-	if !strings.Contains(rawurl, "://") {
-		return NewNativeExecutor(rawurl, opts...), nil
-	}
-
-	parsed, err := url.Parse(rawurl)
+	parsed, err := parseFerricURL(rawurl)
 	if err != nil {
 		return nil, err
 	}
 
-	var tlsEnabled bool
-	var defaultPort string
-	switch strings.ToLower(parsed.Scheme) {
-	case "ferric":
-		defaultPort = nativeDefaultPort
-	case "ferrics":
-		tlsEnabled = true
-		defaultPort = nativeDefaultTLSPort
-	default:
-		return nil, fmt.Errorf("unsupported ferricstore native URL scheme %q", parsed.Scheme)
+	address := parsed.Host
+	if parsed.ExplicitPort {
+		address = parsed.Address()
 	}
-	if parsed.Host == "" {
-		return nil, errors.New("ferricstore native URL requires a host")
+	options := defaultNativeOptions(address, parsed.TLS)
+	options.Username = parsed.Username
+	options.Password = parsed.Password
+	if parsed.HasTimeout {
+		options.Timeout = parsed.Timeout
+		options.Dialer.Timeout = parsed.Timeout
 	}
+	applyNativeOptions(&options, opts...)
+	return newNativeExecutor(options), nil
+}
 
-	options := defaultNativeOptions(parsed.Host, tlsEnabled)
-	options.Addr = nativeAddressWithPort(parsed.Host, defaultPort)
-	if parsed.User != nil {
-		options.Username = parsed.User.Username()
-		options.Password, _ = parsed.User.Password()
+func newNativeExecutor(options NativeOptions) *NativeExecutor {
+	return &NativeExecutor{
+		opts:                 options,
+		closed:               make(chan struct{}),
+		maxRequestFrameBytes: nativeDefaultRequestFrameBytes,
+		maxPipelineCommands:  nativeDefaultPipelineCommands,
+		maxDataLanes:         1,
+		flow:                 newNativeFlowController(nativeDefaultConnectionCredits, nativeDefaultLaneCredits, nativeDefaultLaneQueue, options.MaxQueuedRequests),
+		eventDeliveryEnabled: options.eventHandler == nil,
 	}
-	if timeout := parsed.Query().Get("timeout"); timeout != "" {
-		duration, err := time.ParseDuration(timeout)
-		if err != nil {
-			return nil, fmt.Errorf("invalid ferricstore native timeout: %w", err)
-		}
-		options.Timeout = duration
-		options.Dialer.Timeout = duration
-	}
-	for _, opt := range opts {
-		opt(&options)
-	}
-	return &NativeExecutor{opts: options}, nil
 }
 
 func (e *NativeExecutor) Do(ctx context.Context, args ...any) (any, error) {
@@ -257,9 +339,16 @@ func (e *NativeExecutor) Do(ctx context.Context, args ...any) (any, error) {
 
 func (e *NativeExecutor) Close() error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.isClosed = true
-	return e.closeConnLocked()
+	if e.isClosed {
+		e.mu.Unlock()
+		return nil
+	}
+	e.markClosedLocked()
+	pending := e.takePendingLocked()
+	err := e.closeConnLocked()
+	e.mu.Unlock()
+	failNativePending(pending, net.ErrClosed)
+	return err
 }
 
 func (e *NativeExecutor) DroppedEvents() uint64 {
@@ -270,15 +359,55 @@ func (e *NativeExecutor) DroppedEvents() uint64 {
 }
 
 func (e *NativeExecutor) command(ctx context.Context, args ...any) (any, error) {
+	if name, stateful := connectionStateCommand(args); stateful {
+		return nil, fmt.Errorf("%s requires a connection-affine Client transaction helper", name)
+	}
+	if name, mutates := connectionStateMutationCommand(args); mutates && name != "CLIENT.SETNAME" && name != "WINDOW_UPDATE" {
+		return nil, fmt.Errorf("%s is connection-local; configure it with NativeOptions or a dedicated helper", name)
+	}
 	command, err := buildNativeCommand(args)
 	if err != nil {
 		return nil, err
 	}
-	return e.doNativeCommand(ctx, command)
+	command.budget = blockingCommandBudget(args)
+	if command.laneID != 0 {
+		command.laneID = nativeAutoLaneID
+	}
+	value, err := e.doNativeCommand(ctx, command)
+	if err == nil {
+		e.rememberConnectionState(args, command)
+	}
+	return value, err
+}
+
+func (e *NativeExecutor) rememberConnectionState(args []any, command nativeCommand) {
+	if len(args) == 0 {
+		return
+	}
+	name := strings.ToUpper(asString(args[0]))
+	if name == "COMMAND_EXEC" && len(args) > 1 {
+		name = strings.ToUpper(asString(args[1]))
+		args = args[1:]
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch {
+	case name == "CLIENT" && len(args) > 2 && strings.EqualFold(asString(args[1]), "SETNAME"):
+		e.opts.ClientName = asString(args[2])
+	case name == "WINDOW_UPDATE":
+		payload, ok := command.payload.(map[string]any)
+		if !ok {
+			return
+		}
+		e.replayWindowUpdate = make(map[string]any, len(payload))
+		for key, value := range payload {
+			e.replayWindowUpdate[key] = value
+		}
+	}
 }
 
 func (e *NativeExecutor) doNativeCommand(ctx context.Context, command nativeCommand) (any, error) {
-	value, err := e.request(ctx, command.opcode, command.laneID, command.payload, command.flags)
+	value, err := e.requestWithBudget(ctx, command.opcode, command.laneID, command.payload, command.flags, command.budget)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", command.name, err)
 	}
@@ -291,798 +420,208 @@ func (e *NativeExecutor) doNativeCommandOnLane(ctx context.Context, command nati
 }
 
 func (e *NativeExecutor) Pipeline(ctx context.Context, commands [][]any) ([]any, error) {
-	return e.pipelineOnLane(ctx, commands, 1)
+	return e.pipelineOnLane(ctx, commands, nativeAutoLaneID)
 }
 
 func (e *NativeExecutor) pipelineOnLane(ctx context.Context, commands [][]any, laneID uint32) ([]any, error) {
+	results, err := e.pipelineDetailedOnLane(ctx, commands, laneID)
+	if err != nil {
+		return nil, err
+	}
+	return pipelineResultValues(results)
+}
+
+func (e *NativeExecutor) pipelineDetailed(ctx context.Context, commands [][]any) ([]pipelineItemResult, error) {
+	return e.pipelineDetailedOnLane(ctx, commands, nativeAutoLaneID)
+}
+
+func (e *NativeExecutor) pipelineDetailedOnLane(ctx context.Context, commands [][]any, laneID uint32) ([]pipelineItemResult, error) {
 	if len(commands) == 0 {
 		return nil, nil
 	}
-	if payload, ok, err := compactPipelinePayload(commands); ok || err != nil {
+	for _, command := range commands {
+		if name, mutates := connectionStateMutationCommand(command); mutates {
+			return nil, fmt.Errorf("%s is connection-local and cannot be used in a pipeline", name)
+		}
+	}
+	ctx, cancel := nativeContextWithBudget(ctx, e.opts.Timeout, pipelineBlockingBudget(commands))
+	if cancel != nil {
+		defer cancel()
+	}
+	if err := e.sessionGate.readLock(ctx); err != nil {
+		return nil, err
+	}
+	defer e.sessionGate.readUnlock()
+	if err := e.ensureConnectedLocked(ctx); err != nil {
+		return nil, err
+	}
+	if laneID == nativeAutoLaneID {
+		laneID = e.nextDataLane()
+	}
+	maxFrameBytes, maxCommands := e.negotiatedPipelineLimits()
+	if maxCommands == 0 {
+		return e.pipelineSequentialWithoutGate(ctx, commands, laneID)
+	}
+	results := make([]pipelineItemResult, len(commands))
+	for start := 0; start < len(commands); {
+		end := start + maxCommands
+		if end > len(commands) {
+			end = len(commands)
+		}
+		chunkResults, err := e.pipelineChunkWithoutGate(ctx, commands[start:end], laneID, maxFrameBytes)
 		if err != nil {
+			var buildErr *pipelineCommandBuildError
+			if errors.As(err, &buildErr) {
+				if buildErr.index < 0 || buildErr.index >= end-start {
+					return nil, fmt.Errorf("PIPELINE reported invalid build-error index %d for a %d-command chunk", buildErr.index, end-start)
+				}
+				failureIndex := start + buildErr.index
+				if failureIndex > start {
+					prefixResults, prefixErr := e.pipelineChunkWithoutGate(ctx, commands[start:failureIndex], laneID, maxFrameBytes)
+					if prefixErr != nil {
+						if len(prefixResults) > failureIndex-start {
+							return nil, fmt.Errorf("PIPELINE returned %d partial results for a %d-command prefix", len(prefixResults), failureIndex-start)
+						}
+						copy(results[start:start+len(prefixResults)], prefixResults)
+						failureStart := start + len(prefixResults)
+						failureEnd := min(failureIndex, failureStart+pipelineChunkAffectedCommands(prefixErr, failureIndex-failureStart))
+						for index := failureStart; index < failureEnd; index++ {
+							results[index].err = prefixErr
+						}
+						markPipelineNotExecuted(results[failureEnd:], prefixErr)
+						return results, nil
+					}
+					copy(results[start:failureIndex], prefixResults)
+				}
+				results[failureIndex].err = buildErr.cause
+				start = failureIndex + 1
+				continue
+			}
+			if len(chunkResults) > end-start {
+				return nil, fmt.Errorf("PIPELINE returned %d partial results for a %d-command chunk", len(chunkResults), end-start)
+			}
+			copy(results[start:start+len(chunkResults)], chunkResults)
+			failureStart := start + len(chunkResults)
+			failureEnd := min(end, failureStart+pipelineChunkAffectedCommands(err, end-failureStart))
+			for index := failureStart; index < failureEnd; index++ {
+				results[index].err = err
+			}
+			markPipelineNotExecuted(results[failureEnd:], err)
+			return results, nil
+		}
+		copy(results[start:end], chunkResults)
+		start = end
+	}
+	return results, nil
+}
+
+func (e *NativeExecutor) pipelineChunkWithoutGate(ctx context.Context, commands [][]any, laneID uint32, maxFrameBytes int) ([]pipelineItemResult, error) {
+	payload, flags, err := nativePipelinePayload(commands, laneID, maxFrameBytes)
+	if err != nil {
+		var limitErr nativeEncodeLimitError
+		if !errors.As(err, &limitErr) {
 			return nil, err
 		}
-		value, err := e.request(ctx, nativeOpPipeline, laneID, payload, nativeFlagCustomPayload)
-		if err != nil {
-			return nil, fmt.Errorf("PIPELINE: %w", err)
+		return e.splitOversizedPipelineChunk(ctx, commands, laneID, maxFrameBytes)
+	}
+	budget := pipelineBlockingBudget(commands)
+	value, err := e.requestWithoutSessionGate(ctx, nativeOpPipeline, laneID, payload, flags, budget)
+	if err != nil {
+		var limitErr nativeEncodeLimitError
+		if errors.As(err, &limitErr) {
+			return e.splitOversizedPipelineChunk(ctx, commands, laneID, maxFrameBytes)
 		}
-		return pipelineValues(value, len(commands))
+		return nil, &pipelineChunkExecutionError{
+			cause:    fmt.Errorf("PIPELINE: %w", err),
+			affected: len(commands),
+		}
+	}
+	return pipelineItemResults(value, len(commands))
+}
+
+func (e *NativeExecutor) splitOversizedPipelineChunk(ctx context.Context, commands [][]any, laneID uint32, maxFrameBytes int) ([]pipelineItemResult, error) {
+	if len(commands) == 1 {
+		return nil, &pipelineChunkExecutionError{
+			cause:    fmt.Errorf("PIPELINE command exceeds server-advertised %d-byte frame limit", maxFrameBytes),
+			affected: 1,
+		}
+	}
+	middle := len(commands) / 2
+	left, err := e.pipelineChunkWithoutGate(ctx, commands[:middle], laneID, maxFrameBytes)
+	if err != nil {
+		return left, err
+	}
+	right, err := e.pipelineChunkWithoutGate(ctx, commands[middle:], laneID, maxFrameBytes)
+	if err != nil {
+		return append(left, right...), err
+	}
+	return append(left, right...), nil
+}
+
+func nativePipelinePayload(commands [][]any, laneID uint32, maxFrameBytes int) (any, byte, error) {
+	if payload, ok, err := compactPipelinePlanWithLimit(commands, maxFrameBytes); ok || err != nil {
+		return payload, nativeFlagCustomPayload, err
 	}
 	items := make([]any, 0, len(commands))
 	for idx, args := range commands {
 		command, err := buildNativeCommand(args)
 		if err != nil {
-			return nil, err
+			return nil, 0, &pipelineCommandBuildError{index: idx, cause: err}
 		}
 		if command.flags != 0 {
-			return nil, fmt.Errorf("%s: custom pipeline payloads are not supported by the Go SDK yet", command.name)
+			// Typed PIPELINE items require map bodies. Rebuild compact/custom
+			// commands through COMMAND_EXEC, matching an ordinary command's wire
+			// semantics without embedding an opaque body the server cannot parse.
+			command, err = commandExecNativeCommand(strings.ToUpper(asString(args[0])), args[1:])
+			if err != nil {
+				return nil, 0, &pipelineCommandBuildError{index: idx, cause: err}
+			}
 		}
 		items = append(items, map[string]any{
 			"opcode":     int64(command.opcode),
-			"lane_id":    int64(command.laneID),
+			"lane_id":    int64(laneID),
 			"request_id": int64(idx + 1),
 			"body":       command.payload,
 		})
 	}
-	value, err := e.request(ctx, nativeOpPipeline, laneID, map[string]any{
+	return map[string]any{
 		"atomicity": "none",
 		"commands":  items,
 		"return":    "compact",
-	}, 0)
-	if err != nil {
-		return nil, fmt.Errorf("PIPELINE: %w", err)
-	}
-	return pipelineValues(value, len(commands))
+	}, 0, nil
 }
 
-type nativeCommand struct {
-	name    string
-	opcode  uint16
-	laneID  uint32
-	payload any
-	flags   byte
-}
-
-func buildNativeCommand(args []any) (nativeCommand, error) {
-	if len(args) == 0 {
-		return nativeCommand{}, errors.New("ferricstore command requires at least a command name")
-	}
-	command := strings.ToUpper(asString(args[0]))
-	if command == "" {
-		return nativeCommand{}, errors.New("ferricstore command name is empty")
-	}
-	if built, ok, err := buildBasicNativeCommand(command, args[1:]); ok || err != nil {
-		return built, err
-	}
-	if built, ok, err := buildFlowNativeCommand(command, args[1:]); ok || err != nil {
-		return built, err
-	}
-	if command == "COMMAND_EXEC" {
-		if len(args) < 2 {
-			return nativeCommand{}, errors.New("COMMAND_EXEC requires command name")
+func pipelineBlockingBudget(commands [][]any) nativeRequestBudget {
+	var out nativeRequestBudget
+	for _, args := range commands {
+		budget := blockingCommandBudget(args)
+		if budget.disableDefault {
+			return budget
 		}
-		return commandExecNativeCommand(strings.ToUpper(asString(args[1])), args[2:]), nil
-	}
-	return commandExecNativeCommand(command, args[1:]), nil
-}
-
-func commandExecNativeCommand(command string, args []any) nativeCommand {
-	payloadArgs := args
-	payload := map[string]any{
-		"command": command,
-		"args":    nativeCommandArgs(payloadArgs),
-	}
-	if len(args) >= 2 && strings.ToUpper(asString(args[len(args)-2])) == "REQUEST_CONTEXT" {
-		payloadArgs = args[:len(args)-2]
-		payload["args"] = nativeCommandArgs(payloadArgs)
-		if requestContext := normalizeRequestContext(args[len(args)-1]); len(requestContext) > 0 {
-			payload["request_context"] = requestContext
+		if budget.extension > time.Duration(1<<63-1)-out.extension {
+			return nativeRequestBudget{disableDefault: true}
 		}
-	}
-	return nativeCommand{
-		name:    command,
-		opcode:  nativeOpCommandExec,
-		laneID:  1,
-		payload: payload,
-	}
-}
-
-func nativeCommandArgs(args []any) []any {
-	out := make([]any, 0, len(args))
-	for _, arg := range args {
-		out = append(out, nativeCommandArg(arg))
+		out.extension += budget.extension
 	}
 	return out
 }
 
-func nativeCommandArg(arg any) any {
-	switch arg.(type) {
-	case nil, string, []byte, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, bool, float32, float64:
-		return arg
-	default:
-		encoded, err := json.Marshal(arg)
+func (e *NativeExecutor) pipelineSequentialWithoutGate(ctx context.Context, commands [][]any, laneID uint32) ([]pipelineItemResult, error) {
+	results := make([]pipelineItemResult, len(commands))
+	for index, args := range commands {
+		command, err := buildNativeCommand(args)
 		if err != nil {
-			return fmt.Sprint(arg)
-		}
-		return encoded
-	}
-}
-
-func normalizeRequestContext(value any) map[string]any {
-	out := map[string]any{}
-	mapping := requestContextMap(value)
-	if len(mapping) == 0 {
-		return out
-	}
-	if subject := strings.TrimSpace(asString(firstPresent(mapping, "subject", "Subject"))); subject != "" {
-		out["subject"] = subject
-	}
-	if tenant := strings.TrimSpace(asString(firstPresent(mapping, "tenant", "Tenant"))); tenant != "" {
-		out["tenant"] = tenant
-	}
-	if scopes := normalizeRequestContextScopes(firstPresent(mapping, "scopes", "Scopes")); len(scopes) > 0 {
-		out["scopes"] = scopes
-	}
-	return out
-}
-
-func requestContextMap(value any) map[string]any {
-	switch v := value.(type) {
-	case *RequestContext:
-		if v == nil {
-			return nil
-		}
-		return map[string]any{"subject": v.Subject, "tenant": v.Tenant, "scopes": v.Scopes}
-	case RequestContext:
-		return map[string]any{"subject": v.Subject, "tenant": v.Tenant, "scopes": v.Scopes}
-	case map[string]any:
-		return v
-	case map[interface{}]interface{}:
-		out := make(map[string]any, len(v))
-		for key, item := range v {
-			out[asString(key)] = item
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func normalizeRequestContextScopes(value any) []string {
-	switch v := value.(type) {
-	case nil:
-		return nil
-	case string:
-		return uniqueNonEmptyStrings(strings.Fields(v))
-	case []byte:
-		return uniqueNonEmptyStrings(strings.Fields(string(v)))
-	case []string:
-		return uniqueNonEmptyStrings(v)
-	case []any:
-		values := make([]string, 0, len(v))
-		for _, item := range v {
-			values = append(values, asString(item))
-		}
-		return uniqueNonEmptyStrings(values)
-	default:
-		rv := reflect.ValueOf(value)
-		if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
-			return nil
-		}
-		values := make([]string, 0, rv.Len())
-		for idx := 0; idx < rv.Len(); idx++ {
-			values = append(values, asString(rv.Index(idx).Interface()))
-		}
-		return uniqueNonEmptyStrings(values)
-	}
-}
-
-func uniqueNonEmptyStrings(values []string) []string {
-	out := make([]string, 0, len(values))
-	seen := map[string]struct{}{}
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
+			results[index].err = err
 			continue
 		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
-}
-
-func buildBasicNativeCommand(name string, args []any) (nativeCommand, bool, error) {
-	switch name {
-	case "PING":
-		payload := map[string]any{}
-		if len(args) > 0 {
-			payload["message"] = args[0]
-		}
-		return nativeCommand{name: name, opcode: nativeOpPing, laneID: 0, payload: payload}, true, nil
-	case "GET":
-		if len(args) < 1 {
-			return nativeCommand{}, true, errors.New("GET requires key")
-		}
-		return nativeCommand{name: name, opcode: nativeOpGet, laneID: 1, payload: map[string]any{"key": args[0]}}, true, nil
-	case "SET":
-		if len(args) < 2 {
-			return nativeCommand{}, true, errors.New("SET requires key and value")
-		}
-		if len(args) > 2 {
-			return nativeCommand{}, false, nil
-		}
-		return nativeCommand{name: name, opcode: nativeOpSet, laneID: 1, payload: map[string]any{"key": args[0], "value": args[1]}}, true, nil
-	case "DEL":
-		return nativeCommand{name: name, opcode: nativeOpDel, laneID: 1, payload: map[string]any{"keys": append([]any(nil), args...)}}, true, nil
-	case "MGET":
-		return nativeCommand{name: name, opcode: nativeOpMGet, laneID: 1, payload: map[string]any{"keys": append([]any(nil), args...)}}, true, nil
-	case "MSET":
-		if len(args)%2 != 0 {
-			return nativeCommand{}, true, errors.New("MSET requires key/value pairs")
-		}
-		pairs := make([]any, 0, len(args)/2)
-		for idx := 0; idx < len(args); idx += 2 {
-			pairs = append(pairs, []any{args[idx], args[idx+1]})
-		}
-		return nativeCommand{name: name, opcode: nativeOpMSet, laneID: 1, payload: map[string]any{"pairs": pairs}}, true, nil
-	default:
-		return nativeCommand{}, false, nil
-	}
-}
-
-func (e *NativeExecutor) request(ctx context.Context, opcode uint16, laneID uint32, payload any, flags byte) (any, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	maxRetries := e.opts.ReconnectMaxRetries
-	if maxRetries < 0 {
-		maxRetries = 0
-	}
-	for attempt := 0; ; attempt++ {
-		value, err, retryable := e.requestOnce(ctx, opcode, laneID, payload, flags)
-		if err == nil {
-			return value, nil
-		}
-		if !retryable || attempt >= maxRetries || ctx.Err() != nil {
-			return nil, err
-		}
-		e.mu.Lock()
-		if e.isClosed {
-			e.mu.Unlock()
-			return nil, err
-		}
-		_ = e.closeConnLocked()
-		e.mu.Unlock()
-	}
-}
-
-func (e *NativeExecutor) requestOnce(ctx context.Context, opcode uint16, laneID uint32, payload any, flags byte) (any, error, bool) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := e.ensureConnectedLocked(ctx); err != nil {
-		return nil, err, isNativeReconnectableTransportError(err)
-	}
-	requestID := atomic.AddUint64(&e.nextID, 1)
-	responseCh := make(chan nativeResponse, 1)
-	e.mu.Lock()
-	if e.pending == nil {
-		e.pending = make(map[uint64]chan nativeResponse)
-	}
-	e.pending[requestID] = responseCh
-	e.mu.Unlock()
-
-	if err := e.writeRequest(ctx, opcode, laneID, requestID, payload, flags); err != nil {
-		e.removePending(requestID)
-		e.mu.Lock()
-		_ = e.closeConnLocked()
-		e.mu.Unlock()
-		return nil, err, errors.Is(err, errNativeConnectionUnavailable)
-	}
-
-	select {
-	case frame := <-responseCh:
-		if frame.err != nil {
-			return nil, frame.err, false
-		}
-		if frame.opcode != opcode || frame.laneID != laneID {
-			e.mu.Lock()
-			_ = e.closeConnLocked()
-			e.mu.Unlock()
-			return nil, fmt.Errorf("ferricstore native response mismatch: got lane=%d opcode=%d request=%d", frame.laneID, frame.opcode, frame.requestID), false
-		}
-		if frame.status != nativeStatusOK {
-			return nil, NativeError{Status: frame.status, Value: frame.value}, false
-		}
-		e.lastActivityUnixNano.Store(time.Now().UnixNano())
-		return frame.value, nil, false
-	case <-ctx.Done():
-		e.removePending(requestID)
-		return nil, ctx.Err(), false
-	}
-}
-
-func isNativeReconnectableTransportError(err error) bool {
-	return errors.Is(err, errNativeConnectionUnavailable) ||
-		errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF)
-}
-
-func (e *NativeExecutor) ensureConnectedLocked(ctx context.Context) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.conn != nil {
-		return nil
-	}
-	if e.isClosed {
-		return net.ErrClosed
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	dialer := e.opts.Dialer
-	if dialer == nil {
-		dialer = &net.Dialer{Timeout: e.opts.Timeout, KeepAlive: 30 * time.Second}
-	}
-
-	conn, err := dialer.DialContext(ctx, "tcp", e.opts.Addr)
-	if err != nil {
-		return err
-	}
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.SetNoDelay(true)
-	}
-
-	if e.opts.TLS {
-		config := e.opts.TLSConfig
-		if config == nil {
-			config = &tls.Config{MinVersion: tls.VersionTLS12}
-		} else {
-			config = config.Clone()
-		}
-		if config.ServerName == "" {
-			host, _, splitErr := net.SplitHostPort(e.opts.Addr)
-			if splitErr == nil {
-				config.ServerName = host
-			}
-		}
-		tlsConn := tls.Client(conn, config)
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			_ = conn.Close()
-			return err
-		}
-		conn = tlsConn
-	}
-
-	reader := bufio.NewReader(conn)
-	e.conn = conn
-	e.reader = reader
-	e.writer = bufio.NewWriter(conn)
-
-	startup := map[string]any{
-		"client_name": e.clientName(),
-		"driver_name": "ferricstore-go",
-		"compression": "none",
-	}
-	if _, err := e.requestLocked(ctx, nativeOpStartup, 0, startup, 0); err != nil {
-		_ = e.closeConnLocked()
-		return err
-	}
-	if e.opts.Password != "" {
-		username := e.opts.Username
-		if username == "" {
-			username = "default"
-		}
-		auth := map[string]any{"username": username, "password": e.opts.Password}
-		if _, err := e.requestLocked(ctx, nativeOpAuth, 0, auth, 0); err != nil {
-			_ = e.closeConnLocked()
-			return err
+		command.laneID = laneID
+		command.budget = blockingCommandBudget(args)
+		value, err := e.requestWithoutSessionGate(ctx, command.opcode, command.laneID, command.payload, command.flags, command.budget)
+		results[index] = pipelineItemResult{value: value, err: err}
+		if ctx != nil && ctx.Err() != nil {
+			markPipelineNotExecuted(results[index+1:], ctx.Err())
+			return results, nil
 		}
 	}
-	if e.pending == nil {
-		e.pending = make(map[uint64]chan nativeResponse)
-	}
-	if e.events == nil {
-		e.events = make(chan any, 4096)
-	}
-	_ = conn.SetDeadline(time.Time{})
-	e.deadlineSet = false
-	e.lastActivityUnixNano.Store(time.Now().UnixNano())
-	go e.readerLoop(conn, reader)
-	e.startHeartbeatLocked()
-	return nil
-}
-
-func (e *NativeExecutor) startHeartbeatLocked() {
-	interval := e.opts.HeartbeatInterval
-	if interval <= 0 || e.heartbeatStop != nil {
-		return
-	}
-	stop := make(chan struct{})
-	e.heartbeatStop = stop
-	go e.heartbeatLoop(stop, interval, e.opts.HeartbeatTimeout)
-}
-
-func (e *NativeExecutor) heartbeatLoop(stop <-chan struct{}, interval, timeout time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			last := e.lastActivityUnixNano.Load()
-			if last != 0 && time.Since(time.Unix(0, last)) < interval {
-				continue
-			}
-			ctx := context.Background()
-			var cancel context.CancelFunc
-			if timeout > 0 {
-				ctx, cancel = context.WithTimeout(ctx, timeout)
-			}
-			_, err := e.command(ctx, "PING")
-			if cancel != nil {
-				cancel()
-			}
-			if err != nil {
-				e.mu.Lock()
-				_ = e.closeConnLocked()
-				e.mu.Unlock()
-				return
-			}
-		}
-	}
-}
-
-func (e *NativeExecutor) requestLocked(ctx context.Context, opcode uint16, laneID uint32, payload any, flags byte) (any, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var body []byte
-	var err error
-	if flags&nativeFlagCustomPayload != 0 {
-		raw, ok := payload.([]byte)
-		if !ok {
-			return nil, errors.New("ferricstore native custom payload must be raw bytes")
-		}
-		body = raw
-	} else {
-		body, err = encodeNativeValue(payload)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if len(body) > math.MaxUint32 {
-		return nil, errors.New("ferricstore native request body is too large")
-	}
-	if err := e.setDeadlineLocked(ctx); err != nil {
-		return nil, err
-	}
-
-	requestID := atomic.AddUint64(&e.nextID, 1)
-	header := make([]byte, nativeHeaderLen)
-	copy(header[0:4], nativeMagic)
-	header[4] = nativeRequestVersion
-	header[5] = flags
-	binary.BigEndian.PutUint32(header[6:10], laneID)
-	binary.BigEndian.PutUint16(header[10:12], opcode)
-	binary.BigEndian.PutUint64(header[12:20], requestID)
-	binary.BigEndian.PutUint32(header[20:24], uint32(len(body)))
-
-	if _, err := e.writer.Write(header); err != nil {
-		_ = e.closeConnLocked()
-		return nil, err
-	}
-	if len(body) > 0 {
-		if _, err := e.writer.Write(body); err != nil {
-			_ = e.closeConnLocked()
-			return nil, err
-		}
-	}
-	if err := e.writer.Flush(); err != nil {
-		_ = e.closeConnLocked()
-		return nil, err
-	}
-
-	frame, err := readNativeResponse(e.reader)
-	if err != nil {
-		_ = e.closeConnLocked()
-		return nil, err
-	}
-	if frame.requestID != requestID || frame.opcode != opcode || frame.laneID != laneID {
-		_ = e.closeConnLocked()
-		return nil, fmt.Errorf("ferricstore native response mismatch: got lane=%d opcode=%d request=%d", frame.laneID, frame.opcode, frame.requestID)
-	}
-	if frame.status != nativeStatusOK {
-		return nil, NativeError{Status: frame.status, Value: frame.value}
-	}
-	e.lastActivityUnixNano.Store(time.Now().UnixNano())
-	return frame.value, nil
-}
-
-func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID uint32, requestID uint64, payload any, flags byte) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var body []byte
-	var err error
-	if flags&nativeFlagCustomPayload != 0 {
-		raw, ok := payload.([]byte)
-		if !ok {
-			return errors.New("ferricstore native custom payload must be raw bytes")
-		}
-		body = raw
-	} else {
-		body, err = encodeNativeValue(payload)
-		if err != nil {
-			return err
-		}
-	}
-	if len(body) > math.MaxUint32 {
-		return errors.New("ferricstore native request body is too large")
-	}
-
-	e.writeMu.Lock()
-	defer e.writeMu.Unlock()
-	e.mu.Lock()
-	conn := e.conn
-	writer := e.writer
-	e.mu.Unlock()
-	if conn == nil || writer == nil {
-		return fmt.Errorf("%w: %w", errNativeConnectionUnavailable, net.ErrClosed)
-	}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetWriteDeadline(deadline)
-		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
-	} else if e.opts.Timeout > 0 {
-		_ = conn.SetWriteDeadline(time.Now().Add(e.opts.Timeout))
-		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
-	}
-
-	header := make([]byte, nativeHeaderLen)
-	copy(header[0:4], nativeMagic)
-	header[4] = nativeRequestVersion
-	header[5] = flags
-	binary.BigEndian.PutUint32(header[6:10], laneID)
-	binary.BigEndian.PutUint16(header[10:12], opcode)
-	binary.BigEndian.PutUint64(header[12:20], requestID)
-	binary.BigEndian.PutUint32(header[20:24], uint32(len(body)))
-
-	if _, err := writer.Write(header); err != nil {
-		return err
-	}
-	if len(body) > 0 {
-		if _, err := writer.Write(body); err != nil {
-			return err
-		}
-	}
-	return writer.Flush()
-}
-
-func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader) {
-	for {
-		frame, err := readNativeResponse(reader)
-		if err != nil {
-			e.closeConnAndFailPendingIfCurrent(conn, err)
-			return
-		}
-		e.lastActivityUnixNano.Store(time.Now().UnixNano())
-		if frame.requestID == 0 {
-			e.deliverEvent(frame.value)
-			continue
-		}
-		e.mu.Lock()
-		responseCh := e.pending[frame.requestID]
-		delete(e.pending, frame.requestID)
-		e.mu.Unlock()
-		if responseCh != nil {
-			responseCh <- frame
-		}
-	}
-}
-
-func (e *NativeExecutor) closeConnAndFailPendingIfCurrent(conn net.Conn, err error) bool {
-	e.mu.Lock()
-	if e.conn != conn {
-		e.mu.Unlock()
-		return false
-	}
-	pending := e.pending
-	e.pending = make(map[uint64]chan nativeResponse)
-	_ = e.closeConnLocked()
-	e.mu.Unlock()
-	for _, responseCh := range pending {
-		responseCh <- nativeResponse{err: err}
-	}
-	return true
-}
-
-func (e *NativeExecutor) removePending(requestID uint64) {
-	e.mu.Lock()
-	delete(e.pending, requestID)
-	e.mu.Unlock()
-}
-
-func (e *NativeExecutor) deliverEvent(value any) {
-	e.mu.Lock()
-	events := e.events
-	e.mu.Unlock()
-	if events == nil {
-		return
-	}
-	select {
-	case events <- value:
-	default:
-		e.droppedEvents.Add(1)
-	}
-}
-
-func (e *NativeExecutor) nextEvent(ctx context.Context) (any, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	e.mu.Lock()
-	events := e.events
-	e.mu.Unlock()
-	if events != nil {
-		select {
-		case event := <-events:
-			return event, nil
-		default:
-		}
-	}
-	if err := e.ensureConnectedLocked(ctx); err != nil {
-		return nil, err
-	}
-	e.mu.Lock()
-	events = e.events
-	e.mu.Unlock()
-	if events == nil {
-		return nil, net.ErrClosed
-	}
-	select {
-	case event := <-events:
-		return event, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (e *NativeExecutor) setDeadlineLocked(ctx context.Context) error {
-	var deadline time.Time
-	if ctxDeadline, ok := ctx.Deadline(); ok {
-		deadline = ctxDeadline
-	} else if e.opts.Timeout > 0 {
-		deadline = time.Now().Add(e.opts.Timeout)
-	}
-	if deadline.IsZero() {
-		if !e.deadlineSet {
-			return nil
-		}
-		e.deadlineSet = false
-		return e.conn.SetDeadline(time.Time{})
-	}
-	e.deadlineSet = true
-	return e.conn.SetDeadline(deadline)
-}
-
-func readNativeResponse(reader *bufio.Reader) (nativeResponse, error) {
-	first, err := readNativeFrame(reader)
-	if err != nil {
-		return nativeResponse{}, err
-	}
-	body := append([]byte(nil), first.body...)
-	flags := first.flags
-
-	for flags&nativeFlagMoreChunks != 0 {
-		next, err := readNativeFrame(reader)
-		if err != nil {
-			return nativeResponse{}, err
-		}
-		if next.requestID != first.requestID || next.opcode != first.opcode || next.laneID != first.laneID {
-			return nativeResponse{}, errors.New("ferricstore native chunk metadata mismatch")
-		}
-		body, err = appendNativeResponseChunk(body, next.body, nativeMaxFrameBytes)
-		if err != nil {
-			return nativeResponse{}, err
-		}
-		flags = next.flags
-	}
-
-	if flags&nativeFlagCompressed != 0 {
-		return nativeResponse{}, errors.New("ferricstore native compressed responses are not negotiated")
-	}
-	if len(body) < 2 {
-		return nativeResponse{}, errors.New("ferricstore native response body is truncated")
-	}
-
-	status := binary.BigEndian.Uint16(body[:2])
-	if len(body) > 2 {
-		value, ok, err := decodeNativeCompactValue(first.opcode, body[2:])
-		if err != nil {
-			return nativeResponse{}, err
-		}
-		if ok {
-			return nativeResponse{
-				laneID:    first.laneID,
-				opcode:    first.opcode,
-				requestID: first.requestID,
-				status:    status,
-				value:     value,
-			}, nil
-		}
-	}
-	value, rest, err := decodeNativeValue(body[2:])
-	if err != nil {
-		return nativeResponse{}, err
-	}
-	if len(rest) != 0 {
-		return nativeResponse{}, errors.New("ferricstore native response value has trailing bytes")
-	}
-	return nativeResponse{
-		laneID:    first.laneID,
-		opcode:    first.opcode,
-		requestID: first.requestID,
-		status:    status,
-		value:     value,
-	}, nil
-}
-
-func (e *NativeExecutor) closeConnLocked() error {
-	conn := e.conn
-	e.conn = nil
-	e.reader = nil
-	e.writer = nil
-	e.deadlineSet = false
-	if e.heartbeatStop != nil {
-		close(e.heartbeatStop)
-		e.heartbeatStop = nil
-	}
-	if conn == nil {
-		return nil
-	}
-	return conn.Close()
-}
-
-func (e *NativeExecutor) clientName() string {
-	if e.opts.ClientName != "" {
-		return e.opts.ClientName
-	}
-	return "ferricstore-go"
-}
-
-func defaultNativeOptions(addr string, tlsEnabled bool) NativeOptions {
-	defaultPort := nativeDefaultPort
-	if tlsEnabled {
-		defaultPort = nativeDefaultTLSPort
-	}
-	timeout := 30 * time.Second
-	return NativeOptions{
-		Addr:                nativeAddressWithPort(addr, defaultPort),
-		TLS:                 tlsEnabled,
-		ClientName:          "ferricstore-go",
-		Timeout:             timeout,
-		Dialer:              &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second},
-		HeartbeatInterval:   30 * time.Second,
-		HeartbeatTimeout:    30 * time.Second,
-		ReconnectMaxRetries: 1,
-	}
-}
-
-func nativeAddressWithPort(addr, defaultPort string) string {
-	if addr == "" {
-		addr = "127.0.0.1"
-	}
-	if _, _, err := net.SplitHostPort(addr); err == nil {
-		return addr
-	}
-	if strings.Count(addr, ":") > 1 && !strings.HasPrefix(addr, "[") {
-		return net.JoinHostPort(addr, defaultPort)
-	}
-	return net.JoinHostPort(addr, defaultPort)
+	return results, nil
 }

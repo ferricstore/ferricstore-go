@@ -1,14 +1,19 @@
 package ferricstore
 
-import "context"
+import (
+	"context"
+	"errors"
+	"math"
+	"strings"
+)
 
 func (s *ListStore) Len(ctx context.Context, key string) (int64, error) {
-	value, err := s.client.Command(ctx, "LLEN", key)
-	return asInt64(value), err
+	value, err := s.client.typedReply(ctx, "LLEN", key)
+	return nonNegativeInt64Response("LLEN", value, err)
 }
 
 func (s *ListStore) Index(ctx context.Context, key string, index int64) (any, error) {
-	value, err := s.client.Command(ctx, "LINDEX", key, index)
+	value, err := s.client.typedReply(ctx, "LINDEX", key, index)
 	if err != nil || value == nil {
 		return value, err
 	}
@@ -20,8 +25,7 @@ func (s *ListStore) Set(ctx context.Context, key string, index int64, value any)
 	if err != nil {
 		return err
 	}
-	_, err = s.client.Command(ctx, "LSET", key, index, encoded)
-	return err
+	return s.client.typedStatus(ctx, "LSET", key, index, encoded)
 }
 
 func (s *ListStore) Rem(ctx context.Context, key string, count int64, value any) (int64, error) {
@@ -29,16 +33,24 @@ func (s *ListStore) Rem(ctx context.Context, key string, count int64, value any)
 	if err != nil {
 		return 0, err
 	}
-	response, err := s.client.Command(ctx, "LREM", key, count, encoded)
-	return asInt64(response), err
+	response, err := s.client.typedReply(ctx, "LREM", key, count, encoded)
+	return nonNegativeInt64Response("LREM", response, err)
 }
 
 func (s *ListStore) Trim(ctx context.Context, key string, start, stop int64) error {
-	_, err := s.client.Command(ctx, "LTRIM", key, start, stop)
-	return err
+	return s.client.typedStatus(ctx, "LTRIM", key, start, stop)
 }
 
 func (s *ListStore) Pos(ctx context.Context, key string, value any, rank, count, maxLen *int64) (any, error) {
+	if rank != nil && *rank == 0 {
+		return nil, errors.New("LPOS rank must not be zero")
+	}
+	if count != nil && *count < 0 {
+		return nil, errors.New("LPOS count must be non-negative")
+	}
+	if maxLen != nil && *maxLen < 0 {
+		return nil, errors.New("LPOS maxlen must be non-negative")
+	}
 	encoded, err := s.client.encode(value)
 	if err != nil {
 		return nil, err
@@ -47,7 +59,7 @@ func (s *ListStore) Pos(ctx context.Context, key string, value any, rank, count,
 	appendInt64Ptr(&args, "RANK", rank)
 	appendInt64Ptr(&args, "COUNT", count)
 	appendInt64Ptr(&args, "MAXLEN", maxLen)
-	return s.client.Command(ctx, args...)
+	return s.client.typedReply(ctx, args...)
 }
 
 func (s *ListStore) Insert(ctx context.Context, key string, before bool, pivot, value any) (int64, error) {
@@ -63,12 +75,22 @@ func (s *ListStore) Insert(ctx context.Context, key string, before bool, pivot, 
 	if before {
 		where = "BEFORE"
 	}
-	response, err := s.client.Command(ctx, "LINSERT", key, where, encodedPivot, encodedValue)
-	return asInt64(response), err
+	response, err := s.client.typedReply(ctx, "LINSERT", key, where, encodedPivot, encodedValue)
+	length, err := responseInt64(response, err)
+	if err != nil {
+		return 0, err
+	}
+	if length < -1 {
+		return 0, errors.New("LINSERT returned an invalid negative length")
+	}
+	return length, nil
 }
 
 func (s *ListStore) Move(ctx context.Context, source, destination, whereFrom, whereTo string) (any, error) {
-	value, err := s.client.Command(ctx, "LMOVE", source, destination, whereFrom, whereTo)
+	if !validListDirection(whereFrom) || !validListDirection(whereTo) {
+		return nil, errors.New("LMOVE directions must be LEFT or RIGHT")
+	}
+	value, err := s.client.typedReply(ctx, "LMOVE", source, destination, whereFrom, whereTo)
 	if err != nil || value == nil {
 		return value, err
 	}
@@ -76,7 +98,7 @@ func (s *ListStore) Move(ctx context.Context, source, destination, whereFrom, wh
 }
 
 func (s *ListStore) RPopLPush(ctx context.Context, source, destination string) (any, error) {
-	value, err := s.client.Command(ctx, "RPOPLPUSH", source, destination)
+	value, err := s.client.typedReply(ctx, "RPOPLPUSH", source, destination)
 	if err != nil || value == nil {
 		return value, err
 	}
@@ -92,25 +114,45 @@ func (s *ListStore) RPushX(ctx context.Context, key string, values ...any) (int6
 }
 
 func (s *ListStore) BLPop(ctx context.Context, timeoutSeconds int64, keys ...string) (any, error) {
+	if len(keys) == 0 {
+		return nil, errors.New("BLPOP requires at least one key")
+	}
+	if timeoutSeconds < 0 {
+		return nil, errors.New("BLPOP timeout must be non-negative")
+	}
 	args := []any{"BLPOP"}
 	for _, key := range keys {
 		args = append(args, key)
 	}
 	args = append(args, timeoutSeconds)
-	return s.client.Command(ctx, args...)
+	value, err := s.client.typedReply(ctx, args...)
+	return decodeBlockingListPop(s.client.codec, value, err, "BLPOP")
 }
 
 func (s *ListStore) BRPop(ctx context.Context, timeoutSeconds int64, keys ...string) (any, error) {
+	if len(keys) == 0 {
+		return nil, errors.New("BRPOP requires at least one key")
+	}
+	if timeoutSeconds < 0 {
+		return nil, errors.New("BRPOP timeout must be non-negative")
+	}
 	args := []any{"BRPOP"}
 	for _, key := range keys {
 		args = append(args, key)
 	}
 	args = append(args, timeoutSeconds)
-	return s.client.Command(ctx, args...)
+	value, err := s.client.typedReply(ctx, args...)
+	return decodeBlockingListPop(s.client.codec, value, err, "BRPOP")
 }
 
 func (s *ListStore) BLMove(ctx context.Context, source, destination, whereFrom, whereTo string, timeoutSeconds int64) (any, error) {
-	value, err := s.client.Command(ctx, "BLMOVE", source, destination, whereFrom, whereTo, timeoutSeconds)
+	if !validListDirection(whereFrom) || !validListDirection(whereTo) {
+		return nil, errors.New("BLMOVE directions must be LEFT or RIGHT")
+	}
+	if timeoutSeconds < 0 {
+		return nil, errors.New("BLMOVE timeout must be non-negative")
+	}
+	value, err := s.client.typedReply(ctx, "BLMOVE", source, destination, whereFrom, whereTo, timeoutSeconds)
 	if err != nil || value == nil {
 		return value, err
 	}
@@ -118,11 +160,28 @@ func (s *ListStore) BLMove(ctx context.Context, source, destination, whereFrom, 
 }
 
 func (s *ListStore) BLMPop(ctx context.Context, timeoutSeconds float64, keys []string, where string, count *int) (any, error) {
+	if math.IsNaN(timeoutSeconds) || math.IsInf(timeoutSeconds, 0) || timeoutSeconds < 0 {
+		return nil, errors.New("BLMPOP timeout must be finite and non-negative")
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("BLMPOP requires at least one key")
+	}
+	if !validListDirection(where) {
+		return nil, errors.New("BLMPOP direction must be LEFT or RIGHT")
+	}
+	if count != nil && *count <= 0 {
+		return nil, errors.New("BLMPOP count must be positive")
+	}
 	args := []any{"BLMPOP", floatArg(timeoutSeconds), len(keys)}
 	for _, key := range keys {
 		args = append(args, key)
 	}
 	args = append(args, where)
 	appendIntPtr(&args, "COUNT", count)
-	return s.client.Command(ctx, args...)
+	value, err := s.client.typedReply(ctx, args...)
+	return decodeBlockingListMPop(s.client.codec, value, err)
+}
+
+func validListDirection(direction string) bool {
+	return strings.EqualFold(direction, "LEFT") || strings.EqualFold(direction, "RIGHT")
 }

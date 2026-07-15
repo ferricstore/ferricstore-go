@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,6 +14,10 @@ type fakeExecutor struct {
 	value  any
 	values []any
 	err    error
+}
+
+func (e *fakeExecutor) acquireCommandSession(context.Context, ...any) (commandSession, error) {
+	return &executorCommandSession{exec: e}, nil
 }
 
 func (f *fakeExecutor) Do(ctx context.Context, args ...any) (any, error) {
@@ -55,6 +60,21 @@ func TestWithNativeOptionsAppliesToNewClient(t *testing.T) {
 	}
 }
 
+func TestWithNativeOptionsUpdatesRuntimeRequestQueueLimit(t *testing.T) {
+	client := NewClient("127.0.0.1:6388",
+		WithNativeOptions(WithNativeMaxQueuedRequests(0)),
+	)
+	defer func() { _ = client.Close() }()
+
+	exec := client.exec.(*NativeExecutor)
+	exec.flow.mu.Lock()
+	maxQueued := exec.flow.maxQueued
+	exec.flow.mu.Unlock()
+	if maxQueued != 0 {
+		t.Fatalf("runtime request queue limit = %d; want disabled queue", maxQueued)
+	}
+}
+
 func TestWithNativeOptionsIgnoredForCustomExecutor(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("PONG")}
 	client := NewClientWithExecutor(exec, WithNativeOptions(WithNativeReconnect(0)))
@@ -65,6 +85,82 @@ func TestWithNativeOptionsIgnoredForCustomExecutor(t *testing.T) {
 	}
 	if got != "PONG" {
 		t.Fatalf("expected PONG, got %q", got)
+	}
+}
+
+func TestClientConstructorHandlesNilDependencies(t *testing.T) {
+	exec := &fakeExecutor{value: []byte("PONG")}
+	client := NewClientWithExecutor(exec, nil)
+	if pong, err := client.Ping(context.Background()); err != nil || pong != "PONG" {
+		t.Fatalf("client with nil option PING = %q, %v", pong, err)
+	}
+
+	client = NewClientWithExecutor(nil)
+	if _, err := client.Ping(context.Background()); err == nil || !strings.Contains(err.Error(), "executor") {
+		t.Fatalf("client with nil executor error = %v; want descriptive error", err)
+	}
+}
+
+func TestRateLimitAddRejectsMalformedTypedFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		response any
+	}{
+		{name: "shape", response: []any{"allowed", int64(1), int64(2)}},
+		{name: "status", response: []any{int64(1), int64(1), int64(2), int64(3)}},
+		{name: "count", response: []any{"allowed", "not-an-integer", int64(2), int64(3)}},
+		{name: "remaining", response: []any{"allowed", int64(1), true, int64(3)}},
+		{name: "reset", response: []any{"allowed", int64(1), int64(2), map[string]any{}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewClientWithExecutor(&fakeExecutor{value: tt.response})
+			if _, err := client.RateLimitAdd(context.Background(), "rate", 1000, 10, 1); err == nil {
+				t.Fatalf("accepted malformed ratelimit response %#v", tt.response)
+			}
+		})
+	}
+}
+
+func TestKeyInfoRejectsMalformedTypedFields(t *testing.T) {
+	valid := map[string]any{
+		"type":             "string",
+		"value_size":       int64(5),
+		"ttl_ms":           int64(-1),
+		"hot_cache_status": "hot",
+		"last_write_shard": int64(2),
+	}
+	for _, field := range []string{"value_size", "ttl_ms", "last_write_shard"} {
+		t.Run(field, func(t *testing.T) {
+			response := make(map[string]any, len(valid))
+			for key, value := range valid {
+				response[key] = value
+			}
+			response[field] = "not-an-integer"
+			client := NewClientWithExecutor(&fakeExecutor{value: response})
+			if _, err := client.KeyInfo(context.Background(), "key"); err == nil {
+				t.Fatalf("accepted malformed key_info %s", field)
+			}
+		})
+	}
+}
+
+func TestFlowRecordPropagatesCodecErrors(t *testing.T) {
+	_, err := recordFromNative(map[string]any{
+		"id":      "flow-1",
+		"payload": []byte("not-json"),
+	}, JSONCodec{})
+	if err == nil {
+		t.Fatal("expected malformed payload to return a codec error")
+	}
+
+	_, err = recordFromNative(map[string]any{
+		"id":      "flow-2",
+		"payload": []byte(`{"ok":true}`),
+		"values":  map[string]any{"broken": []byte("not-json")},
+	}, JSONCodec{})
+	if err == nil {
+		t.Fatal("expected malformed named value to return a codec error")
 	}
 }
 

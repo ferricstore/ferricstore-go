@@ -4,16 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/crc32"
-	"net"
-	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 )
 
 const routeSlotCount = 1024
 const routeSlotMask = routeSlotCount - 1
+const maxTopologyConcurrentTasks = 32
 
 type EndpointPolicy string
 
@@ -51,6 +48,9 @@ func (t *RoutingTopology) RouteKey(key any) (RoutingRoute, error) {
 	if t == nil {
 		return RoutingRoute{}, errors.New("ferricstore topology is empty")
 	}
+	if !isRouteKey(key) {
+		return RoutingRoute{}, fmt.Errorf("unsupported routing key type %T", key)
+	}
 	slot := routeSlotForKey(key)
 	route := t.slots[slot]
 	if route == nil {
@@ -82,8 +82,34 @@ type topologyNativeOptions struct {
 	endpointPolicy    EndpointPolicy
 	endpointValidator func(RoutingEndpoint) bool
 	nativeOptions     []NativeOption
+	clientOptions     []ClientOption
 	trustedHosts      []string
 	warmConnections   bool
+	crossShardWrites  CrossShardWritePolicy
+}
+
+// CrossShardWritePolicy controls destructive multi-key commands whose keys
+// resolve to more than one shard. Rejecting them is the safe default because a
+// server error can otherwise leave only some shards modified.
+type CrossShardWritePolicy uint8
+
+const (
+	// CrossShardWriteReject prevents destructive commands from partially
+	// succeeding across shards. It is the default policy.
+	CrossShardWriteReject CrossShardWritePolicy = iota
+	// CrossShardWritePerShard permits independent per-shard execution (or
+	// per-slot execution when the server requires slot-local atomicity) and
+	// reports any mixed outcome as TopologyPartialWriteError.
+	CrossShardWritePerShard
+)
+
+// WithTopologyCrossShardWritePolicy explicitly opts into or rejects
+// per-shard execution of destructive multi-key commands such as DEL and
+// UNLINK, and per-slot execution of MSET.
+func WithTopologyCrossShardWritePolicy(policy CrossShardWritePolicy) TopologyOption {
+	return func(opts *topologyNativeOptions) {
+		opts.crossShardWrites = policy
+	}
 }
 
 func WithTopologyEndpointPolicy(policy EndpointPolicy) TopologyOption {
@@ -104,6 +130,14 @@ func WithTopologyNativeOptions(opts ...NativeOption) TopologyOption {
 	}
 }
 
+// WithTopologyClientOptions applies client-level options, such as codecs, when
+// constructing an owning client with NewTopologyClientFromURLs.
+func WithTopologyClientOptions(opts ...ClientOption) TopologyOption {
+	return func(options *topologyNativeOptions) {
+		options.clientOptions = append(options.clientOptions, opts...)
+	}
+}
+
 func WithTopologyTrustedHosts(hosts ...string) TopologyOption {
 	return func(opts *topologyNativeOptions) {
 		opts.trustedHosts = append(opts.trustedHosts, hosts...)
@@ -117,19 +151,44 @@ func WithTopologyWarmConnections(warm bool) TopologyOption {
 }
 
 type TopologyNativeExecutor struct {
-	mu sync.Mutex
+	mu        sync.Mutex
+	refreshMu sync.Mutex
+	eventWG   sync.WaitGroup
 
-	adapters          map[string]*NativeExecutor
-	endpointPolicy    EndpointPolicy
-	endpointValidator func(RoutingEndpoint) bool
-	nativeOptions     []NativeOption
-	seedEndpointKeys  map[string]struct{}
-	seedURLs          []string
-	tls               bool
-	topology          *RoutingTopology
-	trustedHosts      map[string]struct{}
-	warmConnections   bool
+	adapters              map[string]*NativeExecutor
+	retiringAdapters      map[*NativeExecutor]struct{}
+	closed                bool
+	endpointPolicy        EndpointPolicy
+	endpointValidator     func(RoutingEndpoint) bool
+	nativeOptions         []NativeOption
+	clientOptions         []ClientOption
+	seedEndpointKeys      map[string]struct{}
+	seedURLByKey          map[string]string
+	seedURLs              []string
+	lastSuccessfulURL     string
+	topologyVersion       uint64
+	refreshInFlight       *topologyRefresh
+	refreshSignals        chan struct{}
+	eventContext          context.Context
+	cancelEvents          context.CancelFunc
+	tls                   bool
+	topology              *RoutingTopology
+	trustedHosts          map[string]struct{}
+	warmConnections       bool
+	crossShardWrites      CrossShardWritePolicy
+	maxMSetPreflightBytes int
 }
+
+type topologyRefresh struct {
+	done      chan struct{}
+	cancel    context.CancelFunc
+	err       error
+	waiters   int
+	abandoned bool
+}
+
+var errTopologyClosed = errors.New("ferricstore topology executor is closed")
+var errTopologyTransportConflict = errors.New("ferricstore topology native TLS options conflict with the seed URL scheme; select transport with ferric:// or ferrics:// consistently")
 
 func NewTopologyNativeExecutor(urls []string, opts ...TopologyOption) (*TopologyNativeExecutor, error) {
 	if len(urls) == 0 {
@@ -141,32 +200,70 @@ func NewTopologyNativeExecutor(urls []string, opts ...TopologyOption) (*Topology
 			opt(&options)
 		}
 	}
+	switch options.endpointPolicy {
+	case "", EndpointPolicySeedHosts, EndpointPolicyAny, EndpointPolicyNone:
+	default:
+		return nil, fmt.Errorf("invalid endpoint policy %q", options.endpointPolicy)
+	}
+	if options.crossShardWrites != CrossShardWriteReject && options.crossShardWrites != CrossShardWritePerShard {
+		return nil, fmt.Errorf("invalid cross-shard write policy %d", options.crossShardWrites)
+	}
 	seedURLs := make([]string, 0, len(urls))
 	seedEndpointKeys := make(map[string]struct{}, len(urls))
+	seedURLByKey := make(map[string]string, len(urls))
 	tlsEnabled := false
-	for _, raw := range urls {
+	for index, raw := range urls {
 		parsed, err := parseFerricURL(raw)
 		if err != nil {
 			return nil, err
 		}
 		normalized := parsed.URL()
 		seedURLs = append(seedURLs, normalized)
-		seedEndpointKeys[endpointKey(parsed.Endpoint())] = struct{}{}
-		tlsEnabled = tlsEnabled || parsed.TLS
+		if index == 0 {
+			tlsEnabled = parsed.TLS
+		} else if parsed.TLS != tlsEnabled {
+			return nil, errors.New("ferricstore topology executor cannot mix ferric:// and ferrics:// seed URLs")
+		}
+		key := connectionKeyForEndpoint(parsed.Endpoint(), parsed.TLS)
+		if existing, ok := seedURLByKey[key]; ok {
+			previous, _ := parseFerricURL(existing)
+			if previous.Username != parsed.Username || previous.Password != parsed.Password {
+				return nil, fmt.Errorf("conflicting credentials for topology seed %s", key)
+			}
+			continue
+		}
+		seedEndpointKeys[key] = struct{}{}
+		seedURLByKey[key] = normalized
 	}
-	nativeOptions := append(seedCredentialOptions(urls), options.nativeOptions...)
+	transportProbe := defaultNativeOptions("127.0.0.1", tlsEnabled)
+	applyNativeOptions(&transportProbe, options.nativeOptions...)
+	if transportProbe.TLS != tlsEnabled {
+		return nil, errTopologyTransportConflict
+	}
 	exec := &TopologyNativeExecutor{
-		adapters:          make(map[string]*NativeExecutor),
-		endpointPolicy:    options.endpointPolicy,
-		endpointValidator: options.endpointValidator,
-		nativeOptions:     nativeOptions,
-		seedEndpointKeys:  seedEndpointKeys,
-		seedURLs:          seedURLs,
-		tls:               tlsEnabled,
-		topology:          emptyRoutingTopology(),
-		trustedHosts:      normalizedStringSet(options.trustedHosts),
-		warmConnections:   options.warmConnections,
+		adapters:              make(map[string]*NativeExecutor),
+		retiringAdapters:      make(map[*NativeExecutor]struct{}),
+		endpointPolicy:        options.endpointPolicy,
+		endpointValidator:     options.endpointValidator,
+		nativeOptions:         append([]NativeOption(nil), options.nativeOptions...),
+		clientOptions:         append([]ClientOption(nil), options.clientOptions...),
+		seedEndpointKeys:      seedEndpointKeys,
+		seedURLByKey:          seedURLByKey,
+		seedURLs:              seedURLs,
+		tls:                   tlsEnabled,
+		topology:              emptyRoutingTopology(),
+		trustedHosts:          normalizedStringSet(options.trustedHosts),
+		warmConnections:       options.warmConnections,
+		crossShardWrites:      options.crossShardWrites,
+		maxMSetPreflightBytes: nativeMaxFrameBytes,
+		refreshSignals:        make(chan struct{}, 1),
 	}
+	exec.eventContext, exec.cancelEvents = context.WithCancel(context.Background())
+	exec.nativeOptions = append(exec.nativeOptions, withNativeEventSubscription(
+		[]string{"TOPOLOGY_CHANGED"}, exec.handleNativeManagementEvent,
+	))
+	exec.eventWG.Add(1)
+	go exec.topologyEventRefreshLoop()
 	return exec, nil
 }
 
@@ -175,20 +272,41 @@ func NewTopologyClientFromURLs(urls []string, opts ...TopologyOption) (*Client, 
 	if err != nil {
 		return nil, err
 	}
-	client := NewClientWithExecutor(exec)
+	client := NewClientWithExecutor(exec, exec.clientOptions...)
 	client.closer = exec.Close
 	return client, nil
 }
 
 func (e *TopologyNativeExecutor) Do(ctx context.Context, args ...any) (any, error) {
+	return e.doUnlocked(ctx, args...)
+}
+
+func (e *TopologyNativeExecutor) doUnlocked(ctx context.Context, args ...any) (any, error) {
+	if err := e.assertOpen(); err != nil {
+		return nil, err
+	}
+	if name, mutates := connectionStateMutationCommand(args); mutates {
+		return nil, fmt.Errorf("%s is connection-local and cannot be applied safely to a topology executor", name)
+	}
+	if name, keys, ok := safeScatterCommand(args); ok && len(keys) > 0 {
+		requestContext, hasRequestContext := topologyRequestContext(args)
+		return e.scatterCommandWithContext(ctx, name, keys, requestContext, hasRequestContext)
+	}
 	routeData, err := e.routeData(ctx, args)
+	if err == errTopologyCrossSlotMSet {
+		keys, values, requestContext, hasRequestContext, _, parseErr := topologyMSetCommand(args)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		return e.scatterMSet(ctx, keys, values, requestContext, hasRequestContext)
+	}
 	if err != nil {
 		return nil, err
 	}
 	if routeData == nil {
 		return e.controlDo(ctx, args...)
 	}
-	adapter, err := e.adapterForEndpoint(routeData.route.Endpoint)
+	adapter, err := e.adapterForTopologyRoute(routeData.route, routeData.snapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -199,51 +317,186 @@ func (e *TopologyNativeExecutor) Do(ctx context.Context, args ...any) (any, erro
 	return value, err
 }
 
-func (e *TopologyNativeExecutor) Pipeline(ctx context.Context, commands [][]any) ([]any, error) {
-	if len(commands) == 0 {
-		return nil, nil
-	}
-	route, ok, err := e.singleRouteForCommands(ctx, commands)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		adapter, err := e.controlAdapter(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return adapter.Pipeline(ctx, commands)
-	}
-	adapter, err := e.adapterForEndpoint(route.Endpoint)
-	if err != nil {
-		return nil, err
-	}
-	values, err := adapter.pipelineOnLane(ctx, commands, route.LaneID)
-	if err != nil && isRetryableRouteError(err) {
-		_ = e.RefreshTopology(ctx)
-	}
-	return values, err
+func (e *TopologyNativeExecutor) routeWithRefresh(ctx context.Context, key any) (RoutingRoute, error) {
+	route, _, err := e.routeWithRefreshSnapshot(ctx, key)
+	return route, err
 }
 
 func (e *TopologyNativeExecutor) Close() error {
 	e.mu.Lock()
-	adapters := make([]*NativeExecutor, 0, len(e.adapters))
+	if e.closed {
+		e.mu.Unlock()
+		return nil
+	}
+	e.closed = true
+	if e.cancelEvents != nil {
+		e.cancelEvents()
+	}
+	adapterSet := make(map[*NativeExecutor]struct{}, len(e.adapters)+len(e.retiringAdapters))
 	for _, adapter := range e.adapters {
-		adapters = append(adapters, adapter)
+		adapterSet[adapter] = struct{}{}
+	}
+	for adapter := range e.retiringAdapters {
+		adapterSet[adapter] = struct{}{}
 	}
 	e.adapters = make(map[string]*NativeExecutor)
+	e.retiringAdapters = make(map[*NativeExecutor]struct{})
 	e.mu.Unlock()
 
 	var firstErr error
-	for _, adapter := range adapters {
+	for adapter := range adapterSet {
 		if err := adapter.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
+	e.eventWG.Wait()
 	return firstErr
 }
 
+func (e *TopologyNativeExecutor) handleNativeManagementEvent(value nativeServerEvent) {
+	event, err := nativeEventFromServerValue(value)
+	if err != nil || !strings.EqualFold(event.Name, "TOPOLOGY_CHANGED") {
+		return
+	}
+	select {
+	case e.refreshSignals <- struct{}{}:
+	default:
+	}
+}
+
+func (e *TopologyNativeExecutor) topologyEventRefreshLoop() {
+	defer e.eventWG.Done()
+	ctx := e.eventContext
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.refreshSignals:
+		}
+
+		// If an event arrives while a SHARDS request is already in flight, wait
+		// for that snapshot and then fetch once more. The event can describe a
+		// change newer than the response currently being installed.
+		e.refreshMu.Lock()
+		flight := e.refreshInFlight
+		e.refreshMu.Unlock()
+		if flight != nil {
+			select {
+			case <-flight.done:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if ctx.Err() == nil {
+			_ = e.RefreshTopology(ctx)
+		}
+	}
+}
+
 func (e *TopologyNativeExecutor) RefreshTopology(ctx context.Context) error {
+	return e.refreshTopology(ctx, nil)
+}
+
+func (e *TopologyNativeExecutor) refreshTopologyAtVersion(ctx context.Context, version uint64) error {
+	return e.refreshTopology(ctx, &version)
+}
+
+func (e *TopologyNativeExecutor) refreshTopology(ctx context.Context, expectedVersion *uint64) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for {
+		e.refreshMu.Lock()
+		if expectedVersion != nil {
+			e.mu.Lock()
+			current := e.topologyVersion
+			e.mu.Unlock()
+			if current != *expectedVersion {
+				e.refreshMu.Unlock()
+				return nil
+			}
+		}
+		flight := e.refreshInFlight
+		if flight != nil && flight.abandoned {
+			done := flight.done
+			e.refreshMu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		startFlight := false
+		var refreshCtx context.Context
+		if flight == nil {
+			refreshCtx = e.eventContext
+			if refreshCtx == nil {
+				refreshCtx = context.Background()
+			}
+			var cancel context.CancelFunc
+			refreshCtx, cancel = context.WithCancel(refreshCtx)
+			flight = &topologyRefresh{done: make(chan struct{}), cancel: cancel}
+			e.refreshInFlight = flight
+			startFlight = true
+		}
+		flight.waiters++
+		e.refreshMu.Unlock()
+		if startFlight {
+			go e.runTopologyRefresh(refreshCtx, flight)
+		}
+
+		completed := false
+		select {
+		case <-flight.done:
+			completed = true
+		case <-ctx.Done():
+		}
+		e.releaseTopologyRefreshWaiter(flight)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if completed {
+			return flight.err
+		}
+	}
+}
+
+func (e *TopologyNativeExecutor) releaseTopologyRefreshWaiter(flight *topologyRefresh) {
+	var cancel context.CancelFunc
+	e.refreshMu.Lock()
+	if flight.waiters > 0 {
+		flight.waiters--
+	}
+	if flight.waiters == 0 && e.refreshInFlight == flight {
+		flight.abandoned = true
+		cancel = flight.cancel
+	}
+	e.refreshMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (e *TopologyNativeExecutor) runTopologyRefresh(ctx context.Context, flight *topologyRefresh) {
+	err := e.refreshTopologyOnce(ctx)
+	flight.cancel()
+	e.refreshMu.Lock()
+	flight.err = err
+	if e.refreshInFlight == flight {
+		e.refreshInFlight = nil
+	}
+	close(flight.done)
+	e.refreshMu.Unlock()
+}
+
+func (e *TopologyNativeExecutor) refreshTopologyOnce(ctx context.Context) error {
+	if err := e.assertOpen(); err != nil {
+		return err
+	}
 	var lastErr error
 	for _, candidate := range e.refreshCandidateURLs() {
 		adapter, err := e.adapterForURL(candidate)
@@ -261,13 +514,14 @@ func (e *TopologyNativeExecutor) RefreshTopology(ctx context.Context) error {
 			lastErr = err
 			continue
 		}
+		if err := e.installTopology(topology); err != nil {
+			return err
+		}
 		e.mu.Lock()
-		e.topology = topology
+		e.lastSuccessfulURL = candidate
 		e.mu.Unlock()
 		if e.warmConnections {
-			for _, endpoint := range topology.endpoints {
-				_, _ = e.adapterForEndpoint(endpoint)
-			}
+			e.warmTopologyConnections(ctx, topology)
 		}
 		return nil
 	}
@@ -277,43 +531,68 @@ func (e *TopologyNativeExecutor) RefreshTopology(ctx context.Context) error {
 	return fmt.Errorf("no FerricStore topology endpoint reachable: %w", lastErr)
 }
 
+func (e *TopologyNativeExecutor) warmTopologyConnections(ctx context.Context, topology *RoutingTopology) {
+	const maxConcurrentWarmups = 8
+	tasks := make([]func(), 0, len(topology.endpoints))
+	for _, endpoint := range topology.endpoints {
+		endpoint := endpoint
+		tasks = append(tasks, func() {
+			if ctx.Err() != nil {
+				return
+			}
+			adapter, err := e.adapterForEndpoint(endpoint)
+			if err == nil {
+				_ = adapter.ensureConnectedLocked(ctx)
+			}
+		})
+	}
+	runBoundedTopologyTasks(maxConcurrentWarmups, tasks)
+}
+
 func (e *TopologyNativeExecutor) Route(key any) (RoutingRoute, error) {
-	e.mu.Lock()
-	topology := e.topology
-	e.mu.Unlock()
-	route, err := topology.RouteKey(key)
-	if err != nil {
-		return RoutingRoute{}, err
+	for range maxTopologyPlanningAttempts {
+		snapshot, err := e.captureRoutingTopology()
+		if err != nil {
+			return RoutingRoute{}, err
+		}
+		route, err := e.routeInSnapshot(snapshot, key)
+		if err != nil {
+			return RoutingRoute{}, err
+		}
+		if e.routingSnapshotCurrent(snapshot) {
+			return route, nil
+		}
 	}
-	if err := e.validateEndpoint(route.Endpoint); err != nil {
-		return RoutingRoute{}, err
-	}
-	return route, nil
+	return RoutingRoute{}, errTopologyStaleRoute
 }
 
 func (e *TopologyNativeExecutor) routeData(ctx context.Context, args []any) (*topologyRouteData, error) {
-	if len(args) == 0 {
-		return nil, nil
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	command, err := buildNativeCommand(args)
-	if err != nil {
-		return nil, err
-	}
-	key, ok := routingKeyForBuiltCommand(args, command)
-	if !ok {
-		return nil, nil
-	}
-	route, err := e.Route(key)
-	if err != nil {
-		if refreshErr := e.RefreshTopology(ctx); refreshErr != nil {
-			return nil, err
-		}
-		route, err = e.Route(key)
+	refreshed := false
+	for range maxTopologyPlanningAttempts {
+		snapshot, err := e.captureRoutingTopology()
 		if err != nil {
 			return nil, err
 		}
+		routeData, err := e.routeDataInSnapshot(args, snapshot)
+		if err != nil {
+			var lookupErr *topologyRouteLookupError
+			if !errors.As(err, &lookupErr) || refreshed {
+				return nil, err
+			}
+			if refreshErr := e.refreshTopologyAtVersion(ctx, snapshot.version); refreshErr != nil {
+				return nil, refreshErr
+			}
+			refreshed = true
+			continue
+		}
+		if e.routingSnapshotCurrent(snapshot) {
+			return routeData, nil
+		}
 	}
-	return &topologyRouteData{command: command, route: route}, nil
+	return nil, errTopologyStaleRoute
 }
 
 func (e *TopologyNativeExecutor) singleRouteForCommands(ctx context.Context, commands [][]any) (RoutingRoute, bool, error) {
@@ -340,694 +619,7 @@ func (e *TopologyNativeExecutor) singleRouteForCommands(ctx context.Context, com
 }
 
 type topologyRouteData struct {
-	command nativeCommand
-	route   RoutingRoute
-}
-
-func (e *TopologyNativeExecutor) controlDo(ctx context.Context, args ...any) (any, error) {
-	adapter, err := e.controlAdapter(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return adapter.Do(ctx, args...)
-}
-
-func (e *TopologyNativeExecutor) controlAdapter(ctx context.Context) (*NativeExecutor, error) {
-	var lastErr error
-	for _, candidate := range e.refreshCandidateURLs() {
-		adapter, err := e.adapterForURL(candidate)
-		if err == nil {
-			return adapter, nil
-		}
-		lastErr = err
-	}
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	return nil, errors.New("no topology control endpoint configured")
-}
-
-func (e *TopologyNativeExecutor) adapterForURL(rawurl string) (*NativeExecutor, error) {
-	parsed, err := parseFerricURL(rawurl)
-	if err != nil {
-		return nil, err
-	}
-	key := endpointKey(parsed.Endpoint())
-	e.mu.Lock()
-	existing := e.adapters[key]
-	e.mu.Unlock()
-	if existing != nil {
-		return existing, nil
-	}
-	adapter, err := NewNativeExecutorFromURL(parsed.URL(), e.nativeOptions...)
-	if err != nil {
-		return nil, err
-	}
-	e.mu.Lock()
-	if existing = e.adapters[key]; existing != nil {
-		e.mu.Unlock()
-		_ = adapter.Close()
-		return existing, nil
-	}
-	e.adapters[key] = adapter
-	e.mu.Unlock()
-	return adapter, nil
-}
-
-func (e *TopologyNativeExecutor) adapterForEndpoint(endpoint RoutingEndpoint) (*NativeExecutor, error) {
-	if err := e.validateEndpoint(endpoint); err != nil {
-		return nil, err
-	}
-	key := endpointKey(endpoint)
-	e.mu.Lock()
-	existing := e.adapters[key]
-	e.mu.Unlock()
-	if existing != nil {
-		return existing, nil
-	}
-	adapter, err := NewNativeExecutorFromURL(urlFromEndpoint(endpoint, e.tls), e.nativeOptions...)
-	if err != nil {
-		return nil, err
-	}
-	e.mu.Lock()
-	if existing = e.adapters[key]; existing != nil {
-		e.mu.Unlock()
-		_ = adapter.Close()
-		return existing, nil
-	}
-	e.adapters[key] = adapter
-	e.mu.Unlock()
-	return adapter, nil
-}
-
-func (e *TopologyNativeExecutor) validateEndpoint(endpoint RoutingEndpoint) error {
-	host := strings.ToLower(endpoint.Host)
-	if host == "" || endpoint.NativePort <= 0 {
-		return fmt.Errorf("invalid learned endpoint: %#v", endpoint)
-	}
-	allowed := false
-	switch e.endpointPolicy {
-	case "", EndpointPolicySeedHosts:
-		_, seedOK := e.seedEndpointKeys[endpointKey(endpoint)]
-		_, trustedOK := e.trustedHosts[host]
-		allowed = seedOK || trustedOK
-	case EndpointPolicyAny, EndpointPolicyNone:
-		allowed = true
-	default:
-		return fmt.Errorf("invalid endpoint policy %q", e.endpointPolicy)
-	}
-	if !allowed {
-		return fmt.Errorf("unsafe learned endpoint: %#v", endpoint)
-	}
-	if e.endpointValidator != nil && !e.endpointValidator(endpoint) {
-		return fmt.Errorf("unsafe learned endpoint: %#v", endpoint)
-	}
-	return nil
-}
-
-func (e *TopologyNativeExecutor) refreshCandidateURLs() []string {
-	e.mu.Lock()
-	topology := e.topology
-	seedURLs := append([]string(nil), e.seedURLs...)
-	e.mu.Unlock()
-
-	endpointCount := 0
-	if topology != nil {
-		endpointCount = len(topology.endpoints)
-	}
-	seen := make(map[string]struct{}, len(seedURLs)+endpointCount)
-	urls := make([]string, 0, len(seedURLs)+endpointCount)
-	for _, candidate := range seedURLs {
-		if _, ok := seen[candidate]; ok {
-			continue
-		}
-		seen[candidate] = struct{}{}
-		urls = append(urls, candidate)
-	}
-	if topology != nil {
-		for _, endpoint := range topology.endpoints {
-			candidate := urlFromEndpoint(endpoint, e.tls)
-			if _, ok := seen[candidate]; ok {
-				continue
-			}
-			seen[candidate] = struct{}{}
-			urls = append(urls, candidate)
-		}
-	}
-	return urls
-}
-
-func buildRoutingTopology(value any) (*RoutingTopology, error) {
-	payload, err := nativeMap(value)
-	if err != nil {
-		return nil, err
-	}
-	rawRanges, ok := normalizeAdminResponse(payload["ranges"]).([]any)
-	if !ok {
-		return nil, errors.New("invalid SHARDS topology payload")
-	}
-	topology := &RoutingTopology{
-		RouteEpoch: asInt64(payload["route_epoch"]),
-		ShardCount: int(asInt64(payload["shard_count"])),
-		endpoints:  make(map[string]RoutingEndpoint),
-	}
-	for _, rawRange := range rawRanges {
-		item, err := nativeMap(rawRange)
-		if err != nil {
-			return nil, err
-		}
-		if strings.EqualFold(asString(item["hint"]), "leader_unknown") {
-			return nil, errors.New("SHARDS range has no leader")
-		}
-		first := int(asInt64(item["first_slot"]))
-		last := int(asInt64(item["last_slot"]))
-		shard := int(asInt64(item["shard"]))
-		laneID := uint32(asInt64(item["lane_id"]))
-		endpoint, err := endpointFromRange(item)
-		if err != nil {
-			return nil, err
-		}
-		if first < 0 || last < first || last >= routeSlotCount || laneID == 0 {
-			return nil, fmt.Errorf("invalid SHARDS range: %#v", item)
-		}
-		key := endpointKey(endpoint)
-		route := RoutingRoute{
-			Shard:       shard,
-			LaneID:      laneID,
-			EndpointKey: key,
-			Endpoint:    endpoint,
-			LeaderNode:  endpoint.Node,
-		}
-		topology.endpoints[key] = endpoint
-		for slot := first; slot <= last; slot++ {
-			slotRoute := route
-			slotRoute.Slot = slot
-			topology.slots[slot] = &slotRoute
-		}
-	}
-	return topology, nil
-}
-
-func endpointFromRange(item map[string]any) (RoutingEndpoint, error) {
-	raw := item
-	if endpointValue, ok := item["endpoint"]; ok && endpointValue != nil {
-		endpointMap, err := nativeMap(endpointValue)
-		if err != nil {
-			return RoutingEndpoint{}, err
-		}
-		raw = endpointMap
-	}
-	host := asString(firstPresent(raw, "host", "native_host"))
-	nativePort := int(asInt64(firstPresent(raw, "native_port")))
-	if host == "" || nativePort <= 0 {
-		return RoutingEndpoint{}, fmt.Errorf("invalid SHARDS endpoint: %#v", item)
-	}
-	node := asString(firstPresent(raw, "node", "leader_node", "owner_node"))
-	if node == "" {
-		node = host
-	}
-	return RoutingEndpoint{
-		Node:          node,
-		Host:          host,
-		NativePort:    nativePort,
-		NativeTLSPort: int(asInt64(firstPresent(raw, "native_tls_port"))),
-	}, nil
-}
-
-func firstPresent(mapping map[string]any, keys ...string) any {
-	for _, key := range keys {
-		if value, ok := mapping[key]; ok {
-			return value
-		}
-	}
-	return nil
-}
-
-func routingKeyForCommand(args []any) (any, bool) {
-	if len(args) == 0 {
-		return nil, false
-	}
-	command, err := buildNativeCommand(args)
-	if err != nil {
-		return nil, false
-	}
-	return routingKeyForBuiltCommand(args, command)
-}
-
-func routingKeyForBuiltCommand(args []any, command nativeCommand) (any, bool) {
-	name := commandName(args)
-	if command.opcode < nativeOpCommandExec || name == "CLUSTER.KEYSLOT" || name == "SHARDS" || name == "ROUTE" {
-		return nil, false
-	}
-	if key, ok := routingKeyFromArgs(name, args); ok {
-		return key, true
-	}
-	mapping, ok := command.payload.(map[string]any)
-	if !ok {
-		return nil, false
-	}
-	for _, field := range []string{"key", "partition_key", "id", "owner_flow_id", "parent_id", "root_id", "correlation_id", "scope"} {
-		value := mapping[field]
-		if isRouteKey(value) {
-			return value, true
-		}
-	}
-	if keys, ok := mapping["keys"].([]any); ok {
-		return singleShardKey(keys)
-	}
-	if pairs, ok := mapping["pairs"].([]any); ok {
-		keys := make([]any, 0, len(pairs))
-		for _, pair := range pairs {
-			switch p := pair.(type) {
-			case []any:
-				if len(p) > 0 {
-					keys = append(keys, p[0])
-				}
-			}
-		}
-		return singleShardKey(keys)
-	}
-	return nil, false
-}
-
-func routingKeyFromArgs(name string, args []any) (any, bool) {
-	switch name {
-	case "MGET", "DEL":
-		return singleShardKey(args[1:])
-	case "MSET":
-		keys := make([]any, 0, len(args)/2)
-		for idx := 1; idx < len(args); idx += 2 {
-			keys = append(keys, args[idx])
-		}
-		return singleShardKey(keys)
-	case "BITOP":
-		if len(args) < 4 {
-			return nil, false
-		}
-		return singleShardKey(args[2:])
-	case "RENAME", "RENAMENX":
-		return singleShardKey(args[1:minInt(len(args), 3)])
-	case "XREAD", "XREADGROUP":
-		return streamReadRoutingKey(args)
-	default:
-		if strings.HasPrefix(name, "FLOW.") {
-			return flowRoutingKey(name, args)
-		}
-		if firstKeyCommands[name] && len(args) > 1 && isRouteKey(args[1]) {
-			return args[1], true
-		}
-	}
-	return nil, false
-}
-
-func flowRoutingKey(name string, args []any) (any, bool) {
-	flowArgs := args[1:]
-	if len(flowArgs) == 0 {
-		return nil, false
-	}
-	if name == "FLOW.CLAIM_DUE" || name == "FLOW.RECLAIM" {
-		return flowPartitionRoutingKey(flowArgs, 1)
-	}
-	switch name {
-	case "FLOW.CREATE_MANY", "FLOW.COMPLETE_MANY", "FLOW.TRANSITION_MANY", "FLOW.RETRY_MANY", "FLOW.FAIL_MANY", "FLOW.CANCEL_MANY":
-		partition := flowArgs[0]
-		if !isRouteKey(partition) {
-			return nil, false
-		}
-		part := strings.ToUpper(asString(partition))
-		if part == "AUTO" || part == "MIXED" {
-			return nil, false
-		}
-		return partition, true
-	}
-	if key, ok := flowPartitionRoutingKey(flowArgs, 1); ok {
-		return key, true
-	}
-	if typeScopedFlowCommands[name] {
-		return nil, false
-	}
-	id := flowArgs[0]
-	if isRouteKey(id) {
-		return id, true
-	}
-	return nil, false
-}
-
-func flowPartitionRoutingKey(args []any, start int) (any, bool) {
-	for idx := start; idx < len(args); idx++ {
-		token := commandPart(args[idx])
-		switch token {
-		case "PARTITION":
-			if idx+1 < len(args) && isRouteKey(args[idx+1]) {
-				return args[idx+1], true
-			}
-			return nil, false
-		case "PARTITIONS":
-			if idx+1 >= len(args) {
-				return nil, false
-			}
-			count := int(asInt64(args[idx+1]))
-			if count < 0 || idx+2+count > len(args) {
-				return nil, false
-			}
-			return singleShardKey(args[idx+2 : idx+2+count])
-		}
-	}
-	return nil, false
-}
-
-func streamReadRoutingKey(args []any) (any, bool) {
-	streamsIndex := -1
-	for idx := range args {
-		if commandPart(args[idx]) == "STREAMS" {
-			streamsIndex = idx
-			break
-		}
-	}
-	if streamsIndex < 0 {
-		return nil, false
-	}
-	streamArgs := args[streamsIndex+1:]
-	if len(streamArgs) == 0 || len(streamArgs)%2 != 0 {
-		return nil, false
-	}
-	return singleShardKey(streamArgs[:len(streamArgs)/2])
-}
-
-func singleShardKey(keys []any) (any, bool) {
-	usable := make([]any, 0, len(keys))
-	for _, key := range keys {
-		if isRouteKey(key) {
-			usable = append(usable, key)
-		}
-	}
-	if len(usable) == 0 {
-		return nil, false
-	}
-	slot := routeSlotForKey(usable[0])
-	for _, key := range usable[1:] {
-		if routeSlotForKey(key) != slot {
-			return nil, false
-		}
-	}
-	return usable[0], true
-}
-
-func isRouteKey(value any) bool {
-	switch value.(type) {
-	case string, []byte:
-		return true
-	default:
-		return false
-	}
-}
-
-func commandName(args []any) string {
-	first := commandPart(args[0])
-	if first == "" {
-		return ""
-	}
-	if len(args) > 1 && (first == "FLOW" || first == "CLIENT" || first == "CLUSTER") {
-		second := commandPart(args[1])
-		if second != "" {
-			return first + "." + second
-		}
-	}
-	return first
-}
-
-func commandPart(value any) string {
-	return strings.ToUpper(asString(value))
-}
-
-func routeSlotForKey(key any) int {
-	text := asString(key)
-	var hashInput string
-	if strings.HasPrefix(text, "f:{") {
-		hashInput = flowHashTag(text[3:], text)
-	} else if strings.HasPrefix(text, "X:f:{") {
-		hashInput = flowHashTag(text[5:], text)
-	} else {
-		hashInput = hashTagOrKey(text)
-	}
-	return int(crc32.ChecksumIEEE([]byte(hashInput))) & routeSlotMask
-}
-
-func hashTagOrKey(key string) string {
-	start := strings.IndexByte(key, '{')
-	if start < 0 {
-		return key
-	}
-	end := strings.IndexByte(key[start+1:], '}')
-	if end <= 0 {
-		return key
-	}
-	return key[start+1 : start+1+end]
-}
-
-func flowHashTag(rest string, fallbackKey string) string {
-	end := strings.IndexByte(rest, '}')
-	if end > 0 {
-		return rest[:end]
-	}
-	return hashTagOrKey(fallbackKey)
-}
-
-type parsedFerricURL struct {
-	Host     string
-	Port     int
-	RawURL   string
-	Scheme   string
-	TLS      bool
-	Username string
-	Password string
-}
-
-func parseFerricURL(raw string) (parsedFerricURL, error) {
-	if !strings.Contains(raw, "://") {
-		raw = "ferric://" + nativeAddressWithPort(raw, nativeDefaultPort)
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return parsedFerricURL{}, err
-	}
-	scheme := strings.ToLower(parsed.Scheme)
-	tlsEnabled := false
-	defaultPort := nativeDefaultPort
-	switch scheme {
-	case "ferric":
-	case "ferrics":
-		tlsEnabled = true
-		defaultPort = nativeDefaultTLSPort
-	default:
-		return parsedFerricURL{}, fmt.Errorf("unsupported FerricStore URL scheme %q", parsed.Scheme)
-	}
-	host := parsed.Hostname()
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	port := 0
-	if parsed.Port() != "" {
-		parsedPort, err := strconv.Atoi(parsed.Port())
-		if err != nil {
-			return parsedFerricURL{}, fmt.Errorf("invalid FerricStore URL port %q", parsed.Port())
-		}
-		port = parsedPort
-	}
-	if port <= 0 {
-		defaultParsedPort, err := strconv.Atoi(defaultPort)
-		if err != nil {
-			return parsedFerricURL{}, fmt.Errorf("invalid default FerricStore URL port %q", defaultPort)
-		}
-		port = defaultParsedPort
-	}
-	password := ""
-	if parsed.User != nil {
-		password, _ = parsed.User.Password()
-	}
-	out := parsedFerricURL{
-		Host:     host,
-		Port:     port,
-		Scheme:   scheme,
-		TLS:      tlsEnabled,
-		Username: "",
-		Password: password,
-	}
-	if parsed.User != nil {
-		out.Username = parsed.User.Username()
-	}
-	out.RawURL = out.URL()
-	return out, nil
-}
-
-func (p parsedFerricURL) Endpoint() RoutingEndpoint {
-	endpoint := RoutingEndpoint{Node: p.Host, Host: p.Host, NativePort: p.Port}
-	if p.TLS {
-		endpoint.NativeTLSPort = p.Port
-	}
-	return endpoint
-}
-
-func (p parsedFerricURL) URL() string {
-	host := p.Host
-	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
-		host = "[" + host + "]"
-	}
-	user := ""
-	if p.Username != "" || p.Password != "" {
-		credentials := url.UserPassword(p.Username, p.Password).String()
-		user = credentials + "@"
-	}
-	return fmt.Sprintf("%s://%s%s:%d", p.Scheme, user, host, p.Port)
-}
-
-func seedCredentialOptions(urls []string) []NativeOption {
-	for _, raw := range urls {
-		parsed, err := parseFerricURL(raw)
-		if err != nil {
-			continue
-		}
-		if parsed.Password != "" {
-			username := parsed.Username
-			if username == "" {
-				username = "default"
-			}
-			return []NativeOption{WithNativeCredentials(username, parsed.Password)}
-		}
-	}
-	return nil
-}
-
-func endpointKey(endpoint RoutingEndpoint) string {
-	return fmt.Sprintf("%s:%d", strings.ToLower(endpoint.Host), endpoint.NativePort)
-}
-
-func urlFromEndpoint(endpoint RoutingEndpoint, useTLS bool) string {
-	port := endpoint.NativePort
-	scheme := "ferric"
-	if useTLS {
-		scheme = "ferrics"
-		if endpoint.NativeTLSPort > 0 {
-			port = endpoint.NativeTLSPort
-		}
-	}
-	host := endpoint.Host
-	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
-		host = "[" + host + "]"
-	}
-	return fmt.Sprintf("%s://%s:%d", scheme, host, port)
-}
-
-func normalizedStringSet(values []string) map[string]struct{} {
-	out := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		value = strings.ToLower(strings.TrimSpace(value))
-		if value != "" {
-			out[value] = struct{}{}
-		}
-	}
-	return out
-}
-
-func stringSet(values ...string) map[string]struct{} {
-	return normalizedStringSet(values)
-}
-
-func isRetryableRouteError(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	if errors.Is(err, net.ErrClosed) || errors.Is(err, errNativeConnectionUnavailable) {
-		return true
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "connection closed") ||
-		strings.Contains(message, "shard not available") ||
-		strings.Contains(message, "leader") ||
-		strings.Contains(message, "route")
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-var firstKeyCommands = map[string]bool{
-	"BITCOUNT":                true,
-	"BITFIELD":                true,
-	"BITPOS":                  true,
-	"CAS":                     true,
-	"EXISTS":                  true,
-	"EXPIRE":                  true,
-	"EXPIREAT":                true,
-	"FETCH_OR_COMPUTE":        true,
-	"FETCH_OR_COMPUTE_ERROR":  true,
-	"FETCH_OR_COMPUTE_RESULT": true,
-	"FERRICSTORE.KEY_INFO":    true,
-	"GET":                     true,
-	"GETBIT":                  true,
-	"GETDEL":                  true,
-	"GETEX":                   true,
-	"HDEL":                    true,
-	"HEXISTS":                 true,
-	"HGET":                    true,
-	"HGETALL":                 true,
-	"HINCRBY":                 true,
-	"HKEYS":                   true,
-	"HLEN":                    true,
-	"HMGET":                   true,
-	"HMSET":                   true,
-	"HSET":                    true,
-	"HVALS":                   true,
-	"LOCK":                    true,
-	"LPOP":                    true,
-	"LPUSH":                   true,
-	"LRANGE":                  true,
-	"LREM":                    true,
-	"RATELIMIT.ADD":           true,
-	"RPOP":                    true,
-	"RPUSH":                   true,
-	"SADD":                    true,
-	"SCARD":                   true,
-	"SISMEMBER":               true,
-	"SMEMBERS":                true,
-	"SREM":                    true,
-	"SET":                     true,
-	"SETBIT":                  true,
-	"STRLEN":                  true,
-	"TTL":                     true,
-	"TYPE":                    true,
-	"UNLINK":                  true,
-	"UNLOCK":                  true,
-	"XADD":                    true,
-	"XLEN":                    true,
-	"XRANGE":                  true,
-	"ZADD":                    true,
-	"ZCARD":                   true,
-	"ZRANGE":                  true,
-	"ZREM":                    true,
-	"ZSCORE":                  true,
-}
-
-var typeScopedFlowCommands = map[string]bool{
-	"FLOW.APPROVAL.LIST":       true,
-	"FLOW.ATTRIBUTE_VALUES":    true,
-	"FLOW.ATTRIBUTES":          true,
-	"FLOW.BUDGET.LIST":         true,
-	"FLOW.FAILURES":            true,
-	"FLOW.GOVERNANCE.OVERVIEW": true,
-	"FLOW.INFO":                true,
-	"FLOW.LIMIT.LIST":          true,
-	"FLOW.LIST":                true,
-	"FLOW.POLICY.GET":          true,
-	"FLOW.POLICY.SET":          true,
-	"FLOW.RETENTION_CLEANUP":   true,
-	"FLOW.SCHEDULE.FIRE_DUE":   true,
-	"FLOW.SCHEDULE.LIST":       true,
-	"FLOW.SEARCH":              true,
-	"FLOW.STATS":               true,
-	"FLOW.STUCK":               true,
-	"FLOW.TERMINALS":           true,
+	command  nativeCommand
+	route    RoutingRoute
+	snapshot topologyRoutingSnapshot
 }

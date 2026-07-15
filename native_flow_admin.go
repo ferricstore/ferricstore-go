@@ -13,8 +13,12 @@ func buildFlowAdminNative(name string, opcode uint16, args []any, leadingFields 
 	for idx, field := range leadingFields {
 		payload[field] = args[idx]
 	}
-	if err := appendFlowAdminOptions(payload, args[len(leadingFields):]); err != nil {
+	ok, err := appendFlowAdminOptions(payload, args[len(leadingFields):])
+	if err != nil {
 		return nativeCommand{}, true, err
+	}
+	if !ok {
+		return nativeCommand{}, false, nil
 	}
 	return nativeCommand{name: name, opcode: opcode, laneID: 1, payload: payload}, true, nil
 }
@@ -145,7 +149,7 @@ func putFlowPolicyBackoff(retry map[string]any, key string, value any) {
 	backoff[key] = value
 }
 
-func appendFlowAdminOptions(payload map[string]any, args []any) error {
+func appendFlowAdminOptions(payload map[string]any, args []any) (bool, error) {
 	for idx := 0; idx < len(args); {
 		token := strings.ToUpper(asString(args[idx]))
 		switch token {
@@ -159,7 +163,7 @@ func appendFlowAdminOptions(payload map[string]any, args []any) error {
 				}
 			}
 			if idx+2 >= len(args) {
-				return errors.New("FLOW admin map options require key and value")
+				return false, errors.New("FLOW admin map options require key and value")
 			}
 			field := flowAdminMapField(token)
 			putNativeMapValue(payload, field, asString(args[idx+1]), args[idx+2])
@@ -167,7 +171,7 @@ func appendFlowAdminOptions(payload map[string]any, args []any) error {
 			continue
 		case "ATTRIBUTE_DELETE", "DROP_VALUE", "OVERRIDE_VALUE":
 			if idx+1 >= len(args) {
-				return errors.New("FLOW admin list options require value")
+				return false, errors.New("FLOW admin list options require value")
 			}
 			field := flowAdminListField(token)
 			payload[field] = appendNativeListValue(payload[field], asString(args[idx+1]))
@@ -176,17 +180,20 @@ func appendFlowAdminOptions(payload map[string]any, args []any) error {
 		}
 
 		if idx+1 >= len(args) {
-			return errors.New("FLOW admin options must be key/value pairs")
+			return false, errors.New("FLOW admin options must be key/value pairs")
 		}
 		key, ok := flowAdminNativeField(asString(args[idx]))
 		if !ok {
-			idx += 2
-			continue
+			return false, nil
 		}
-		payload[key] = flowAdminNativeValue(key, args[idx+1])
+		converted, ok := flowAdminNativeValue(key, args[idx+1])
+		if !ok {
+			return false, nil
+		}
+		payload[key] = converted
 		idx += 2
 	}
-	return nil
+	return true, nil
 }
 
 func flowAdminMapField(token string) string {
@@ -258,9 +265,9 @@ func flowAdminNativeField(token string) (string, bool) {
 	case "ITEMS":
 		return "items", true
 	case "PARENT_FLOW_ID", "PARENT_ID":
-		return "parent_id", true
+		return "parent_flow_id", true
 	case "ROOT_FLOW_ID", "ROOT_ID":
-		return "root_id", true
+		return "root_flow_id", true
 	case "CORRELATION_ID":
 		return "correlation_id", true
 	case "PRIORITY":
@@ -358,12 +365,16 @@ func flowAdminNativeField(token string) (string, bool) {
 	}
 }
 
-func flowAdminNativeValue(key string, value any) any {
+func flowAdminNativeValue(key string, value any) (any, bool) {
 	switch key {
 	case "rev", "terminal_only", "include_cold", "consistent_projection":
-		return asBool(value)
+		if value == nil {
+			return nil, false
+		}
+		parsed, err := responseBool(value, nil)
+		return parsed, err == nil
 	default:
-		return value
+		return value, true
 	}
 }
 
@@ -372,8 +383,12 @@ func buildFlowScheduleCreateNative(args []any) (nativeCommand, bool, error) {
 		return nativeCommand{}, true, errors.New("FLOW.SCHEDULE.CREATE requires id")
 	}
 	payload := map[string]any{"id": args[0]}
-	if err := appendScheduleOptions(payload, args[1:]); err != nil {
+	ok, err := appendScheduleOptions(payload, args[1:])
+	if err != nil {
 		return nativeCommand{}, true, err
+	}
+	if !ok {
+		return nativeCommand{}, false, nil
 	}
 	return nativeCommand{name: "FLOW.SCHEDULE.CREATE", opcode: nativeOpFlowScheduleCreate, laneID: 1, payload: payload}, true, nil
 }
@@ -383,8 +398,12 @@ func buildFlowScheduleIDNative(name string, opcode uint16, args []any) (nativeCo
 		return nativeCommand{}, true, errors.New(name + " requires id")
 	}
 	payload := map[string]any{"id": args[0]}
-	if err := appendScheduleOptions(payload, args[1:]); err != nil {
+	ok, err := appendScheduleOptions(payload, args[1:])
+	if err != nil {
 		return nativeCommand{}, true, err
+	}
+	if !ok {
+		return nativeCommand{}, false, nil
 	}
 	return nativeCommand{name: name, opcode: opcode, laneID: 1, payload: payload}, true, nil
 }
@@ -398,32 +417,44 @@ func buildFlowScheduleOptionsNative(name string, opcode uint16, args []any, requ
 		payload["id"] = args[0]
 		args = args[1:]
 	}
-	if err := appendScheduleOptions(payload, args); err != nil {
+	ok, err := appendScheduleOptions(payload, args)
+	if err != nil {
 		return nativeCommand{}, true, err
+	}
+	if !ok {
+		return nativeCommand{}, false, nil
 	}
 	return nativeCommand{name: name, opcode: opcode, laneID: 1, payload: payload}, true, nil
 }
 
-func appendScheduleOptions(payload map[string]any, args []any) error {
+func appendScheduleOptions(payload map[string]any, args []any) (bool, error) {
 	if len(args)%2 != 0 {
-		return errors.New("FLOW.SCHEDULE options must be key/value pairs")
+		return false, errors.New("FLOW.SCHEDULE options must be key/value pairs")
 	}
 	for idx := 0; idx < len(args); idx += 2 {
 		key, ok := scheduleNativeField(asString(args[idx]))
 		if !ok {
-			continue
+			return false, nil
 		}
-		payload[key] = scheduleNativeValue(key, args[idx+1])
+		converted, ok := scheduleNativeValue(key, args[idx+1])
+		if !ok {
+			return false, nil
+		}
+		payload[key] = converted
 	}
-	return nil
+	return true, nil
 }
 
-func scheduleNativeValue(key string, value any) any {
+func scheduleNativeValue(key string, value any) (any, bool) {
 	switch key {
 	case "overwrite":
-		return asBool(value)
+		if value == nil {
+			return nil, false
+		}
+		parsed, err := responseBool(value, nil)
+		return parsed, err == nil
 	default:
-		return value
+		return value, true
 	}
 }
 

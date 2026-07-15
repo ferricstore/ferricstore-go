@@ -1,55 +1,44 @@
 package ferricstore
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"math"
+	"time"
 )
 
 func (c *Client) tryCreateManyNativeCompact(ctx context.Context, opt CreateManyOptions, state string, now, runAt int64, mixed bool, wirePartition string) ([]FlowRecord, bool, error) {
 	native, ok := c.exec.(*NativeExecutor)
-	if !ok || !createManyCompactEligible(opt) {
+	if !ok || !createManyCompactEligible(opt) || !createManyCompactCodecEligible(c.codec, opt.Items) {
 		return nil, false, nil
 	}
-	buf := bytes.NewBuffer(make([]byte, 0, createManyCompactCapacity(opt, state, wirePartition, mixed)))
+	if err := c.legacyGate.readLock(ctx); err != nil {
+		return nil, true, err
+	}
+	defer c.legacyGate.readUnlock()
+	if c.currentLegacySession() != nil {
+		return nil, false, nil
+	}
+	kind := byte(nativeCompactFlowCreateManyRequest)
 	switch {
 	case mixed:
-		buf.WriteByte(nativeCompactFlowCreateManyMixedRequest)
+		kind = nativeCompactFlowCreateManyMixedRequest
 	case wirePartition == "" || wirePartition == "AUTO":
-		buf.WriteByte(nativeCompactFlowCreateManyRequest)
+		kind = nativeCompactFlowCreateManyRequest
 	default:
-		buf.WriteByte(nativeCompactFlowCreateManyPartitionRequest)
+		kind = nativeCompactFlowCreateManyPartitionRequest
 	}
-	writeCompactString(buf, opt.Type)
-	writeCompactString(buf, state)
-	if buf.Bytes()[0] == nativeCompactFlowCreateManyPartitionRequest {
-		writeCompactOptionalString(buf, wirePartition)
-	}
-	writeCompactInt64(buf, now)
-	writeCompactInt64(buf, runAt)
-	buf.WriteByte(boolPtrMarker(opt.Independent))
-	buf.WriteByte(0)
-	writeCompactU32(buf, uint32(len(opt.Items)))
 	for _, item := range opt.Items {
-		writeCompactString(buf, item.ID)
-		if mixed {
-			if item.PartitionKey == "" {
-				return nil, true, errors.New("mixed create_many items require partition key")
-			}
-			writeCompactString(buf, item.PartitionKey)
+		if mixed && item.PartitionKey == "" {
+			return nil, true, errors.New("mixed create_many items require partition key")
 		}
-		encoded, err := c.encode(item.Payload)
-		if err != nil {
-			return nil, true, err
-		}
-		payload, ok := compactBytes(encoded)
-		if !ok {
-			return nil, false, nil
-		}
-		writeCompactBinary(buf, payload)
 	}
-	value, err := native.request(ctx, nativeOpFlowCreateMany, 1, buf.Bytes(), nativeFlagCustomPayload)
+	payload := nativeFlowCreateManyPayload{
+		kind: kind, flowType: opt.Type, state: state, partition: wirePartition,
+		now: now, runAt: runAt, independent: boolPtrMarker(opt.Independent),
+		typedItems: opt.Items, payloadCodec: c.codec, mixed: mixed,
+	}
+	value, err := native.request(ctx, nativeOpFlowCreateMany, nativeAutoLaneID, payload, nativeFlagCustomPayload)
 	if err != nil {
 		return nil, true, err
 	}
@@ -57,19 +46,46 @@ func (c *Client) tryCreateManyNativeCompact(ctx context.Context, opt CreateManyO
 	return records, true, err
 }
 
+func createManyCompactCodecEligible(codec Codec, items []CreateItem) bool {
+	switch codec.(type) {
+	case JSONCodec, *JSONCodec:
+		return true
+	case StringCodec, *StringCodec:
+		for _, item := range items {
+			if item.Payload == nil {
+				return false
+			}
+		}
+		return true
+	case RawCodec, *RawCodec:
+		for _, item := range items {
+			if !isCompactPayloadValue(item.Payload) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *Client) tryClaimDueNativeCompact(ctx context.Context, opt ClaimDueOptions, leaseMS int64, limit int) (any, bool, error) {
 	native, ok := c.exec.(*NativeExecutor)
 	if !ok || !claimDueCompactEligible(opt) {
 		return nil, false, nil
 	}
-	if opt.NowMS != 0 && absInt64(opt.NowMS-nowMS()) > 10_000 {
+	if err := c.legacyGate.readLock(ctx); err != nil {
+		return nil, true, err
+	}
+	defer c.legacyGate.readUnlock()
+	if c.currentLegacySession() != nil {
 		return nil, false, nil
 	}
 	blockMS := int64(-1)
 	if opt.BlockMS != nil {
 		blockMS = *opt.BlockMS
 	}
-	reclaimRatio := int64(0)
+	reclaimRatio := nativeFlowClaimDefaultReclaimRatio
 	if opt.ReclaimRatio != nil {
 		reclaimRatio = *opt.ReclaimRatio
 	}
@@ -77,9 +93,12 @@ func (c *Client) tryClaimDueNativeCompact(ctx context.Context, opt ClaimDueOptio
 	if opt.Priority != nil {
 		priority = *opt.Priority
 	}
-	reclaimExpired := byte(0)
-	if opt.ReclaimExpired != nil && *opt.ReclaimExpired {
-		reclaimExpired = 1
+	reclaimExpired := nativeFlowClaimDefaultReclaimExpired
+	if opt.ReclaimExpired != nil {
+		reclaimExpired = 0
+		if *opt.ReclaimExpired {
+			reclaimExpired = 1
+		}
 	}
 	returnMode := byte(1)
 	if opt.IncludeState {
@@ -92,24 +111,24 @@ func (c *Client) tryClaimDueNativeCompact(ctx context.Context, opt ClaimDueOptio
 		returnMode = 3
 	}
 
-	buf := bytes.NewBuffer(make([]byte, 0, claimDueCompactCapacity(opt)))
-	buf.WriteByte(nativeCompactFlowClaimDueRequest)
-	writeCompactString(buf, opt.Type)
-	if opt.State != "" {
-		writeCompactOptionalString(buf, opt.State)
-	} else {
-		writeCompactOptionalBinary(buf, nil)
+	payload := nativeFlowClaimDuePayload{
+		flowType: opt.Type, worker: opt.Worker, leaseMS: leaseMS, limit: int64(limit),
+		blockMS: blockMS, reclaimExpired: reclaimExpired, reclaimRatio: reclaimRatio,
+		priority: priority, returnMode: returnMode,
 	}
-	writeCompactString(buf, opt.Worker)
-	writeCompactInt64(buf, leaseMS)
-	writeCompactInt64(buf, int64(limit))
-	writeCompactInt64(buf, blockMS)
-	buf.WriteByte(reclaimExpired)
-	writeCompactInt64(buf, reclaimRatio)
-	writeCompactInt64(buf, priority)
-	buf.WriteByte(returnMode)
-	writeClaimPartitions(buf, opt.PartitionKey, opt.PartitionKeys)
-	value, err := native.request(ctx, nativeOpFlowClaimDue, 1, buf.Bytes(), nativeFlagCustomPayload)
+	if opt.State != "" {
+		payload.state = opt.State
+	}
+	switch {
+	case opt.PartitionKey != "":
+		payload.partitionMode = 1
+		payload.partition = opt.PartitionKey
+	case len(opt.PartitionKeys) > 0:
+		payload.partitionMode = 2
+		payload.partitionStrings = opt.PartitionKeys
+	}
+	budget := nativeBlockingMillisecondsBudget(blockMS)
+	value, err := native.requestWithBudget(ctx, nativeOpFlowClaimDue, nativeAutoLaneID, payload, nativeFlagCustomPayload, budget)
 	return value, true, err
 }
 
@@ -118,31 +137,28 @@ func (c *Client) tryCompleteManyNativeCompact(ctx context.Context, opt CompleteM
 	if !ok || !completeManyCompactEligible(opt) {
 		return nil, false, nil
 	}
+	if err := c.legacyGate.readLock(ctx); err != nil {
+		return nil, true, err
+	}
+	defer c.legacyGate.readUnlock()
+	if c.currentLegacySession() != nil {
+		return nil, false, nil
+	}
 	mixed := opt.PartitionKey == ""
-	buf := bytes.NewBuffer(make([]byte, 0, completeManyCompactCapacity(opt)))
-	buf.WriteByte(nativeCompactFlowCompleteManyOKRequest)
-	if mixed {
-		writeCompactOptionalBinary(buf, nil)
-	} else {
-		writeCompactOptionalBinary(buf, []byte(opt.PartitionKey))
-	}
-	writeCompactInt64(buf, now)
-	buf.WriteByte(boolPtrMarker(opt.Independent))
-	writeCompactU32(buf, uint32(len(opt.Items)))
 	for _, item := range opt.Items {
-		writeCompactString(buf, item.ID)
-		if mixed {
-			if item.PartitionKey == "" {
-				return nil, true, errors.New("FLOW.COMPLETE_MANY mixed items require partition key")
-			}
-			writeCompactOptionalString(buf, item.PartitionKey)
-		} else {
-			writeCompactOptionalBinary(buf, nil)
+		if mixed && item.PartitionKey == "" {
+			return nil, true, errors.New("FLOW.COMPLETE_MANY mixed items require partition key")
 		}
-		writeCompactString(buf, item.LeaseToken)
-		writeCompactInt64(buf, item.FencingToken)
 	}
-	value, err := native.request(ctx, nativeOpFlowCompleteMany, 1, buf.Bytes(), nativeFlagCustomPayload)
+	var partition any
+	if !mixed {
+		partition = opt.PartitionKey
+	}
+	payload := nativeFlowCompleteManyPayload{
+		partition: partition, now: now, independent: boolPtrMarker(opt.Independent),
+		typedItems: opt.Items, mixed: mixed,
+	}
+	value, err := native.request(ctx, nativeOpFlowCompleteMany, nativeAutoLaneID, payload, nativeFlagCustomPayload)
 	if err != nil {
 		return nil, true, err
 	}
@@ -157,6 +173,7 @@ func createManyCompactEligible(opt CreateManyOptions) bool {
 		len(opt.Values) == 0 &&
 		len(opt.ValueRefs) == 0 &&
 		len(opt.Attributes) == 0 &&
+		!anyCreateItemAttributes(opt.Items) &&
 		len(opt.StateMeta) == 0 &&
 		!anyCreateItemStateMeta(opt.Items) &&
 		!anyCreateItemValues(opt.Items)
@@ -164,11 +181,22 @@ func createManyCompactEligible(opt CreateManyOptions) bool {
 
 func claimDueCompactEligible(opt ClaimDueOptions) bool {
 	return opt.JobOnly &&
+		opt.NowMS == 0 &&
 		len(opt.States) == 0 &&
 		opt.Payload == nil &&
 		opt.PayloadMaxBytes == nil &&
 		len(opt.Values) == 0 &&
 		opt.ValueMaxBytes == nil
+}
+
+func nativeBlockingMillisecondsBudget(blockMS int64) nativeRequestBudget {
+	if blockMS <= 0 {
+		return nativeRequestBudget{}
+	}
+	if blockMS > int64(time.Duration(1<<63-1)/time.Millisecond) {
+		return nativeRequestBudget{disableDefault: true}
+	}
+	return nativeRequestBudget{extension: time.Duration(blockMS) * time.Millisecond}
 }
 
 func completeManyCompactEligible(opt CompleteManyOptions) bool {
@@ -196,73 +224,4 @@ func boolPtrMarker(value *bool) byte {
 		return 2
 	}
 	return 1
-}
-
-func writeClaimPartitions(buf *bytes.Buffer, partitionKey string, partitionKeys []string) {
-	switch {
-	case partitionKey != "":
-		buf.WriteByte(1)
-		writeCompactString(buf, partitionKey)
-	case len(partitionKeys) > 0:
-		buf.WriteByte(2)
-		writeCompactU32(buf, uint32(len(partitionKeys)))
-		for _, partition := range partitionKeys {
-			writeCompactString(buf, partition)
-		}
-	default:
-		buf.WriteByte(0)
-	}
-}
-
-func writeCompactString(buf *bytes.Buffer, value string) {
-	writeCompactU32(buf, uint32(len(value)))
-	buf.WriteString(value)
-}
-
-func writeCompactOptionalString(buf *bytes.Buffer, value string) {
-	writeCompactString(buf, value)
-}
-
-func createManyCompactCapacity(opt CreateManyOptions, state, wirePartition string, mixed bool) int {
-	size := 64 + len(opt.Type) + len(state) + len(wirePartition)
-	for _, item := range opt.Items {
-		size += 12 + len(item.ID) + compactPayloadSize(item.Payload)
-		if mixed {
-			size += 4 + len(item.PartitionKey)
-		}
-	}
-	return size
-}
-
-func claimDueCompactCapacity(opt ClaimDueOptions) int {
-	size := 96 + len(opt.Type) + len(opt.State) + len(opt.Worker) + len(opt.PartitionKey)
-	for _, partition := range opt.PartitionKeys {
-		size += 4 + len(partition)
-	}
-	return size
-}
-
-func completeManyCompactCapacity(opt CompleteManyOptions) int {
-	size := 48 + len(opt.PartitionKey)
-	mixed := opt.PartitionKey == ""
-	for _, item := range opt.Items {
-		size += 24 + len(item.ID) + len(item.LeaseToken)
-		if mixed {
-			size += 4 + len(item.PartitionKey)
-		}
-	}
-	return size
-}
-
-func compactPayloadSize(value any) int {
-	switch v := value.(type) {
-	case nil:
-		return 4
-	case []byte:
-		return 4 + len(v)
-	case string:
-		return 4 + len(v)
-	default:
-		return 64
-	}
 }

@@ -1,8 +1,14 @@
 package ferricstore
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 func (s *GeoStore) Pos(ctx context.Context, key string, members ...any) (any, error) {
+	if len(members) == 0 {
+		return nil, nil
+	}
 	args := []any{"GEOPOS", key}
 	for _, member := range members {
 		encoded, err := s.client.encode(member)
@@ -11,10 +17,14 @@ func (s *GeoStore) Pos(ctx context.Context, key string, members ...any) (any, er
 		}
 		args = append(args, encoded)
 	}
-	return s.client.Command(ctx, args...)
+	value, err := s.client.typedReply(ctx, args...)
+	return validateGeoPositionResponse(value, err, len(members))
 }
 
 func (s *GeoStore) Hash(ctx context.Context, key string, members ...any) ([]string, error) {
+	if len(members) == 0 {
+		return nil, nil
+	}
 	args := []any{"GEOHASH", key}
 	for _, member := range members {
 		encoded, err := s.client.encode(member)
@@ -23,8 +33,8 @@ func (s *GeoStore) Hash(ctx context.Context, key string, members ...any) ([]stri
 		}
 		args = append(args, encoded)
 	}
-	value, err := s.client.Command(ctx, args...)
-	return stringArray(value, err)
+	value, err := s.client.typedReply(ctx, args...)
+	return stringArrayExact(value, err, len(members), "GEOHASH")
 }
 
 type GeoSearchOptions struct {
@@ -62,7 +72,9 @@ func (s *GeoStore) Search(ctx context.Context, key string, opt GeoSearchOptions)
 	if err != nil {
 		return nil, err
 	}
-	return s.client.Command(ctx, args...)
+	value, err := s.client.typedReply(ctx, args...)
+	metadataFields := boolInt(opt.WithCoord) + boolInt(opt.WithDist) + boolInt(opt.WithHash)
+	return decodeGeoSearch(s.client.codec, value, err, metadataFields)
 }
 
 func (s *GeoStore) SearchStore(ctx context.Context, destination, source string, opt GeoSearchOptions, storeDist bool) (int64, error) {
@@ -74,11 +86,53 @@ func (s *GeoStore) SearchStore(ctx context.Context, destination, source string, 
 	if storeDist {
 		args = append(args, "STOREDIST")
 	}
-	value, err := s.client.Command(ctx, args...)
-	return asInt64(value), err
+	value, err := s.client.typedReply(ctx, args...)
+	return nonNegativeInt64Response("GEOSEARCHSTORE", value, err)
 }
 
 func (s *GeoStore) geoSearchArgs(command, key string, opt GeoSearchOptions) ([]any, error) {
+	if boolInt(opt.FromMember != nil)+boolInt(opt.FromLonLat != nil) != 1 {
+		return nil, errors.New("GEOSEARCH requires exactly one of FROMMEMBER or FROMLONLAT")
+	}
+	if boolInt(opt.ByRadius != nil)+boolInt(opt.ByBox != nil) != 1 {
+		return nil, errors.New("GEOSEARCH requires exactly one of BYRADIUS or BYBOX")
+	}
+	if opt.Asc && opt.Desc {
+		return nil, errors.New("GEOSEARCH ASC and DESC are mutually exclusive")
+	}
+	if opt.Any && opt.Count == nil {
+		return nil, errors.New("GEOSEARCH ANY requires COUNT")
+	}
+	if command == "GEOSEARCHSTORE" && (opt.WithCoord || opt.WithDist || opt.WithHash) {
+		return nil, errors.New("GEOSEARCHSTORE does not accept WITHCOORD, WITHDIST, or WITHHASH")
+	}
+	if opt.FromLonLat != nil {
+		if err := validateGeoCoordinate(opt.FromLonLat.Longitude, opt.FromLonLat.Latitude); err != nil {
+			return nil, err
+		}
+	}
+	if opt.ByRadius != nil {
+		if err := validatePositiveFinite(command, "radius", opt.ByRadius.Radius); err != nil {
+			return nil, err
+		}
+		if err := validateGeoUnit(opt.ByRadius.Unit, false); err != nil {
+			return nil, err
+		}
+	}
+	if opt.ByBox != nil {
+		if err := validatePositiveFinite(command, "box width", opt.ByBox.Width); err != nil {
+			return nil, err
+		}
+		if err := validatePositiveFinite(command, "box height", opt.ByBox.Height); err != nil {
+			return nil, err
+		}
+		if err := validateGeoUnit(opt.ByBox.Unit, false); err != nil {
+			return nil, err
+		}
+	}
+	if opt.Count != nil && *opt.Count <= 0 {
+		return nil, errors.New("GEOSEARCH count must be positive")
+	}
 	args := []any{command, key}
 	if opt.FromMember != nil {
 		encoded, err := s.client.encode(opt.FromMember)

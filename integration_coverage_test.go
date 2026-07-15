@@ -4,6 +4,7 @@ package ferricstore
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -28,16 +29,18 @@ type integrationTrackingExecutor struct {
 }
 
 func (e *integrationTrackingExecutor) Do(ctx context.Context, args ...any) (any, error) {
-	recordIntegrationCommand(args)
-	return e.inner.Do(ctx, args...)
+	value, err := e.inner.Do(ctx, args...)
+	if err == nil {
+		recordIntegrationCommand(args)
+	}
+	return value, err
 }
 
 func (e *integrationTrackingExecutor) Pipeline(ctx context.Context, commands [][]any) ([]any, error) {
-	for _, args := range commands {
-		recordIntegrationCommand(args)
-	}
 	if exec, ok := e.inner.(pipelineExecutor); ok {
-		return exec.Pipeline(ctx, commands)
+		values, err := exec.Pipeline(ctx, commands)
+		recordSuccessfulIntegrationPipelineCommands(commands, values)
+		return values, err
 	}
 	results := make([]any, 0, len(commands))
 	for _, args := range commands {
@@ -45,9 +48,153 @@ func (e *integrationTrackingExecutor) Pipeline(ctx context.Context, commands [][
 		if err != nil {
 			return nil, err
 		}
+		recordIntegrationCommand(args)
 		results = append(results, value)
 	}
 	return results, nil
+}
+
+func (e *integrationTrackingExecutor) pipelineDetailed(ctx context.Context, commands [][]any) ([]pipelineItemResult, error) {
+	if exec, ok := e.inner.(detailedPipelineExecutor); ok {
+		results, err := exec.pipelineDetailed(ctx, commands)
+		if err == nil && len(results) == len(commands) {
+			for index, result := range results {
+				if result.err == nil {
+					recordIntegrationCommand(commands[index])
+				}
+			}
+		}
+		return results, err
+	}
+	values, err := e.Pipeline(ctx, commands)
+	if err != nil && len(values) != len(commands) {
+		return nil, err
+	}
+	if len(values) != len(commands) {
+		return nil, fmt.Errorf("integration pipeline returned %d results for %d commands", len(values), len(commands))
+	}
+	results := make([]pipelineItemResult, len(values))
+	for index, value := range values {
+		if itemErr, ok := value.(error); ok {
+			results[index].err = itemErr
+		} else {
+			results[index].value = value
+		}
+	}
+	return results, nil
+}
+
+func (e *integrationTrackingExecutor) keyValueMGet(ctx context.Context, keys []string) (any, error) {
+	bulk, ok := e.inner.(keyValueBulkExecutor)
+	if !ok {
+		return nil, errors.New("integration executor lost native MGET capability")
+	}
+	value, err := bulk.keyValueMGet(ctx, keys)
+	if err == nil {
+		args := make([]any, 1, len(keys)+1)
+		args[0] = "MGET"
+		for _, key := range keys {
+			args = append(args, key)
+		}
+		recordIntegrationCommand(args)
+	}
+	return value, err
+}
+
+func (e *integrationTrackingExecutor) keyValueMSet(ctx context.Context, keys []string, values []any) (any, error) {
+	bulk, ok := e.inner.(keyValueBulkExecutor)
+	if !ok {
+		return nil, errors.New("integration executor lost native MSET capability")
+	}
+	value, err := bulk.keyValueMSet(ctx, keys, values)
+	if err == nil {
+		args := make([]any, 1, 1+2*len(keys))
+		args[0] = "MSET"
+		for index, key := range keys {
+			args = append(args, key, values[index])
+		}
+		recordIntegrationCommand(args)
+	}
+	return value, err
+}
+
+func (e *integrationTrackingExecutor) keyValueMSetNX(ctx context.Context, keys []string, values []any) (any, error) {
+	bulk, ok := e.inner.(keyValueMSetNXExecutor)
+	if !ok {
+		return nil, errors.New("integration executor lost native MSETNX capability")
+	}
+	value, err := bulk.keyValueMSetNX(ctx, keys, values)
+	if err == nil {
+		args := make([]any, 1, 1+2*len(keys))
+		args[0] = "MSETNX"
+		for index, key := range keys {
+			args = append(args, key, values[index])
+		}
+		recordIntegrationCommand(args)
+	}
+	return value, err
+}
+
+func (e *integrationTrackingExecutor) keyValueDel(ctx context.Context, keys []string) (any, error) {
+	bulk, ok := e.inner.(keyValueDelExecutor)
+	if !ok {
+		return nil, errors.New("integration executor lost native DEL capability")
+	}
+	value, err := bulk.keyValueDel(ctx, keys)
+	if err == nil {
+		recordIntegrationCommand(keyListCommandArgs("DEL", keys))
+	}
+	return value, err
+}
+
+func (e *integrationTrackingExecutor) keyValueExists(ctx context.Context, keys []string) (any, error) {
+	bulk, ok := e.inner.(keyValueExistsExecutor)
+	if !ok {
+		return nil, errors.New("integration executor lost native EXISTS capability")
+	}
+	value, err := bulk.keyValueExists(ctx, keys)
+	if err == nil {
+		recordIntegrationCommand(keyListCommandArgs("EXISTS", keys))
+	}
+	return value, err
+}
+
+func (e *integrationTrackingExecutor) acquireCommandSession(ctx context.Context, keys ...any) (commandSession, error) {
+	provider, ok := e.inner.(commandSessionProvider)
+	if !ok {
+		return nil, errors.New("integration executor lost native command-session capability")
+	}
+	session, err := provider.acquireCommandSession(ctx, keys...)
+	if err != nil {
+		return nil, err
+	}
+	return &integrationTrackingSession{inner: session}, nil
+}
+
+type integrationTrackingSession struct {
+	inner commandSession
+}
+
+func (s *integrationTrackingSession) Do(ctx context.Context, args ...any) (any, error) {
+	value, err := s.inner.Do(ctx, args...)
+	if err == nil {
+		recordIntegrationCommand(args)
+	}
+	return value, err
+}
+
+func (s *integrationTrackingSession) Abort(err error) { s.inner.Abort(err) }
+func (s *integrationTrackingSession) Release()        { s.inner.Release() }
+
+func recordSuccessfulIntegrationPipelineCommands(commands [][]any, values []any) {
+	if len(values) != len(commands) {
+		return
+	}
+	for index, value := range values {
+		if _, failed := value.(error); !failed {
+			recordIntegrationCommand(commands[index])
+		}
+	}
 }
 
 func newIntegrationTrackedClient(addr string, codec Codec) *Client {
@@ -76,10 +223,20 @@ func skipIntegrationCommandCoverage(reason string, commands ...string) {
 }
 
 func integrationCommandKey(args []any) string {
+	for len(args) > 1 && strings.EqualFold(asString(args[0]), "COMMAND_EXEC") {
+		args = args[1:]
+	}
 	if len(args) == 0 {
 		return ""
 	}
 	command := strings.ToUpper(asString(args[0]))
+	if command == "GEOSEARCHSTORE" {
+		for _, arg := range args[1:] {
+			if strings.EqualFold(asString(arg), "STOREDIST") {
+				return "GEOSEARCHSTORE STOREDIST"
+			}
+		}
+	}
 	switch command {
 	case "ACL", "CLIENT", "COMMAND", "CONFIG", "MEMORY", "MODULE", "OBJECT", "PUBSUB", "SLOWLOG", "XGROUP", "XINFO":
 		if len(args) > 1 {
@@ -88,6 +245,16 @@ func integrationCommandKey(args []any) string {
 	}
 	return command
 }
+
+var (
+	_ keyValueBulkExecutor     = (*integrationTrackingExecutor)(nil)
+	_ keyValueMSetNXExecutor   = (*integrationTrackingExecutor)(nil)
+	_ keyValueDelExecutor      = (*integrationTrackingExecutor)(nil)
+	_ keyValueExistsExecutor   = (*integrationTrackingExecutor)(nil)
+	_ pipelineExecutor         = (*integrationTrackingExecutor)(nil)
+	_ detailedPipelineExecutor = (*integrationTrackingExecutor)(nil)
+	_ commandSessionProvider   = (*integrationTrackingExecutor)(nil)
+)
 
 func TestMain(m *testing.M) {
 	code := m.Run()
@@ -117,6 +284,84 @@ func TestMissingIntegrationCommandsTreatsSkippedCommandsAsMissingWhenStrict(t *t
 	missing := missingIntegrationCommandsFrom(expected, seen, skipped, true)
 	if !reflect.DeepEqual(missing, []string{"FLOW.SEARCH"}) {
 		t.Fatalf("strict coverage should report skipped commands, got %v", missing)
+	}
+}
+
+type integrationBulkStub struct {
+	doCalls   int
+	bulkCalls int
+	bulkErr   error
+}
+
+func (e *integrationBulkStub) Do(context.Context, ...any) (any, error) {
+	e.doCalls++
+	return nil, errors.New("generic execution should not be used")
+}
+
+func (e *integrationBulkStub) keyValueMGet(context.Context, []string) (any, error) {
+	e.bulkCalls++
+	if e.bulkErr != nil {
+		return nil, e.bulkErr
+	}
+	return []any{[]byte("value")}, nil
+}
+
+func (e *integrationBulkStub) keyValueMSet(context.Context, []string, []any) (any, error) {
+	e.bulkCalls++
+	if e.bulkErr != nil {
+		return nil, e.bulkErr
+	}
+	return []byte("OK"), nil
+}
+
+func (e *integrationBulkStub) keyValueMSetNX(context.Context, []string, []any) (any, error) {
+	e.bulkCalls++
+	if e.bulkErr != nil {
+		return nil, e.bulkErr
+	}
+	return int64(1), nil
+}
+
+func TestIntegrationTrackingExecutorPreservesBulkPathAndRecordsOnlySuccess(t *testing.T) {
+	integrationCommandCoverage.Lock()
+	delete(integrationCommandCoverage.seen, "MGET")
+	integrationCommandCoverage.Unlock()
+
+	inner := &integrationBulkStub{}
+	client := NewClientWithExecutor(&integrationTrackingExecutor{inner: inner})
+	values, err := client.KV().MGet(context.Background(), "key")
+	if err != nil || len(values) != 1 || asString(values[0]) != "value" {
+		t.Fatalf("tracked MGET = %#v, %v", values, err)
+	}
+	if inner.bulkCalls != 1 || inner.doCalls != 0 {
+		t.Fatalf("bulk calls = %d, generic calls = %d", inner.bulkCalls, inner.doCalls)
+	}
+	integrationCommandCoverage.Lock()
+	_, recorded := integrationCommandCoverage.seen["MGET"]
+	delete(integrationCommandCoverage.seen, "MGET")
+	integrationCommandCoverage.Unlock()
+	if !recorded {
+		t.Fatal("successful bulk MGET was not recorded")
+	}
+
+	inner.bulkErr = errors.New("server rejected MGET")
+	if _, err := client.KV().MGet(context.Background(), "key"); err == nil {
+		t.Fatal("expected failed bulk MGET")
+	}
+	integrationCommandCoverage.Lock()
+	_, recorded = integrationCommandCoverage.seen["MGET"]
+	integrationCommandCoverage.Unlock()
+	if recorded {
+		t.Fatal("failed bulk MGET was counted as covered")
+	}
+}
+
+func TestIntegrationCommandKeyTracksAffineAndGeoStoreDistVariants(t *testing.T) {
+	if got := integrationCommandKey([]any{"COMMAND_EXEC", "GET", "key"}); got != "GET" {
+		t.Fatalf("affine command key = %q; want GET", got)
+	}
+	if got := integrationCommandKey([]any{"GEOSEARCHSTORE", "dst", "src", "FROMMEMBER", "m", "BYRADIUS", 1, "km", "STOREDIST"}); got != "GEOSEARCHSTORE STOREDIST" {
+		t.Fatalf("STOREDIST command key = %q", got)
 	}
 }
 
@@ -325,6 +570,7 @@ func expectedIntegrationCommands() []string {
 		"GEOPOS",
 		"GEOSEARCH",
 		"GEOSEARCHSTORE",
+		"GEOSEARCHSTORE STOREDIST",
 		"GET",
 		"GETBIT",
 		"GETDEL",

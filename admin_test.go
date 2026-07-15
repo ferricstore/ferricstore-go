@@ -38,8 +38,12 @@ func TestRetentionCleanupBuildsCommand(t *testing.T) {
 	assertCall(t, exec, []any{"FLOW.RETENTION_CLEANUP", "LIMIT", 10, "NOW", int64(100)})
 }
 
-func TestFerricStoreMetricsParsesTextResponse(t *testing.T) {
-	exec := &fakeExecutor{value: []byte("ops: 10\nhealthy: true\n")}
+func TestFerricStoreMetricsPreservesPrometheusTextResponse(t *testing.T) {
+	want := "# HELP ferricstore_ops_total Total operations.\n" +
+		"# TYPE ferricstore_ops_total counter\n" +
+		"ferricstore_ops_total{node=\"a\"} 10\n" +
+		"ferricstore_ops_total{node=\"b\"} 20 123456\n"
+	exec := &fakeExecutor{value: []byte(want)}
 	client := NewClientWithExecutor(exec)
 
 	result, err := client.FerricStoreMetrics(context.Background())
@@ -47,8 +51,8 @@ func TestFerricStoreMetricsParsesTextResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["ops"] != int64(10) || result["healthy"] != true {
-		t.Fatalf("unexpected metrics result: %#v", result)
+	if result != want {
+		t.Fatalf("metrics response changed:\n%s", result)
 	}
 	assertCall(t, exec, []any{"FERRICSTORE.METRICS"})
 }

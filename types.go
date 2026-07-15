@@ -64,12 +64,20 @@ type FencedItem struct {
 }
 
 type RetryPolicy struct {
-	MaxRetries  int
-	Backoff     string
-	BaseMS      int64
-	MaxMS       int64
-	JitterPct   int
-	ExhaustedTo string
+	MaxRetries int
+	// MaxRetriesSet sends MaxRetries even when it is zero.
+	MaxRetriesSet bool
+	Backoff       string
+	BaseMS        int64
+	// BaseMSSet sends BaseMS even when it is zero.
+	BaseMSSet bool
+	MaxMS     int64
+	// MaxMSSet sends MaxMS even when it is zero.
+	MaxMSSet  bool
+	JitterPct int
+	// JitterPctSet sends JitterPct even when it is zero.
+	JitterPctSet bool
+	ExhaustedTo  string
 }
 
 // FlowStateMode controls how FerricStore claims due work within one Flow state.
@@ -297,9 +305,12 @@ type PolicyOptions struct {
 	Retry  *RetryPolicy
 	States map[string]RetryPolicy
 	// StatePolicies configures full state policies. Use this for FIFO/PARALLEL mode.
-	StatePolicies     map[string]FlowStatePolicy
+	StatePolicies map[string]FlowStatePolicy
+	// IndexedAttributes is omitted when nil; a non-nil empty slice clears the index.
 	IndexedAttributes []string
 	IndexedStateMeta  string
+	// IndexedStateMetaSet sends IndexedStateMeta even when it is empty, clearing the index.
+	IndexedStateMetaSet bool
 }
 
 type CompleteOptions struct {

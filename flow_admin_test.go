@@ -3,6 +3,7 @@ package ferricstore
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -105,7 +106,17 @@ func TestExistsRejectsMalformedStatsCount(t *testing.T) {
 }
 
 func TestSetPolicyBuildsIndexedStateMetaCommand(t *testing.T) {
-	exec := &fakeExecutor{value: map[string]any{"type": "order", "indexed_state_meta": "version"}}
+	exec := &fakeExecutor{value: map[string]any{
+		"type":               "order",
+		"indexed_attributes": []any{"tenant"},
+		"indexed_state_meta": "version",
+		"retry": map[string]any{
+			"max_retries": int64(2),
+		},
+		"states": map[string]any{
+			"queued": map[string]any{"retry": map[string]any{"max_retries": int64(5)}},
+		},
+	}}
 	client := NewClientWithExecutor(exec)
 
 	_, err := client.SetPolicy(context.Background(), "order", PolicyOptions{
@@ -128,8 +139,163 @@ func TestSetPolicyBuildsIndexedStateMetaCommand(t *testing.T) {
 	}
 }
 
+func TestSetPolicyCanApplyZeroAndClearValues(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{
+		"type":               "order",
+		"indexed_attributes": []any{},
+		"indexed_state_meta": "",
+		"retry": map[string]any{
+			"max_retries": int64(0),
+			"backoff": map[string]any{
+				"base_ms":    int64(0),
+				"max_ms":     int64(0),
+				"jitter_pct": int64(0),
+			},
+		},
+	}}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.SetPolicy(context.Background(), "order", PolicyOptions{
+		IndexedAttributes:   []string{},
+		IndexedStateMeta:    "",
+		IndexedStateMetaSet: true,
+		Retry: &RetryPolicy{
+			MaxRetries:    0,
+			MaxRetriesSet: true,
+			BaseMS:        0,
+			BaseMSSet:     true,
+			MaxMS:         0,
+			MaxMSSet:      true,
+			JitterPct:     0,
+			JitterPctSet:  true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := exec.calls[0]
+	for _, want := range [][]any{
+		{"INDEXED_ATTRIBUTES", []string{}},
+		{"INDEXED_STATE_META", ""},
+		{"MAX_RETRIES", 0},
+		{"BASE_MS", int64(0)},
+		{"MAX_MS", int64(0)},
+		{"JITTER_PCT", 0},
+	} {
+		if !containsSubsequence(call, want) {
+			t.Fatalf("policy command omitted explicit zero/clear option %v: %#v", want, call)
+		}
+	}
+}
+
+func TestSetPolicyRejectsResponseThatDropsRequestedFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		response map[string]any
+		options  PolicyOptions
+	}{
+		{
+			name:     "indexed attributes",
+			response: map[string]any{"type": "order"},
+			options:  PolicyOptions{IndexedAttributes: []string{"tenant"}},
+		},
+		{
+			name:     "indexed state meta",
+			response: map[string]any{"type": "order", "indexed_state_meta": "wrong"},
+			options:  PolicyOptions{IndexedStateMeta: "version"},
+		},
+		{
+			name:     "type retry",
+			response: map[string]any{"type": "order", "retry": map[string]any{"max_retries": int64(1)}},
+			options:  PolicyOptions{Retry: &RetryPolicy{MaxRetries: 2}},
+		},
+		{
+			name: "state retry",
+			response: map[string]any{
+				"type": "order",
+				"states": map[string]any{
+					"queued": map[string]any{"retry": map[string]any{"max_retries": int64(4)}},
+				},
+			},
+			options: PolicyOptions{States: map[string]RetryPolicy{"queued": {MaxRetries: 5}}},
+		},
+		{
+			name: "full state retry",
+			response: map[string]any{
+				"type": "order",
+				"states": map[string]any{
+					"queued": map[string]any{"mode": "fifo", "retry": map[string]any{"max_retries": int64(1)}},
+				},
+			},
+			options: PolicyOptions{StatePolicies: map[string]FlowStatePolicy{
+				"queued": {Mode: FlowStateModeFIFO, Retry: &RetryPolicy{MaxRetries: 2}},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewClientWithExecutor(&fakeExecutor{value: tt.response})
+			if _, err := client.SetPolicy(context.Background(), "order", tt.options); err == nil {
+				t.Fatalf("accepted policy response that dropped %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestTypedAdminResultsRejectMalformedNumericAndNestedFields(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "schedule numeric",
+			run: func() error {
+				_, err := scheduleResult(map[string]any{"id": "schedule-1", "fires": "not-a-number"}, nil)
+				return err
+			},
+		},
+		{
+			name: "budget numeric",
+			run: func() error {
+				_, err := budgetResult(map[string]any{"scope": "tenant", "limit": uint64(^uint64(0))}, nil)
+				return err
+			},
+		},
+		{
+			name: "limit numeric",
+			run: func() error {
+				_, err := limitResult(map[string]any{"scope": "tenant", "free": "invalid"}, nil)
+				return err
+			},
+		},
+		{
+			name: "governance nested collection",
+			run: func() error {
+				client := NewClientWithExecutor(&fakeExecutor{value: map[string]any{"approvals": map[string]any{"not": "an array"}}})
+				_, err := client.GovernanceOverview(context.Background(), ApprovalListOptions{})
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.run(); err == nil {
+				t.Fatal("expected malformed typed response to fail")
+			}
+		})
+	}
+}
+
 func TestSetPolicyBuildsStateModeCommand(t *testing.T) {
-	exec := &fakeExecutor{value: map[string]any{"type": "order"}}
+	exec := &fakeExecutor{value: map[string]any{
+		"type": "order",
+		"states": map[string]any{
+			"queued": map[string]any{"mode": "fifo"},
+			"ready":  map[string]any{"mode": "parallel", "retry": map[string]any{"max_retries": int64(1)}},
+		},
+	}}
 	client := NewClientWithExecutor(exec)
 
 	_, err := client.SetPolicy(context.Background(), "order", PolicyOptions{
@@ -151,7 +317,13 @@ func TestSetPolicyBuildsStateModeCommand(t *testing.T) {
 }
 
 func TestInstallPolicyUsesFullPolicyOptions(t *testing.T) {
-	exec := &fakeExecutor{value: map[string]any{"type": "order"}}
+	exec := &fakeExecutor{value: map[string]any{
+		"type":               "order",
+		"indexed_state_meta": "version",
+		"states": map[string]any{
+			"queued": map[string]any{"mode": "fifo"},
+		},
+	}}
 	client := NewClientWithExecutor(exec)
 
 	_, err := client.InstallPolicy(context.Background(), "order", PolicyOptions{
@@ -184,6 +356,46 @@ func TestSetPolicyRejectsInvalidStateMode(t *testing.T) {
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("expected invalid policy to be rejected before command execution, got %#v", exec.calls)
+	}
+}
+
+func TestSetPolicyRejectsServerThatSilentlyDropsStatePolicy(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"type": "order", "states": nil}}
+	client := NewClientWithExecutor(exec)
+
+	_, err := client.SetPolicy(context.Background(), "order", PolicyOptions{
+		StatePolicies: map[string]FlowStatePolicy{
+			"queued": {Mode: FlowStateModeFIFO},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "omitted state policy") {
+		t.Fatalf("expected silent state-policy loss to fail, got %v", err)
+	}
+}
+
+func TestPolicyGetNormalizesProtocolTextRecursively(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{
+		"type":  []byte("order"),
+		"state": []byte("queued"),
+		"mode":  []byte("fifo"),
+		"retry": map[interface{}]interface{}{
+			"exhausted_to": []byte("failed"),
+		},
+	}}
+	client := NewClientWithExecutor(exec)
+
+	policy, err := client.PolicyGet(context.Background(), "order", "queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"type":  "order",
+		"state": "queued",
+		"mode":  "fifo",
+		"retry": map[string]any{"exhausted_to": "failed"},
+	}
+	if !reflect.DeepEqual(policy, want) {
+		t.Fatalf("unexpected normalized policy\n got: %#v\nwant: %#v", policy, want)
 	}
 }
 

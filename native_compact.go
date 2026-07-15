@@ -7,11 +7,14 @@ import (
 )
 
 func decodeNativeCompactValue(opcode uint16, data []byte) (any, bool, error) {
+	if len(data) == 0 {
+		return nil, false, errors.New("ferricstore native compact response is empty")
+	}
+	if !nativeCompactResponseMarkerAllowed(opcode, data[0]) {
+		return nil, false, nil
+	}
 	switch data[0] {
 	case nativeCompactFlowClaimJobs:
-		if opcode != nativeOpFlowClaimDue {
-			return nil, false, nil
-		}
 		value, err := decodeNativeCompactClaimJobs(data)
 		return value, true, err
 	case nativeCompactOKList:
@@ -27,14 +30,31 @@ func decodeNativeCompactValue(opcode uint16, data []byte) (any, bool, error) {
 		value, err := decodeNativeCompactKVMGetFixed(data)
 		return value, true, err
 	case nativeCompactPipelineResponse:
-		if opcode != nativeOpPipeline {
-			return nil, false, nil
-		}
 		value, err := decodeNativeCompactPipelineResponse(data)
 		return value, true, err
 	default:
 		return nil, false, nil
 	}
+}
+
+func nativeCompactResponseMarkerAllowed(opcode uint16, marker byte) bool {
+	switch marker {
+	case nativeCompactFlowClaimJobs:
+		return opcode == nativeOpFlowClaimDue
+	case nativeCompactOKList:
+		switch opcode {
+		case nativeOpPipeline, nativeOpSet, nativeOpMSet, nativeOpFlowCreateMany, nativeOpFlowCompleteMany,
+			0x0212, 0x0213, 0x0214: // FLOW retry/fail/cancel many.
+			return true
+		}
+	case nativeCompactKVGet:
+		return opcode == nativeOpGet
+	case nativeCompactKVMGet, nativeCompactKVMGetFixed:
+		return opcode == nativeOpPipeline || opcode == nativeOpMGet || opcode == 0x020C // FLOW.VALUE.MGET.
+	case nativeCompactPipelineResponse:
+		return opcode == nativeOpPipeline
+	}
+	return false
 }
 
 func decodeNativeCompactOKList(data []byte) (any, error) {
@@ -123,7 +143,7 @@ func decodeNativeCompactKVMGetFixed(data []byte) ([]any, error) {
 	}
 	items := make([]any, 0, count)
 	for i := 0; i < count; i++ {
-		value := append([]byte(nil), data[offset:offset+size]...)
+		value := data[offset : offset+size : offset+size]
 		offset += size
 		items = append(items, value)
 	}
@@ -138,8 +158,13 @@ func decodeNativeCompactClaimJobs(data []byte) ([]ClaimedItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, width := range []int{4, 5, 6} {
-		items, ok := tryDecodeNativeCompactClaimJobsWidth(data, 5, count, width)
+	for _, layout := range []nativeCompactClaimLayout{
+		nativeCompactClaimBase,
+		nativeCompactClaimAttributes,
+		nativeCompactClaimState,
+		nativeCompactClaimStateAttributes,
+	} {
+		items, ok := tryDecodeNativeCompactClaimJobsLayout(data, 5, count, layout)
 		if ok {
 			return items, nil
 		}
@@ -147,7 +172,16 @@ func decodeNativeCompactClaimJobs(data []byte) ([]ClaimedItem, error) {
 	return nil, errors.New("ferricstore native compact claim jobs payload is invalid")
 }
 
-func tryDecodeNativeCompactClaimJobsWidth(data []byte, offset, count, width int) ([]ClaimedItem, bool) {
+type nativeCompactClaimLayout byte
+
+const (
+	nativeCompactClaimBase nativeCompactClaimLayout = iota
+	nativeCompactClaimAttributes
+	nativeCompactClaimState
+	nativeCompactClaimStateAttributes
+)
+
+func tryDecodeNativeCompactClaimJobsLayout(data []byte, offset, count int, layout nativeCompactClaimLayout) ([]ClaimedItem, bool) {
 	items := make([]ClaimedItem, 0, count)
 	for i := 0; i < count; i++ {
 		id, next, err := readNativeCompactBinary(data, offset)
@@ -177,9 +211,9 @@ func tryDecodeNativeCompactClaimJobsWidth(data []byte, offset, count, width int)
 			FencingToken: fencing,
 			State:        "running",
 		}
-		switch width {
-		case 5:
-			attrs, rest, err := decodeNativeValue(data[offset:])
+		switch layout {
+		case nativeCompactClaimAttributes:
+			attrs, rest, err := decodeNativeOwnedValue(data[offset:])
 			if err != nil {
 				return nil, false
 			}
@@ -189,13 +223,20 @@ func tryDecodeNativeCompactClaimJobsWidth(data []byte, offset, count, width int)
 				return nil, false
 			}
 			item.Attributes = stringObjectMap(attrs)
-		case 6:
+		case nativeCompactClaimState:
 			runState, next, err := readNativeCompactOptionalBinary(data, offset)
 			if err != nil {
 				return nil, false
 			}
 			offset = next
-			attrs, rest, err := decodeNativeValue(data[offset:])
+			item.RunState = string(runState)
+		case nativeCompactClaimStateAttributes:
+			runState, next, err := readNativeCompactOptionalBinary(data, offset)
+			if err != nil {
+				return nil, false
+			}
+			offset = next
+			attrs, rest, err := decodeNativeOwnedValue(data[offset:])
 			if err != nil {
 				return nil, false
 			}
@@ -282,7 +323,7 @@ func readNativeCompactBinary(data []byte, offset int) ([]byte, int, error) {
 	if len(data)-offset < size {
 		return nil, offset, errors.New("ferricstore native compact binary value is truncated")
 	}
-	value := append([]byte(nil), data[offset:offset+size]...)
+	value := data[offset : offset+size : offset+size]
 	return value, offset + size, nil
 }
 

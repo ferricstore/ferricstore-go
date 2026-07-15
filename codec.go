@@ -5,6 +5,12 @@ import (
 	"fmt"
 )
 
+// Codec transforms values stored through typed helpers. A Client serializes
+// calls to custom implementations; built-in codecs remain lock-free. Callers
+// that invoke Codec methods directly or share one codec across Clients must
+// provide their own concurrency safety. WithConcurrentCodec can remove the
+// per-Client safety wrapper when the implementation transfers ownership of
+// mutable results and supports overlapping calls.
 type Codec interface {
 	Encode(value any) (any, error)
 	Decode(value any) (any, error)
@@ -36,9 +42,6 @@ func (StringCodec) Decode(value any) (any, error) {
 type JSONCodec struct{}
 
 func (JSONCodec) Encode(value any) (any, error) {
-	if value == nil {
-		return nil, nil
-	}
 	return json.Marshal(value)
 }
 

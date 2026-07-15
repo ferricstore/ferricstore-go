@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
+
+const queueCompletionBatchWindow = time.Millisecond
 
 type QueueClient struct {
 	client *Client
@@ -105,6 +108,9 @@ func (w *QueueWorker) RunOnce(ctx context.Context) (QueueWorkerResult, error) {
 		return QueueWorkerResult{}, errors.New("queue worker handler is nil")
 	}
 	opts := w.Options
+	if err := validateWorkerOptions(opts); err != nil {
+		return QueueWorkerResult{}, err
+	}
 	if opts.BatchSize == 0 {
 		opts.BatchSize = 10
 	}
@@ -138,7 +144,7 @@ func (w *QueueWorker) RunOnce(ctx context.Context) (QueueWorkerResult, error) {
 	}
 	var mu sync.Mutex
 	var firstErr error
-	completedJobs := make([]ClaimedItem, 0, len(jobs))
+	successfulJobs := make(chan ClaimedItem, len(jobs))
 	recordErr := func(err error) {
 		if err == nil {
 			return
@@ -152,14 +158,12 @@ func (w *QueueWorker) RunOnce(ctx context.Context) (QueueWorkerResult, error) {
 	run := func(job FlowRecord) {
 		handlerErr := w.Handler(ctx, job)
 		if handlerErr == nil {
-			mu.Lock()
-			defer mu.Unlock()
-			completedJobs = append(completedJobs, ClaimedItem{
+			successfulJobs <- ClaimedItem{
 				ID:           job.ID,
 				PartitionKey: job.PartitionKey,
 				LeaseToken:   job.LeaseToken,
 				FencingToken: job.FencingToken,
-			})
+			}
 			return
 		}
 		if opts.ErrorPolicy == ErrorPolicyReturn {
@@ -198,15 +202,102 @@ func (w *QueueWorker) RunOnce(ctx context.Context) (QueueWorkerResult, error) {
 		defer mu.Unlock()
 		result.Retried++
 	}
-	runConcurrent(jobs, opts.Concurrency, run)
-	if firstErr != nil {
-		return result, firstErr
+	go func() {
+		runConcurrent(jobs, opts.Concurrency, run)
+		close(successfulJobs)
+	}()
+	var completionErrors []error
+	for {
+		batch, open := nextQueueCompletionBatch(successfulJobs, opts.BatchSize)
+		if len(batch) > 0 {
+			if err := w.completeSuccessfulJobs(ctx, batch); err != nil {
+				completionErrors = append(completionErrors, err)
+			} else {
+				result.Completed += len(batch)
+			}
+		}
+		if !open {
+			break
+		}
 	}
-	if err := w.completeSuccessfulJobs(ctx, completedJobs); err != nil {
-		return result, err
+	mu.Lock()
+	workerErr := firstErr
+	mu.Unlock()
+	return result, errors.Join(workerErr, errors.Join(completionErrors...))
+}
+
+func validateWorkerOptions(opts WorkerOptions) error {
+	if opts.BatchSize < 0 {
+		return errors.New("queue worker batch size must be non-negative")
 	}
-	result.Completed = len(completedJobs)
-	return result, nil
+	if opts.Concurrency < 0 {
+		return errors.New("queue worker concurrency must be non-negative")
+	}
+	if opts.LeaseMS < 0 {
+		return errors.New("queue worker lease must be non-negative")
+	}
+	if opts.ErrorPolicy < ErrorPolicyRetry || opts.ErrorPolicy > ErrorPolicyReturn {
+		return fmt.Errorf("queue worker error policy %d is invalid", opts.ErrorPolicy)
+	}
+	if duplicate, ok := firstDuplicateString(opts.States); ok {
+		return fmt.Errorf("queue worker state %q is duplicated", duplicate)
+	}
+	if duplicate, ok := firstDuplicateString(opts.PartitionKeys); ok {
+		return fmt.Errorf("queue worker partition key %q is duplicated", duplicate)
+	}
+	return nil
+}
+
+func firstDuplicateString(values []string) (string, bool) {
+	const linearScanLimit = 16
+	if len(values) > linearScanLimit {
+		seen := make(map[string]struct{}, len(values))
+		for _, value := range values {
+			if _, exists := seen[value]; exists {
+				return value, true
+			}
+			seen[value] = struct{}{}
+		}
+		return "", false
+	}
+	for index, value := range values {
+		for previous := 0; previous < index; previous++ {
+			if values[previous] == value {
+				return value, true
+			}
+		}
+	}
+	return "", false
+}
+
+func nextQueueCompletionBatch(successes <-chan ClaimedItem, maxSize int) ([]ClaimedItem, bool) {
+	first, open := <-successes
+	if !open {
+		return nil, false
+	}
+	capacity := 1
+	if maxSize > 1 {
+		capacity = min(maxSize, max(1, cap(successes)))
+	}
+	batch := make([]ClaimedItem, 1, capacity)
+	batch[0] = first
+	if maxSize <= 1 {
+		return batch, true
+	}
+	timer := time.NewTimer(queueCompletionBatchWindow)
+	defer timer.Stop()
+	for len(batch) < maxSize {
+		select {
+		case job, open := <-successes:
+			if !open {
+				return batch, false
+			}
+			batch = append(batch, job)
+		case <-timer.C:
+			return batch, true
+		}
+	}
+	return batch, true
 }
 
 func (w *QueueWorker) completeSuccessfulJobs(ctx context.Context, jobs []ClaimedItem) error {

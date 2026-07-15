@@ -16,17 +16,168 @@ type nativeFrame struct {
 }
 
 type nativeResponse struct {
+	flags     byte
 	laneID    uint32
 	opcode    uint16
 	requestID uint64
 	status    uint16
 	value     any
 	err       error
+	wireBytes int
+}
+
+const nativeMaxResponseChunkFrames = 65_536
+
+type nativeResponseChunkKey struct {
+	requestID uint64
+	opcode    uint16
+	laneID    uint32
+}
+
+type nativeResponseChunkState struct {
+	first  nativeFrame
+	parts  [][]byte
+	body   []byte
+	bytes  int
+	frames int
+}
+
+type nativeResponseAssembler struct {
+	maxBytes       int
+	maxFrames      int
+	chunks         map[nativeResponseChunkKey]*nativeResponseChunkState
+	bufferedBytes  int
+	bufferedFrames int
+}
+
+func newNativeResponseAssembler(maxBytes, maxFrames int) *nativeResponseAssembler {
+	return &nativeResponseAssembler{
+		maxBytes:  maxBytes,
+		maxFrames: maxFrames,
+		chunks:    make(map[nativeResponseChunkKey]*nativeResponseChunkState),
+	}
+}
+
+func (a *nativeResponseAssembler) add(frame nativeFrame) (*nativeResponse, error) {
+	if a.maxBytes <= 0 || len(frame.body) > a.maxBytes {
+		return nil, errors.New("ferricstore native response body is too large")
+	}
+	if a.maxFrames <= 0 {
+		return nil, errors.New("ferricstore native response chunk frame limit is invalid")
+	}
+	key := nativeResponseChunkKey{requestID: frame.requestID, opcode: frame.opcode, laneID: frame.laneID}
+	state := a.chunks[key]
+	more := frame.flags&nativeFlagMoreChunks != 0
+	if state == nil && !more {
+		if len(frame.body) > a.maxBytes-a.bufferedBytes {
+			return nil, errors.New("ferricstore native buffered chunk responses are too large")
+		}
+		if a.bufferedFrames >= a.maxFrames {
+			return nil, fmt.Errorf("ferricstore native buffered chunk responses exceed %d frames", a.maxFrames)
+		}
+		response, err := decodeNativeResponseFrame(frame, frame.body, frame.flags)
+		if err != nil {
+			return nil, err
+		}
+		return &response, nil
+	}
+	if state == nil {
+		first := frame
+		first.body = nil
+		state = &nativeResponseChunkState{first: first}
+		a.chunks[key] = state
+	}
+	state.first.flags |= frame.flags
+	if len(frame.body) > a.maxBytes-state.bytes {
+		return nil, errors.New("ferricstore native response body is too large")
+	}
+	if state.frames >= a.maxFrames {
+		return nil, fmt.Errorf("ferricstore native chunked response exceeds %d frames", a.maxFrames)
+	}
+	if len(frame.body) > a.maxBytes-a.bufferedBytes {
+		return nil, errors.New("ferricstore native buffered chunk responses are too large")
+	}
+	if a.bufferedFrames >= a.maxFrames {
+		return nil, fmt.Errorf("ferricstore native buffered chunk responses exceed %d frames", a.maxFrames)
+	}
+	if state.body != nil {
+		var err error
+		state.body, err = appendNativeResponseChunk(state.body, frame.body, a.maxBytes)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		state.parts = append(state.parts, frame.body)
+	}
+	state.bytes += len(frame.body)
+	state.frames++
+	a.bufferedBytes += len(frame.body)
+	a.bufferedFrames++
+	if state.body == nil && state.bytes >= a.compactionThreshold() {
+		state.compact(a.maxBytes)
+	}
+	if more {
+		return nil, nil
+	}
+
+	delete(a.chunks, key)
+	a.bufferedBytes -= state.bytes
+	a.bufferedFrames -= state.frames
+	body := state.body
+	if body == nil {
+		body = make([]byte, state.bytes)
+		offset := 0
+		for _, part := range state.parts {
+			offset += copy(body[offset:], part)
+		}
+	}
+	flags := (state.first.flags | frame.flags) &^ nativeFlagMoreChunks
+	response, err := decodeNativeResponseFrame(state.first, body, flags)
+	if err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (a *nativeResponseAssembler) compactionThreshold() int {
+	return max(1, a.maxBytes/2)
+}
+
+func (s *nativeResponseChunkState) compact(maxBytes int) {
+	capacity := s.bytes
+	if capacity <= maxBytes/2 {
+		capacity *= 2
+	} else {
+		capacity = maxBytes
+	}
+	body := make([]byte, s.bytes, capacity)
+	offset := 0
+	for _, part := range s.parts {
+		offset += copy(body[offset:], part)
+	}
+	s.body = body
+	s.parts = nil
 }
 
 func appendNativeResponseChunk(body, next []byte, max int) ([]byte, error) {
 	if len(next) > max-len(body) {
 		return nil, errors.New("ferricstore native response body is too large")
+	}
+	required := len(body) + len(next)
+	if required > cap(body) {
+		capacity := max
+		if cap(body) <= max/2 {
+			capacity = cap(body) * 2
+		}
+		if capacity < required {
+			capacity = required
+		}
+		if capacity > max {
+			capacity = max
+		}
+		grown := make([]byte, len(body), capacity)
+		copy(grown, body)
+		body = grown
 	}
 	return append(body, next...), nil
 }

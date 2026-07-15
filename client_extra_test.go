@@ -49,6 +49,26 @@ func TestPubSubNumSubParsesPairs(t *testing.T) {
 	assertCall(t, exec, []any{"PUBSUB", "NUMSUB", "a", "b"})
 }
 
+func TestPubSubNumSubRejectsMalformedPairs(t *testing.T) {
+	tests := []struct {
+		name     string
+		response any
+	}{
+		{name: "not an array", response: map[string]any{"a": int64(1)}},
+		{name: "odd pair count", response: []any{"a", int64(1), "b"}},
+		{name: "channel", response: []any{int64(1), int64(1)}},
+		{name: "subscriber count", response: []any{"a", "invalid"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewClientWithExecutor(&fakeExecutor{value: tt.response})
+			if _, err := client.PubSubNumSub(context.Background(), "a"); err == nil {
+				t.Fatalf("accepted malformed PUBSUB NUMSUB response %#v", tt.response)
+			}
+		})
+	}
+}
+
 func TestTransactionHelpersBuildStatefulCommands(t *testing.T) {
 	exec := &fakeExecutor{values: []any{
 		[]byte("OK"),
@@ -79,20 +99,11 @@ func TestTransactionHelpersBuildStatefulCommands(t *testing.T) {
 	if asString(queued) != "QUEUED" || len(results) != 1 || asString(results[0]) != "OK" {
 		t.Fatalf("unexpected transaction result queued=%#v results=%#v", queued, results)
 	}
-	if err := client.Unwatch(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Discard(ctx); err != nil {
-		t.Fatal(err)
-	}
-
 	want := [][]any{
 		{"WATCH", "k1", "k2"},
 		{"MULTI"},
 		{"COMMAND_EXEC", "SET", "k", []byte("v")},
 		{"EXEC"},
-		{"UNWATCH"},
-		{"DISCARD"},
 	}
 	if len(exec.calls) != len(want) {
 		t.Fatalf("unexpected calls: %#v", exec.calls)

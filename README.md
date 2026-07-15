@@ -31,6 +31,11 @@ client := ferricstore.NewClient("127.0.0.1:6388", ferricstore.WithCodec(ferricst
 defer func() { _ = client.Close() }()
 ```
 
+`WithCodec` serializes custom codec calls and snapshots mutable results so one
+client is safe to share across goroutines. Use `WithConcurrentCodec` only for a
+custom codec that supports overlapping calls and transfers ownership of every
+mutable value it returns.
+
 Use `NewClientFromURL` when you prefer URL configuration:
 
 ```go
@@ -229,18 +234,24 @@ client := ferricstore.NewClient(
 For clustered servers, use the topology-aware executor. It probes `SHARDS`, routes single-shard key commands to the learned leader endpoint, and rejects learned endpoints unless they match an exact seed host+port or an explicit trusted host.
 
 ```go
-exec, err := ferricstore.NewTopologyNativeExecutor(
+client, err := ferricstore.NewTopologyClientFromURLs(
 	[]string{"ferrics://ferricstore.example.com:6389"},
 	ferricstore.WithTopologyNativeOptions(
 		ferricstore.WithNativeCredentials("default", password),
+	),
+	ferricstore.WithTopologyClientOptions(
+		ferricstore.WithCodec(ferricstore.JSONCodec{}),
 	),
 )
 if err != nil {
 	return err
 }
-client := ferricstore.NewClientWithExecutor(exec, ferricstore.WithCodec(ferricstore.JSONCodec{}))
-defer client.Close()
+defer func() { _ = client.Close() }()
 ```
+
+The seed URL scheme selects the transport for every learned endpoint. Use
+`ferrics://` for TLS; topology construction rejects native TLS options that
+conflict with the seed scheme.
 
 ## Stores
 

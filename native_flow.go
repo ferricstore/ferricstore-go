@@ -15,6 +15,8 @@ const (
 	nativeCompactFlowCompleteManyRequest        = 0x92
 	nativeCompactFlowCompleteManyOKRequest      = 0x93
 	nativeCompactNilU32                         = math.MaxUint32
+	nativeFlowClaimDefaultReclaimRatio          = int64(25)
+	nativeFlowClaimDefaultReclaimExpired        = byte(1)
 )
 
 func buildFlowNativeCommand(name string, args []any) (nativeCommand, bool, error) {
@@ -158,55 +160,46 @@ func buildFlowCreateManyNative(args []any) (nativeCommand, bool, error) {
 	if !ok {
 		runAt = now
 	}
-	independent := opts.boolMarker("INDEPENDENT")
+	independent, ok := opts.boolMarker("INDEPENDENT")
+	if !ok {
+		return nativeCommand{}, false, nil
+	}
 	if !opts.only("TYPE", "STATE", "NOW", "RUN_AT", "INDEPENDENT") {
 		return nativeCommand{}, false, nil
 	}
 
-	var buf bytes.Buffer
+	kind := byte(nativeCompactFlowCreateManyRequest)
 	switch {
 	case mixed:
-		buf.WriteByte(nativeCompactFlowCreateManyMixedRequest)
+		kind = nativeCompactFlowCreateManyMixedRequest
 	case wirePartition == "" || wirePartition == "AUTO" || strings.EqualFold(wirePartition, "none"):
-		buf.WriteByte(nativeCompactFlowCreateManyRequest)
+		kind = nativeCompactFlowCreateManyRequest
 	default:
-		buf.WriteByte(nativeCompactFlowCreateManyPartitionRequest)
+		kind = nativeCompactFlowCreateManyPartitionRequest
 	}
-	writeCompactBinary(&buf, []byte(flowType))
-	writeCompactBinary(&buf, []byte(state))
-	if buf.Bytes()[0] == nativeCompactFlowCreateManyPartitionRequest {
-		writeCompactOptionalBinary(&buf, []byte(wirePartition))
-	}
-	writeCompactInt64(&buf, now)
-	writeCompactInt64(&buf, runAt)
-	buf.WriteByte(independent)
-	buf.WriteByte(0)
-	writeCompactU32(&buf, uint32(len(itemArgs)/width))
 	for i := 0; i < len(itemArgs); i += width {
-		id, ok := compactBytes(itemArgs[i])
-		if !ok {
+		if !isCompactPayloadValue(itemArgs[i]) {
 			return nativeCommand{}, false, nil
 		}
-		writeCompactBinary(&buf, id)
 		if mixed {
-			partition, ok := compactBytes(itemArgs[i+1])
-			if !ok {
+			if !isCompactPayloadValue(itemArgs[i+1]) {
 				return nativeCommand{}, false, nil
 			}
-			writeCompactBinary(&buf, partition)
 		}
-		payload, ok := compactBytes(itemArgs[i+width-1])
-		if !ok {
+		if !isCompactPayloadValue(itemArgs[i+width-1]) {
 			return nativeCommand{}, false, nil
 		}
-		writeCompactBinary(&buf, payload)
 	}
 	return nativeCommand{
-		name:    "FLOW.CREATE_MANY",
-		opcode:  nativeOpFlowCreateMany,
-		laneID:  1,
-		payload: buf.Bytes(),
-		flags:   nativeFlagCustomPayload,
+		name:   "FLOW.CREATE_MANY",
+		opcode: nativeOpFlowCreateMany,
+		laneID: 1,
+		payload: nativeFlowCreateManyPayload{
+			kind: kind, flowType: flowType, state: state, partition: wirePartition,
+			now: now, runAt: runAt, independent: independent,
+			itemArgs: itemArgs, itemWidth: width, mixed: mixed,
+		},
+		flags: nativeFlagCustomPayload,
 	}, true, nil
 }
 
@@ -214,8 +207,8 @@ func buildFlowClaimDueNative(args []any) (nativeCommand, bool, error) {
 	if len(args) < 1 {
 		return nativeCommand{}, false, nil
 	}
-	flowType, ok := compactBytes(args[0])
-	if !ok {
+	flowType := args[0]
+	if !isCompactPayloadValue(flowType) {
 		return nativeCommand{}, false, nil
 	}
 	opts, ok := parseFlowOptions(args[1:])
@@ -225,8 +218,13 @@ func buildFlowClaimDueNative(args []any) (nativeCommand, bool, error) {
 	if !opts.only("STATE", "WORKER", "LEASE_MS", "LIMIT", "NOW", "PARTITION", "PARTITIONS", "RETURN", "BLOCK", "RECLAIM_EXPIRED", "RECLAIM_RATIO", "PRIORITY") {
 		return nativeCommand{}, false, nil
 	}
-	worker, ok := opts.bytesValue("WORKER")
-	if !ok {
+	if opts.has("NOW") {
+		// The compact wire format has no explicit cutoff. Falling back preserves
+		// the caller's exact NOW semantics instead of substituting server time.
+		return nativeCommand{}, false, nil
+	}
+	worker := opts.value("WORKER")
+	if !opts.has("WORKER") || !isCompactPayloadValue(worker) {
 		return nativeCommand{}, false, nil
 	}
 	leaseMS, ok := opts.int64Value("LEASE_MS")
@@ -237,58 +235,63 @@ func buildFlowClaimDueNative(args []any) (nativeCommand, bool, error) {
 	if !ok {
 		return nativeCommand{}, false, nil
 	}
-	if now, hasNow := opts.int64Value("NOW"); hasNow && absInt64(now-nowMS()) > 10_000 {
-		return nativeCommand{}, false, nil
+	blockMS := int64(-1)
+	if opts.has("BLOCK") {
+		blockMS, ok = opts.int64Value("BLOCK")
+		if !ok {
+			return nativeCommand{}, false, nil
+		}
 	}
-	blockMS, ok := opts.int64Value("BLOCK")
-	if !ok {
-		blockMS = -1
+	reclaimRatio := nativeFlowClaimDefaultReclaimRatio
+	if opts.has("RECLAIM_RATIO") {
+		reclaimRatio, ok = opts.int64Value("RECLAIM_RATIO")
+		if !ok {
+			return nativeCommand{}, false, nil
+		}
 	}
-	reclaimRatio, ok := opts.int64Value("RECLAIM_RATIO")
-	if !ok {
-		reclaimRatio = 0
-	}
-	priority, ok := opts.int64Value("PRIORITY")
-	if !ok {
-		priority = math.MinInt64
+	priority := int64(math.MinInt64)
+	if opts.has("PRIORITY") {
+		priority, ok = opts.int64Value("PRIORITY")
+		if !ok {
+			return nativeCommand{}, false, nil
+		}
 	}
 	returnMode, ok := compactClaimReturnMode(opts.value("RETURN"))
 	if !ok {
 		return nativeCommand{}, false, nil
 	}
-	reclaimExpired := byte(0)
-	if opts.boolValue("RECLAIM_EXPIRED") {
-		reclaimExpired = 1
+	reclaimExpired := nativeFlowClaimDefaultReclaimExpired
+	if opts.has("RECLAIM_EXPIRED") {
+		value, valid := opts.boolValue("RECLAIM_EXPIRED")
+		if !valid {
+			return nativeCommand{}, false, nil
+		}
+		if !value {
+			reclaimExpired = 0
+		}
 	}
-	partitionMode, partitionBody, ok := compactPartitionBody(opts)
+	partitionMode, partition, partitions, ok := compactPartitionValues(opts)
 	if !ok {
 		return nativeCommand{}, false, nil
 	}
-
-	var buf bytes.Buffer
-	buf.WriteByte(nativeCompactFlowClaimDueRequest)
-	writeCompactBinary(&buf, flowType)
-	if state, ok := opts.bytesValue("STATE"); ok {
-		writeCompactOptionalBinary(&buf, state)
-	} else {
-		writeCompactOptionalBinary(&buf, nil)
+	var state any
+	if opts.has("STATE") {
+		state = opts.value("STATE")
+		if !isCompactPayloadValue(state) {
+			return nativeCommand{}, false, nil
+		}
 	}
-	writeCompactBinary(&buf, worker)
-	writeCompactInt64(&buf, leaseMS)
-	writeCompactInt64(&buf, limit)
-	writeCompactInt64(&buf, blockMS)
-	buf.WriteByte(reclaimExpired)
-	writeCompactInt64(&buf, reclaimRatio)
-	writeCompactInt64(&buf, priority)
-	buf.WriteByte(returnMode)
-	buf.WriteByte(partitionMode)
-	buf.Write(partitionBody)
 	return nativeCommand{
-		name:    "FLOW.CLAIM_DUE",
-		opcode:  nativeOpFlowClaimDue,
-		laneID:  1,
-		payload: buf.Bytes(),
-		flags:   nativeFlagCustomPayload,
+		name:   "FLOW.CLAIM_DUE",
+		opcode: nativeOpFlowClaimDue,
+		laneID: 1,
+		payload: nativeFlowClaimDuePayload{
+			flowType: flowType, state: state, worker: worker, leaseMS: leaseMS, limit: limit,
+			blockMS: blockMS, reclaimExpired: reclaimExpired, reclaimRatio: reclaimRatio,
+			priority: priority, returnMode: returnMode, partitionMode: partitionMode,
+			partition: partition, partitions: partitions,
+		},
+		flags: nativeFlagCustomPayload,
 	}, true, nil
 }
 
@@ -317,58 +320,54 @@ func buildFlowCompleteManyNative(args []any) (nativeCommand, bool, error) {
 	if len(itemArgs) == 0 || len(itemArgs)%width != 0 {
 		return nativeCommand{}, false, nil
 	}
-	var buf bytes.Buffer
-	buf.WriteByte(nativeCompactFlowCompleteManyOKRequest)
-	if mixed {
-		writeCompactOptionalBinary(&buf, nil)
-	} else {
-		writeCompactOptionalBinary(&buf, []byte(wirePartition))
+	independent, ok := opts.boolMarker("INDEPENDENT")
+	if !ok {
+		return nativeCommand{}, false, nil
 	}
-	writeCompactInt64(&buf, now)
-	buf.WriteByte(opts.boolMarker("INDEPENDENT"))
-	writeCompactU32(&buf, uint32(len(itemArgs)/width))
 	for i := 0; i < len(itemArgs); i += width {
-		id, ok := compactBytes(itemArgs[i])
-		if !ok {
+		if !isCompactPayloadValue(itemArgs[i]) {
 			return nativeCommand{}, false, nil
 		}
-		writeCompactBinary(&buf, id)
 		offset := 1
 		if mixed {
-			partition, ok := compactBytes(itemArgs[i+1])
-			if !ok {
+			if !isCompactPayloadValue(itemArgs[i+1]) {
 				return nativeCommand{}, false, nil
 			}
-			writeCompactOptionalBinary(&buf, partition)
 			offset = 2
-		} else {
-			writeCompactOptionalBinary(&buf, nil)
 		}
-		lease, ok := compactBytes(itemArgs[i+offset])
-		if !ok {
+		if !isCompactPayloadValue(itemArgs[i+offset]) {
 			return nativeCommand{}, false, nil
 		}
-		writeCompactBinary(&buf, lease)
-		fencing := asInt64(itemArgs[i+offset+1])
-		writeCompactInt64(&buf, fencing)
+		_, err := responseInt64(itemArgs[i+offset+1], nil)
+		if err != nil {
+			return nativeCommand{}, false, nil
+		}
+	}
+	var partition any
+	if !mixed {
+		partition = wirePartition
 	}
 	return nativeCommand{
-		name:    "FLOW.COMPLETE_MANY",
-		opcode:  nativeOpFlowCompleteMany,
-		laneID:  1,
-		payload: buf.Bytes(),
-		flags:   nativeFlagCustomPayload,
+		name:   "FLOW.COMPLETE_MANY",
+		opcode: nativeOpFlowCompleteMany,
+		laneID: 1,
+		payload: nativeFlowCompleteManyPayload{
+			partition: partition, now: now, independent: independent,
+			itemArgs: itemArgs, itemWidth: width, mixed: mixed,
+		},
+		flags: nativeFlagCustomPayload,
 	}, true, nil
 }
 
 type flowOptionSet struct {
 	values     map[string]any
+	seen       map[string]struct{}
 	partitions []any
 	itemsToken string
 }
 
 func parseFlowOptionsUntilItems(args []any) (flowOptionSet, int, bool) {
-	opts := flowOptionSet{values: map[string]any{}}
+	opts := flowOptionSet{values: map[string]any{}, seen: map[string]struct{}{}}
 	for i := 0; i < len(args); {
 		token := strings.ToUpper(asString(args[i]))
 		if token == "ITEMS" || token == "ITEMS_EXT" {
@@ -378,6 +377,10 @@ func parseFlowOptionsUntilItems(args []any) (flowOptionSet, int, bool) {
 		if i+1 >= len(args) {
 			return flowOptionSet{}, 0, false
 		}
+		if _, duplicate := opts.seen[token]; duplicate {
+			return flowOptionSet{}, 0, false
+		}
+		opts.seen[token] = struct{}{}
 		opts.values[token] = args[i+1]
 		i += 2
 	}
@@ -385,17 +388,26 @@ func parseFlowOptionsUntilItems(args []any) (flowOptionSet, int, bool) {
 }
 
 func parseFlowOptions(args []any) (flowOptionSet, bool) {
-	opts := flowOptionSet{values: map[string]any{}}
+	opts := flowOptionSet{values: map[string]any{}, seen: map[string]struct{}{}}
 	for i := 0; i < len(args); {
 		token := strings.ToUpper(asString(args[i]))
+		if _, duplicate := opts.seen[token]; duplicate {
+			return flowOptionSet{}, false
+		}
+		opts.seen[token] = struct{}{}
 		if token == "PARTITIONS" {
 			if i+1 >= len(args) {
 				return flowOptionSet{}, false
 			}
-			count := int(asInt64(args[i+1]))
-			if count < 0 || i+2+count > len(args) {
+			count64, err := responseInt64(args[i+1], nil)
+			if err != nil {
 				return flowOptionSet{}, false
 			}
+			remaining := len(args) - (i + 2)
+			if count64 < 0 || count64 > int64(remaining) {
+				return flowOptionSet{}, false
+			}
+			count := int(count64)
 			opts.partitions = append([]any(nil), args[i+2:i+2+count]...)
 			i += 2 + count
 			continue
@@ -414,7 +426,7 @@ func (o flowOptionSet) only(keys ...string) bool {
 	for _, key := range keys {
 		allowed[key] = struct{}{}
 	}
-	for key := range o.values {
+	for key := range o.seen {
 		if _, ok := allowed[key]; !ok {
 			return false
 		}
@@ -424,6 +436,11 @@ func (o flowOptionSet) only(keys ...string) bool {
 
 func (o flowOptionSet) value(key string) any {
 	return o.values[key]
+}
+
+func (o flowOptionSet) has(key string) bool {
+	_, ok := o.seen[key]
+	return ok
 }
 
 func (o flowOptionSet) stringValue(key string) (string, bool) {
@@ -448,23 +465,35 @@ func (o flowOptionSet) int64Value(key string) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return asInt64(value), true
+	parsed, err := responseInt64(value, nil)
+	return parsed, err == nil
 }
 
-func (o flowOptionSet) boolValue(key string) bool {
+func (o flowOptionSet) boolValue(key string) (bool, bool) {
 	value, ok := o.values[key]
-	return ok && asBool(value)
+	if !ok || value == nil {
+		return false, false
+	}
+	parsed, err := responseBool(value, nil)
+	return parsed, err == nil
 }
 
-func (o flowOptionSet) boolMarker(key string) byte {
+func (o flowOptionSet) boolMarker(key string) (byte, bool) {
 	value, ok := o.values[key]
 	if !ok {
-		return 0
+		return 0, true
 	}
-	if asBool(value) {
-		return 2
+	if value == nil {
+		return 0, false
 	}
-	return 1
+	parsed, err := responseBool(value, nil)
+	if err != nil {
+		return 0, false
+	}
+	if parsed {
+		return 2, true
+	}
+	return 1, true
 }
 
 func compactClaimReturnMode(value any) (byte, bool) {
@@ -485,25 +514,29 @@ func compactClaimReturnMode(value any) (byte, bool) {
 	}
 }
 
-func compactPartitionBody(opts flowOptionSet) (byte, []byte, bool) {
-	if value, ok := opts.bytesValue("PARTITION"); ok {
-		var buf bytes.Buffer
-		writeCompactBinary(&buf, value)
-		return 1, buf.Bytes(), true
+func compactPartitionValues(opts flowOptionSet) (byte, any, []any, bool) {
+	if opts.has("PARTITION") && opts.has("PARTITIONS") {
+		return 0, nil, nil, false
 	}
-	if len(opts.partitions) > 0 {
-		var buf bytes.Buffer
-		writeCompactU32(&buf, uint32(len(opts.partitions)))
-		for _, item := range opts.partitions {
-			value, ok := compactBytes(item)
-			if !ok {
-				return 0, nil, false
-			}
-			writeCompactBinary(&buf, value)
+	if opts.has("PARTITION") {
+		value := opts.value("PARTITION")
+		if !isCompactPayloadValue(value) {
+			return 0, nil, nil, false
 		}
-		return 2, buf.Bytes(), true
+		return 1, value, nil, true
 	}
-	return 0, nil, true
+	if opts.has("PARTITIONS") {
+		if len(opts.partitions) == 0 {
+			return 0, nil, nil, false
+		}
+		for _, value := range opts.partitions {
+			if !isCompactPayloadValue(value) {
+				return 0, nil, nil, false
+			}
+		}
+		return 2, nil, opts.partitions, true
+	}
+	return 0, nil, nil, true
 }
 
 func compactBytes(value any) ([]byte, bool) {
@@ -515,11 +548,7 @@ func compactBytes(value any) ([]byte, bool) {
 	case string:
 		return []byte(v), true
 	default:
-		text := asString(value)
-		if text == "" {
-			return nil, false
-		}
-		return []byte(text), true
+		return nil, false
 	}
 }
 
@@ -546,11 +575,4 @@ func writeCompactInt64(buf *bytes.Buffer, value int64) {
 	var raw [8]byte
 	binary.BigEndian.PutUint64(raw[:], uint64(value))
 	buf.Write(raw[:])
-}
-
-func absInt64(value int64) int64 {
-	if value < 0 {
-		return -value
-	}
-	return value
 }

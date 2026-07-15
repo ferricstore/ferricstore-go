@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 )
 
@@ -134,7 +135,14 @@ func (w *Workflow) InstallPolicy(ctx context.Context, opt PolicyOptions) (any, e
 		statePolicies[state] = policy
 	}
 	opt.StatePolicies = statePolicies
-	return w.client.SetPolicy(ctx, w.Type, opt)
+	value, err := w.client.SetPolicy(ctx, w.Type, opt)
+	if err != nil {
+		return nil, err
+	}
+	// Keep the successfully installed snapshot so worker-side checks use the
+	// same FIFO/PARALLEL policy that was sent to the server.
+	w.statePolicies = statePolicies
+	return value, nil
 }
 
 func (w *Workflow) Start(ctx context.Context, id string, payload any, opt CreateOptions) (*FlowRecord, error) {
@@ -150,6 +158,9 @@ func (w *Workflow) Worker(worker string, states []string, opts WorkerOptions) *W
 		for state := range w.handlers {
 			states = append(states, state)
 		}
+		slices.Sort(states)
+	} else {
+		states = append([]string(nil), states...)
 	}
 	opts.States = states
 	return &WorkflowWorker{workflow: w, Worker: worker, Options: opts}
@@ -169,11 +180,22 @@ type WorkflowWorker struct {
 
 func (w *WorkflowWorker) RunOnce(ctx context.Context) (WorkflowWorkerResult, error) {
 	opts := w.Options
+	if len(opts.States) == 0 {
+		return WorkflowWorkerResult{}, errors.New("workflow worker requires at least one state")
+	}
+	if err := validateWorkerOptions(opts); err != nil {
+		return WorkflowWorkerResult{}, err
+	}
 	if opts.BatchSize == 0 {
 		opts.BatchSize = 10
 	}
 	if opts.Concurrency == 0 {
 		opts.Concurrency = 1
+	}
+	for _, stateName := range opts.States {
+		if w.workflow.handlers[stateName] == nil {
+			return WorkflowWorkerResult{}, errors.New("no workflow handler for state " + stateName)
+		}
 	}
 	var payload *bool
 	if opts.ClaimPayload {
@@ -182,9 +204,6 @@ func (w *WorkflowWorker) RunOnce(ctx context.Context) (WorkflowWorkerResult, err
 	result := WorkflowWorkerResult{}
 	for _, stateName := range opts.States {
 		handler := w.workflow.handlers[stateName]
-		if handler == nil {
-			return result, errors.New("no workflow handler for state " + stateName)
-		}
 
 		jobs, err := w.workflow.client.ClaimDue(ctx, ClaimDueOptions{
 			Type:           w.workflow.Type,
@@ -262,6 +281,10 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName st
 		})
 		return retryErr
 	}
+	outcome, err = workflowOutcomeValue(outcome)
+	if err != nil {
+		return err
+	}
 	switch value := outcome.(type) {
 	case TransitionResult:
 		if value.Priority != nil && isFIFOStatePolicy(w.workflow.statePolicies[value.ToState]) {
@@ -320,6 +343,32 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName st
 		err = errors.New("workflow handler returned nil or unknown outcome")
 	}
 	return err
+}
+
+func workflowOutcomeValue(outcome Outcome) (Outcome, error) {
+	switch value := outcome.(type) {
+	case *TransitionResult:
+		if value != nil {
+			return *value, nil
+		}
+	case *CompleteResult:
+		if value != nil {
+			return *value, nil
+		}
+	case *RetryResult:
+		if value != nil {
+			return *value, nil
+		}
+	case *FailResult:
+		if value != nil {
+			return *value, nil
+		}
+	default:
+		if outcome != nil {
+			return outcome, nil
+		}
+	}
+	return nil, errors.New("workflow handler returned nil or unknown outcome")
 }
 
 func isFIFOStatePolicy(policy FlowStatePolicy) bool {

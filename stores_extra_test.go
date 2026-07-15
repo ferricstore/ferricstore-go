@@ -59,7 +59,7 @@ func TestHashSetEXBuildsFerricStoreCommand(t *testing.T) {
 }
 
 func TestHashScanOmitsDefaultCount(t *testing.T) {
-	exec := &fakeExecutor{value: []any{}}
+	exec := &fakeExecutor{value: []any{"0", []any{}}}
 	client := NewClientWithExecutor(exec)
 	count := 10
 
@@ -91,7 +91,7 @@ func TestStreamReadPreservesStreamOrder(t *testing.T) {
 }
 
 func TestListBLMPopBuildsCommand(t *testing.T) {
-	exec := &fakeExecutor{value: []any{}}
+	exec := &fakeExecutor{value: nil}
 	client := NewClientWithExecutor(exec)
 	count := 2
 

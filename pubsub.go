@@ -3,11 +3,31 @@ package ferricstore
 import (
 	"context"
 	"errors"
+	"sync"
 )
 
 type PubSub struct {
 	exec  *NativeExecutor
 	owned bool
+
+	mu             sync.Mutex
+	replayMu       sync.Mutex
+	channels       map[string]struct{}
+	patterns       map[string]struct{}
+	eventReplays   []pubSubEventReplay
+	lastGeneration uint64
+
+	eventMu            sync.Mutex
+	eventReading       bool
+	eventChanged       chan struct{}
+	messageEvents      []nativeQueuedEvent
+	nativeEvents       []nativeQueuedEvent
+	eventBufferedBytes int
+}
+
+type pubSubEventReplay struct {
+	opcode  uint16
+	payload map[string]any
 }
 
 // PubSubMessage is a Redis-compatible pub/sub message or subscription ack.
@@ -22,6 +42,9 @@ type PubSubMessage struct {
 
 // NativeEvent is an unsolicited native protocol event delivered on request_id=0.
 type NativeEvent struct {
+	Opcode  uint16
+	LaneID  uint32
+	Flags   byte
 	Name    string
 	Payload map[string]any
 	AtMS    int64
@@ -49,6 +72,7 @@ type FlowWakeSubscriptionOptions struct {
 // NewPubSub creates an isolated native protocol connection for long-lived pub/sub use.
 func NewPubSub(addr string, opts ...NativeOption) *PubSub {
 	exec := NewNativeExecutor(addr, opts...)
+	exec.enableEventDelivery()
 	return &PubSub{exec: exec, owned: true}
 }
 
@@ -58,6 +82,7 @@ func NewPubSubFromURL(rawurl string, opts ...NativeOption) (*PubSub, error) {
 	if err != nil {
 		return nil, err
 	}
+	exec.enableEventDelivery()
 	return &PubSub{exec: exec, owned: true}, nil
 }
 
@@ -65,6 +90,7 @@ func NewPubSubFromURL(rawurl string, opts ...NativeOption) (*PubSub, error) {
 func (c *Client) OpenPubSub() (*PubSub, error) {
 	native, ok := c.exec.(*NativeExecutor)
 	if ok {
+		native.enableEventDelivery()
 		return &PubSub{exec: native}, nil
 	}
 	topology, ok := c.exec.(*TopologyNativeExecutor)
@@ -73,6 +99,7 @@ func (c *Client) OpenPubSub() (*PubSub, error) {
 		if err != nil {
 			return nil, err
 		}
+		control.enableEventDelivery()
 		return &PubSub{exec: control}, nil
 	}
 	return nil, errors.New("pubsub requires a native client executor")
@@ -99,6 +126,9 @@ func (p *PubSub) DroppedEvents() uint64 {
 
 // Subscribe subscribes to Redis-compatible pub/sub channels.
 func (p *PubSub) Subscribe(ctx context.Context, channels ...string) (PubSubMessage, error) {
+	if len(channels) == 0 {
+		return PubSubMessage{}, errors.New("SUBSCRIBE requires at least one channel")
+	}
 	args := []any{"SUBSCRIBE"}
 	for _, channel := range channels {
 		args = append(args, channel)
@@ -117,6 +147,9 @@ func (p *PubSub) Unsubscribe(ctx context.Context, channels ...string) (PubSubMes
 
 // PSubscribe subscribes to Redis-compatible pub/sub patterns.
 func (p *PubSub) PSubscribe(ctx context.Context, patterns ...string) (PubSubMessage, error) {
+	if len(patterns) == 0 {
+		return PubSubMessage{}, errors.New("PSUBSCRIBE requires at least one pattern")
+	}
 	args := []any{"PSUBSCRIBE"}
 	for _, pattern := range patterns {
 		args = append(args, pattern)
@@ -145,11 +178,8 @@ func (p *PubSub) UnsubscribeEvents(ctx context.Context, events ...string) (Event
 
 // SubscribeFlowWake subscribes to server-side wake hints for due Flow work.
 func (p *PubSub) SubscribeFlowWake(ctx context.Context, opt FlowWakeSubscriptionOptions) (EventSubscription, error) {
-	if opt.State != "" && len(opt.States) > 0 {
-		return EventSubscription{}, errors.New("state and states are mutually exclusive")
-	}
-	if opt.PartitionKey != "" && len(opt.PartitionKeys) > 0 {
-		return EventSubscription{}, errors.New("partition_key and partition_keys are mutually exclusive")
+	if err := validateFlowWakeSubscriptionOptions(opt); err != nil {
+		return EventSubscription{}, err
 	}
 	flowWake := map[string]any{"type": opt.Type}
 	appendOptMap(flowWake, "state", opt.State)
@@ -187,11 +217,11 @@ func (p *PubSub) Next(ctx context.Context) (PubSubMessage, error) {
 	if p == nil || p.exec == nil {
 		return PubSubMessage{}, errors.New("pubsub is closed")
 	}
-	value, err := p.exec.nextEvent(ctx)
+	value, err := p.nextDemultiplexedEvent(ctx, pubSubRedisEvent)
 	if err != nil {
 		return PubSubMessage{}, err
 	}
-	return pubSubMessageFromNative(value), nil
+	return pubSubMessageFromNative(nativeServerEventValue(value)), nil
 }
 
 // NextEvent waits for the next native protocol event.
@@ -199,143 +229,77 @@ func (p *PubSub) NextEvent(ctx context.Context) (NativeEvent, error) {
 	if p == nil || p.exec == nil {
 		return NativeEvent{}, errors.New("pubsub is closed")
 	}
-	value, err := p.exec.nextEvent(ctx)
+	value, err := p.nextDemultiplexedEvent(ctx, pubSubNativeEvent)
 	if err != nil {
 		return NativeEvent{}, err
 	}
-	return nativeEventFromValue(value)
+	return nativeEventFromServerValue(value)
 }
 
 func (p *PubSub) pubsubCommand(ctx context.Context, args ...any) (PubSubMessage, error) {
 	if p == nil || p.exec == nil {
 		return PubSubMessage{}, errors.New("pubsub is closed")
 	}
-	value, err := p.exec.command(ctx, args...)
+	p.replayMu.Lock()
+	defer p.replayMu.Unlock()
+	value, generation, err := p.requestWithReplayRetryLocked(ctx, func() (any, error) {
+		return p.exec.command(ctx, args...)
+	})
 	if err != nil {
 		return PubSubMessage{}, err
 	}
-	return pubSubMessageFromNative(value), nil
+	message, err := pubSubAcknowledgementFromNative(value, asString(args[0]), args[1:]...)
+	if err != nil {
+		return PubSubMessage{}, err
+	}
+	p.trackPubSubCommand(args)
+	reconnected := p.exec.currentConnectionGeneration() != generation
+	if reconnected {
+		p.requireReplayFromGeneration(generation)
+		if err := p.reconnectAndReplayLocked(ctx); err != nil {
+			return PubSubMessage{}, err
+		}
+	}
+	if reconnected {
+		message.Count = p.trackedPubSubCount()
+	}
+	return message, nil
 }
 
 func (p *PubSub) eventSubscription(ctx context.Context, opcode uint16, payload map[string]any) (EventSubscription, error) {
 	if p == nil || p.exec == nil {
 		return EventSubscription{}, errors.New("pubsub is closed")
 	}
-	value, err := p.exec.request(ctx, opcode, 0, payload, 0)
+	p.replayMu.Lock()
+	defer p.replayMu.Unlock()
+	value, generation, err := p.requestWithReplayRetryLocked(ctx, func() (any, error) {
+		return p.exec.request(ctx, opcode, 0, payload, 0)
+	})
 	if err != nil {
 		return EventSubscription{}, err
 	}
 	m, err := nativeMap(value)
 	if err != nil {
 		return EventSubscription{}, err
+	}
+	subscribed, err := pubSubStringList(m["subscribed"], "subscribed")
+	if err != nil {
+		return EventSubscription{}, err
+	}
+	supported, err := pubSubStringList(m["supported"], "supported")
+	if err != nil {
+		return EventSubscription{}, err
+	}
+	p.trackEventSubscription(opcode, payload)
+	if p.exec.currentConnectionGeneration() != generation {
+		p.requireReplayFromGeneration(generation)
+		if err := p.reconnectAndReplayLocked(ctx); err != nil {
+			return EventSubscription{}, err
+		}
 	}
 	return EventSubscription{
-		Subscribed: stringList(m["subscribed"]),
-		Supported:  stringList(m["supported"]),
+		Subscribed: subscribed,
+		Supported:  supported,
 		Raw:        m,
 	}, nil
-}
-
-func pubSubMessageFromNative(value any) PubSubMessage {
-	message := PubSubMessage{Raw: value}
-	if event, err := nativeEventFromValue(value); err == nil && event.Name == "PUBSUB_MESSAGE" {
-		if len(event.Payload) == 0 {
-			message.Kind = "message"
-			return message
-		}
-		message.Kind = asString(event.Payload["kind"])
-		message.Channel = asString(event.Payload["channel"])
-		message.Pattern = asString(event.Payload["pattern"])
-		message.Payload = event.Payload["message"]
-		return message
-	}
-	items, ok := value.([]any)
-	if !ok || len(items) == 0 {
-		message.Payload = value
-		return message
-	}
-	if nested, ok := items[0].([]any); ok {
-		items = nested
-	}
-	message.Kind = asString(items[0])
-	switch message.Kind {
-	case "subscribe", "unsubscribe":
-		if len(items) > 1 {
-			message.Channel = asString(items[1])
-		}
-		if len(items) > 2 {
-			message.Count = asInt64(items[2])
-		}
-	case "psubscribe", "punsubscribe":
-		if len(items) > 1 {
-			message.Pattern = asString(items[1])
-		}
-		if len(items) > 2 {
-			message.Count = asInt64(items[2])
-		}
-	case "message":
-		if len(items) > 1 {
-			message.Channel = asString(items[1])
-		}
-		if len(items) > 2 {
-			message.Payload = items[2]
-		}
-	case "pmessage":
-		if len(items) > 1 {
-			message.Pattern = asString(items[1])
-		}
-		if len(items) > 2 {
-			message.Channel = asString(items[2])
-		}
-		if len(items) > 3 {
-			message.Payload = items[3]
-		}
-	default:
-		if len(items) > 1 {
-			message.Payload = items[1:]
-		}
-	}
-	return message
-}
-
-func nativeEventFromValue(value any) (NativeEvent, error) {
-	m, err := nativeMap(value)
-	if err != nil {
-		return NativeEvent{}, err
-	}
-	return NativeEvent{
-		Name:    asString(m["event"]),
-		Payload: stringObjectMap(m["payload"]),
-		AtMS:    asInt64(m["at_ms"]),
-		Raw:     m,
-	}, nil
-}
-
-func eventArgs(events []string) []any {
-	out := make([]any, 0, len(events))
-	for _, event := range events {
-		out = append(out, event)
-	}
-	return out
-}
-
-func appendOptMap(m map[string]any, name string, value string) {
-	if value != "" {
-		m[name] = value
-	}
-}
-
-func stringList(value any) []string {
-	if items, ok := value.([]string); ok {
-		return append([]string(nil), items...)
-	}
-	items, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		out = append(out, asString(item))
-	}
-	return out
 }
