@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-07-16
+
 - Honor structured status-5 reroutes, retry explicitly safe single-route commands and pipelines at most once, and keep topology PubSub subscriptions alive across learned-endpoint retirement.
 - Make injected native executors configuration-immutable, validate policy acknowledgements fail-closed, bound manual buffers by command count and retained bytes, and add explicit routing for extension commands through `CommandForKey`.
 - Accept both released and tokenized `FETCH_OR_COMPUTE` protocol shapes through additive APIs while preserving the v0.1.6 exported signatures.
