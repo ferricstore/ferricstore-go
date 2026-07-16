@@ -16,6 +16,7 @@ func TestURLConstructorsRejectInvalidAuthorities(t *testing.T) {
 		{name: "zero port", url: "ferric://localhost:0"},
 		{name: "port above TCP range", url: "ferric://localhost:65536"},
 		{name: "invalid bare port", url: "localhost:not-a-port"},
+		{name: "invalid IPv6 authority", url: "ferriC://::"},
 	}
 
 	for _, tt := range tests {

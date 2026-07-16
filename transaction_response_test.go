@@ -26,6 +26,10 @@ type transactionAckSession struct {
 	released  int
 }
 
+type queuedStatusStringer struct{}
+
+func (queuedStatusStringer) String() string { return "QUEUED" }
+
 func (s *transactionAckSession) Do(_ context.Context, args ...any) (any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -102,6 +106,24 @@ func TestTransactionFinalizersRejectMalformedStatusAcknowledgements(t *testing.T
 				t.Fatalf("session finalized with abort/release = %d/%d; want 1/0", aborted, released)
 			}
 		})
+	}
+}
+
+func TestExplicitTransactionRejectsCoercedQueuedAcknowledgement(t *testing.T) {
+	session := &transactionAckSession{responses: map[string]any{
+		"MULTI":        []byte("OK"),
+		"COMMAND_EXEC": queuedStatusStringer{},
+	}}
+	tx, err := NewClientWithExecutor(&transactionAckProvider{session: session}).Transaction(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := tx.Command(context.Background(), "SET", "key", "value"); err == nil {
+		t.Fatalf("transaction accepted coerced acknowledgement %#v", value)
+	}
+	aborted, released := session.finishCounts()
+	if aborted != 1 || released != 0 {
+		t.Fatalf("session finalized with abort/release = %d/%d; want 1/0", aborted, released)
 	}
 }
 

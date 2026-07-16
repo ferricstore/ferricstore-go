@@ -60,7 +60,11 @@ func (p *PubSub) readNextServerEvent(ctx context.Context) (any, error) {
 		if err := p.replayAfterExternalReconnect(ctx); err != nil {
 			return nil, err
 		}
-		value, err := p.exec.nextEvent(ctx)
+		exec := p.nativeExecutor()
+		if exec == nil {
+			return nil, errors.New("pubsub is closed")
+		}
+		value, err := exec.nextEvent(ctx)
 		if err == nil {
 			return value, nil
 		}
@@ -92,7 +96,9 @@ func (p *PubSub) queueDemultiplexedEventLocked(kind pubSubEventKind, value any) 
 	size := nativeBufferedEventSize(value)
 	count := len(p.messageEvents) + len(p.nativeEvents)
 	if count >= nativeEventBufferCapacity || size > nativeMaxBufferedEventBytes-p.eventBufferedBytes {
-		p.exec.droppedEvents.Add(1)
+		if exec := p.nativeExecutor(); exec != nil {
+			exec.droppedEvents.Add(1)
+		}
 		return
 	}
 	event := nativeQueuedEvent{value: value, bytes: size}

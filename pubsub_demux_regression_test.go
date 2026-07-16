@@ -57,7 +57,7 @@ func pubSubDemuxFixture(t *testing.T) *PubSub {
 	exec := NewNativeExecutor("unused", WithNativeHeartbeat(0, 0))
 	exec.enableEventDelivery()
 	t.Cleanup(func() { _ = exec.Close() })
-	return &PubSub{exec: exec}
+	return newPubSub(exec, false)
 }
 
 func pubSubDemuxMessage() nativeServerEvent {

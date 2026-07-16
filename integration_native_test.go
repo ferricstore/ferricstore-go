@@ -52,12 +52,12 @@ func TestIntegrationNativeHelpersAndDiagnostics(t *testing.T) {
 	if first.Status == "" || first.Status == "hit" {
 		t.Fatalf("expected compute response, got %#v", first)
 	}
-	requireTrue(t, must[bool](t)(client.FetchOrComputeResult(ctx, cacheKey, map[string]any{"computed": true}, 60_000, first.ComputeToken)))
+	requireTrue(t, must[bool](t)(client.FetchOrComputeResultWithToken(ctx, cacheKey, map[string]any{"computed": true}, 60_000, first.ComputeToken)))
 	if cached := must[FetchOrComputeResult](t)(client.FetchOrCompute(ctx, cacheKey, 60_000, "")); cached.Status != "hit" {
 		t.Fatalf("expected cache hit, got %#v", cached)
 	}
 	failed := must[FetchOrComputeResult](t)(client.FetchOrCompute(ctx, errorKey, 60_000, "integration"))
-	requireTrue(t, must[bool](t)(client.FetchOrComputeError(ctx, errorKey, "boom", failed.ComputeToken)))
+	requireTrue(t, must[bool](t)(client.FetchOrComputeErrorWithToken(ctx, errorKey, "boom", failed.ComputeToken)))
 
 	requireMap(t, must[map[string]any](t)(client.ServerInfo(ctx, "server")))
 	requirePositive(t, must[int64](t)(client.CommandCount(ctx)))
@@ -74,7 +74,7 @@ func TestIntegrationNativeHelpersAndDiagnostics(t *testing.T) {
 	requireMap(t, must[map[string]any](t)(client.ClusterStatus(ctx)))
 	requireValue(t, must[any](t)(client.ClusterRole(ctx)))
 	requireValue(t, must[any](t)(client.FerricStoreConfig(ctx, "GET", "*")))
-	requireValue(t, must[string](t)(client.FerricStoreMetrics(ctx)))
+	requireValue(t, must[string](t)(client.FerricStoreMetricsText(ctx)))
 	requireMap(t, must[map[string]any](t)(client.FerricStoreHotness(ctx)))
 	requireValue(t, must[any](t)(client.FerricStoreDoctor(ctx, "CHECK", "SCOPE", "BITCASK")))
 }

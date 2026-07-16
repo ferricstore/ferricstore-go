@@ -66,19 +66,19 @@ func integrationContext(t *testing.T) (context.Context, context.CancelFunc) {
 }
 
 func integrationClient(codec Codec) *Client {
-	addr := os.Getenv("FERRICSTORE_ADDR")
-	if addr == "" {
-		addr = "127.0.0.1:6388"
-	}
-	return newIntegrationTrackedClient(addr, codec)
+	return newIntegrationTrackedClient(integrationAddress(), codec)
 }
 
 func integrationDirectClient(codec Codec) *Client {
+	return NewClient(integrationAddress(), WithCodec(codec))
+}
+
+func integrationAddress() string {
 	addr := os.Getenv("FERRICSTORE_ADDR")
 	if addr == "" {
 		addr = "127.0.0.1:6388"
 	}
-	return NewClient(addr, WithCodec(codec))
+	return addr
 }
 
 func integrationSuffix(name string) string {
@@ -174,7 +174,8 @@ func requireNonNegativeFloat(t *testing.T, value float64) {
 
 func requireOKResponse(t *testing.T, value any) {
 	t.Helper()
-	if !isOK(value) && asInt64(value) != 1 && !asBool(value) {
+	boolValue, _ := responseBool(value, nil)
+	if !isOK(value) && asInt64(value) != 1 && !boolValue {
 		t.Fatalf("expected OK response, got %#v", value)
 	}
 }
@@ -184,6 +185,28 @@ func requireCommandError(t *testing.T, err error) {
 	if err == nil {
 		t.Fatal("expected command error")
 	}
+}
+
+func requireRecognizedCommandError(t *testing.T, err error, args ...any) {
+	t.Helper()
+	requireCommandError(t, err)
+	message := strings.ToLower(err.Error())
+	for _, invalid := range []string{
+		"unknown command",
+		"unsupported opcode",
+		"wrong number of arguments",
+		"syntax error",
+		"connection unavailable",
+		"connection reset",
+		"context deadline",
+		"context canceled",
+		"unexpected eof",
+	} {
+		if strings.Contains(message, invalid) {
+			t.Fatalf("command %#v was not recognized with the expected wire shape: %v", args, err)
+		}
+	}
+	recordIntegrationCommand(args)
 }
 
 func requireLen[T any](t *testing.T, values []T, want int) {

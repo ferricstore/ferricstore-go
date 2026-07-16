@@ -33,7 +33,11 @@ func buildRoutingTopology(value any) (*RoutingTopology, error) {
 			return nil, fmt.Errorf("invalid SHARDS slots: expected %d", routeSlotCount)
 		}
 	}
-	rawRanges, ok := normalizeAdminResponse(payload["ranges"]).([]any)
+	normalizedRanges, err := normalizeAdminResponse(payload["ranges"])
+	if err != nil {
+		return nil, fmt.Errorf("invalid SHARDS ranges: %w", err)
+	}
+	rawRanges, ok := normalizedRanges.([]any)
 	if !ok || len(rawRanges) == 0 || len(rawRanges) > routeSlotCount {
 		return nil, errors.New("invalid SHARDS topology payload")
 	}

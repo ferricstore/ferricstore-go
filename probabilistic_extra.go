@@ -47,7 +47,7 @@ func (s *BloomFilterStore) Info(ctx context.Context, key string) (map[string]any
 	if err != nil {
 		return nil, err
 	}
-	return nativeMap(value)
+	return probabilisticInfoResponse("BF.INFO", value, bloomInfoSchema[:])
 }
 
 func (s *CuckooFilterStore) AddNX(ctx context.Context, key string, element any) (bool, error) {
@@ -98,7 +98,7 @@ func (s *CuckooFilterStore) Info(ctx context.Context, key string) (map[string]an
 	if err != nil {
 		return nil, err
 	}
-	return nativeMap(value)
+	return probabilisticInfoResponse("CF.INFO", value, cuckooInfoSchema[:])
 }
 
 func (s *CountMinSketchStore) InitByProb(ctx context.Context, key string, errorRate, probability float64) (bool, error) {
@@ -185,7 +185,7 @@ func (s *CountMinSketchStore) Info(ctx context.Context, key string) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	return nativeMap(value)
+	return probabilisticInfoResponse("CMS.INFO", value, cmsInfoSchema[:])
 }
 
 type TopKReserveOptions struct {
@@ -272,7 +272,7 @@ func (s *TopKStore) List(ctx context.Context, key string, withCount bool) (any, 
 	}
 	value, err := s.client.typedReply(ctx, args...)
 	if withCount {
-		return decodeAlternatingCollectionValues(s.client.codec, value, err, 0, "TOPK.LIST")
+		return decodeTopKListWithCount(s.client.codec, value, err)
 	}
 	return decodeArray(s.client.codec, value, err)
 }
@@ -298,7 +298,7 @@ func (s *TopKStore) Info(ctx context.Context, key string) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
-	return nativeMap(value)
+	return probabilisticInfoResponse("TOPK.INFO", value, topKInfoSchema[:])
 }
 
 func (s *TDigestStore) Reset(ctx context.Context, key string) (bool, error) {
@@ -354,17 +354,17 @@ func (s *TDigestStore) TrimmedMean(ctx context.Context, key string, low, high fl
 		return 0, errors.New("TDIGEST.TRIMMED_MEAN low quantile must be less than high quantile")
 	}
 	value, err := s.client.typedReply(ctx, "TDIGEST.TRIMMED_MEAN", key, floatArg(low), floatArg(high))
-	return responseFloat64NonFinite(value, err)
+	return tdigestFiniteOrNaNResponse(value, err, "TDIGEST.TRIMMED_MEAN")
 }
 
 func (s *TDigestStore) Min(ctx context.Context, key string) (float64, error) {
 	value, err := s.client.typedReply(ctx, "TDIGEST.MIN", key)
-	return responseFloat64NonFinite(value, err)
+	return tdigestFiniteOrNaNResponse(value, err, "TDIGEST.MIN")
 }
 
 func (s *TDigestStore) Max(ctx context.Context, key string) (float64, error) {
 	value, err := s.client.typedReply(ctx, "TDIGEST.MAX", key)
-	return responseFloat64NonFinite(value, err)
+	return tdigestFiniteOrNaNResponse(value, err, "TDIGEST.MAX")
 }
 
 func (s *TDigestStore) Info(ctx context.Context, key string) (map[string]any, error) {
@@ -372,7 +372,7 @@ func (s *TDigestStore) Info(ctx context.Context, key string) (map[string]any, er
 	if err != nil {
 		return nil, err
 	}
-	return nativeMap(value)
+	return probabilisticInfoResponse("TDIGEST.INFO", value, tDigestInfoSchema[:])
 }
 
 type TDigestMergeOptions struct {
@@ -418,7 +418,7 @@ func (s *TDigestStore) tdigestFloatQuery(ctx context.Context, command, key strin
 		args = append(args, floatArg(value))
 	}
 	value, err := s.client.typedReply(ctx, args...)
-	return nonFiniteFloatArrayExact(value, err, len(values), command)
+	return tdigestFloatArray(value, err, len(values), command, command == "TDIGEST.CDF")
 }
 
 func (s *TDigestStore) tdigestIntQuery(ctx context.Context, command, key string, values ...float64) ([]int64, error) {
@@ -433,5 +433,5 @@ func (s *TDigestStore) tdigestIntQuery(ctx context.Context, command, key string,
 		args = append(args, floatArg(value))
 	}
 	response, err := s.client.typedReply(ctx, args...)
-	return intArrayExact(response, err, len(values), command)
+	return tdigestRankArray(response, err, len(values), command)
 }

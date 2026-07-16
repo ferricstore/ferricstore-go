@@ -27,7 +27,26 @@ func validateStreamRead(command string, count *int, blockMS *int64, streams []St
 	if blockMS != nil && *blockMS < 0 {
 		return fmt.Errorf("%s block timeout must be non-negative", command)
 	}
+	for index, stream := range streams {
+		if !validStreamReadID(command, stream.ID) {
+			return fmt.Errorf("%s stream %d has an invalid ID %q", command, index, stream.ID)
+		}
+	}
 	return nil
+}
+
+func validStreamReadID(command, id string) bool {
+	if id == "0" {
+		return true
+	}
+	if command == "XREAD" && id == "$" {
+		return true
+	}
+	if command == "XREADGROUP" && id == ">" {
+		return true
+	}
+	_, _, ok := parseStreamIDText(id)
+	return ok
 }
 
 func validateStreamTrim(threshold string, limit *int) error {

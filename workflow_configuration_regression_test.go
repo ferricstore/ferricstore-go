@@ -100,3 +100,107 @@ func TestWorkflowRemembersInstalledFIFOPoliciesForWorkerValidation(t *testing.T)
 		t.Fatalf("FIFO policy and claim calls = %#v; priority transition reached transport", exec.calls)
 	}
 }
+
+func TestWorkflowInstallPolicyRejectsConflictingStatePolicySources(t *testing.T) {
+	exec := &fakeExecutor{value: []byte("OK")}
+	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "ready")
+	workflow.State("ready", func(context.Context, WorkflowContext) (Outcome, error) {
+		return CompleteWith(nil), nil
+	}, FlowStatePolicy{Mode: FlowStateModeFIFO})
+
+	if _, err := workflow.InstallPolicy(context.Background(), PolicyOptions{
+		StatePolicies: map[string]FlowStatePolicy{"ready": {Mode: FlowStateModeParallel}},
+	}); err == nil {
+		t.Fatal("workflow silently overwrote a conflicting explicit state policy")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("conflicting workflow policy reached transport: %#v", exec.calls)
+	}
+}
+
+func TestWorkflowInstallPolicyAllowsEquivalentStatePolicySources(t *testing.T) {
+	exec := &fakeExecutor{value: []byte("OK")}
+	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "ready")
+	policy := FlowStatePolicy{Mode: FlowStateModeFIFO, Retry: &RetryPolicy{MaxRetries: 2}}
+	workflow.State("ready", func(context.Context, WorkflowContext) (Outcome, error) {
+		return CompleteWith(nil), nil
+	}, policy)
+
+	if _, err := workflow.InstallPolicy(context.Background(), PolicyOptions{
+		StatePolicies: map[string]FlowStatePolicy{"ready": policy},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("equivalent workflow policy calls = %#v; want one", exec.calls)
+	}
+}
+
+func TestWorkflowRejectsDuplicateHandlerRegistrationBeforeIO(t *testing.T) {
+	exec := &fakeExecutor{value: []any{}}
+	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "ready")
+	first := func(context.Context, WorkflowContext) (Outcome, error) {
+		return CompleteWith("first"), nil
+	}
+	second := func(context.Context, WorkflowContext) (Outcome, error) {
+		return CompleteWith("second"), nil
+	}
+	workflow.State("ready", first).State("ready", second)
+
+	_, err := workflow.Worker("worker-1", nil, WorkerOptions{}).RunOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "duplicate workflow state") {
+		t.Fatalf("duplicate registration error = %v", err)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("duplicate workflow registration reached transport: %#v", exec.calls)
+	}
+}
+
+func TestWorkflowRejectsMultiplePoliciesForOneStateBeforeIO(t *testing.T) {
+	exec := &fakeExecutor{value: []byte("OK")}
+	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "ready")
+	workflow.State("ready", func(context.Context, WorkflowContext) (Outcome, error) {
+		return CompleteWith(nil), nil
+	}, FlowStatePolicy{Mode: FlowStateModeFIFO}, FlowStatePolicy{Mode: FlowStateModeParallel})
+
+	_, err := workflow.InstallPolicy(context.Background(), PolicyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "at most one state policy") {
+		t.Fatalf("multiple policy error = %v", err)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("invalid workflow policy reached transport: %#v", exec.calls)
+	}
+}
+
+func TestWorkflowSnapshotsRegisteredStatePolicy(t *testing.T) {
+	exec := &fakeExecutor{value: []byte("OK")}
+	retry := &RetryPolicy{MaxRetries: 2}
+	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "ready")
+	workflow.State("ready", func(context.Context, WorkflowContext) (Outcome, error) {
+		return CompleteWith(nil), nil
+	}, FlowStatePolicy{Mode: FlowStateModeFIFO, Retry: retry})
+
+	retry.MaxRetries = 9
+	if _, err := workflow.InstallPolicy(context.Background(), PolicyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(exec.calls[0], []any{"STATE", "ready", "MODE", "FIFO", "MAX_RETRIES", 2}) {
+		t.Fatalf("workflow policy was not snapshotted: %#v", exec.calls[0])
+	}
+}
+
+func TestWorkflowSnapshotsSuccessfullyInstalledPolicy(t *testing.T) {
+	exec := &fakeExecutor{value: []byte("OK")}
+	retry := &RetryPolicy{MaxRetries: 2}
+	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "ready")
+	if _, err := workflow.InstallPolicy(context.Background(), PolicyOptions{
+		StatePolicies: map[string]FlowStatePolicy{"ready": {Mode: FlowStateModeFIFO, Retry: retry}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	retry.MaxRetries = 9
+	if got := workflow.statePolicies["ready"].Retry.MaxRetries; got != 2 {
+		t.Fatalf("installed workflow retry policy = %d, want snapshotted 2", got)
+	}
+}

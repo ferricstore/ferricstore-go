@@ -6,6 +6,156 @@ import (
 	"strings"
 )
 
+func parsePubSubMessage(value any) (PubSubMessage, error) {
+	switch value.(type) {
+	case map[string]any, map[interface{}]interface{}:
+		return parseNativePubSubMessage(value)
+	}
+
+	items, ok := value.([]any)
+	if !ok {
+		return PubSubMessage{}, fmt.Errorf("pubsub event returned %T, expected array or native event", value)
+	}
+	if len(items) == 0 {
+		return PubSubMessage{}, errors.New("pubsub event array is empty")
+	}
+	if _, nested := items[0].([]any); nested {
+		return parseNestedPubSubAcknowledgements(items, value)
+	}
+	message, err := parseFlatPubSubMessage(items)
+	if err != nil {
+		return PubSubMessage{}, err
+	}
+	message.Raw = value
+	return message, nil
+}
+
+func parseNativePubSubMessage(value any) (PubSubMessage, error) {
+	event, err := nativeEventFromValue(value)
+	if err != nil {
+		return PubSubMessage{}, fmt.Errorf("invalid native pubsub event: %w", err)
+	}
+	if !strings.EqualFold(event.Name, "PUBSUB_MESSAGE") {
+		return PubSubMessage{}, fmt.Errorf("native event is %q, expected PUBSUB_MESSAGE", event.Name)
+	}
+	kind, err := requiredPubSubString(event.Payload, "kind")
+	if err != nil {
+		return PubSubMessage{}, err
+	}
+	kind = strings.ToLower(kind)
+	message := PubSubMessage{Kind: kind, Raw: value}
+	switch kind {
+	case "message":
+		message.Channel, err = requiredPubSubString(event.Payload, "channel")
+	case "pmessage":
+		message.Pattern, err = requiredPubSubString(event.Payload, "pattern")
+		if err == nil {
+			message.Channel, err = requiredPubSubString(event.Payload, "channel")
+		}
+	default:
+		return PubSubMessage{}, fmt.Errorf("unsupported native pubsub message kind %q", kind)
+	}
+	if err != nil {
+		return PubSubMessage{}, err
+	}
+	payload, present := event.Payload["message"]
+	if !present {
+		return PubSubMessage{}, errors.New("native pubsub message is missing message")
+	}
+	message.Payload = payload
+	return message, nil
+}
+
+func requiredPubSubString(payload map[string]any, field string) (string, error) {
+	value, present := payload[field]
+	if !present {
+		return "", fmt.Errorf("native pubsub message is missing %s", field)
+	}
+	text, err := responseString(value, nil)
+	if err != nil {
+		return "", fmt.Errorf("native pubsub message has invalid %s: %w", field, err)
+	}
+	return text, nil
+}
+
+func parseNestedPubSubAcknowledgements(items []any, raw any) (PubSubMessage, error) {
+	first, ok := items[0].([]any)
+	if !ok || len(first) == 0 {
+		return PubSubMessage{}, errors.New("pubsub acknowledgement array is empty")
+	}
+	kind, err := responseString(first[0], nil)
+	if err != nil {
+		return PubSubMessage{}, fmt.Errorf("invalid pubsub acknowledgement kind: %w", err)
+	}
+	kind = strings.ToLower(kind)
+	if !isPubSubAcknowledgementKind(kind) {
+		return PubSubMessage{}, fmt.Errorf("nested pubsub event kind %q is not an acknowledgement", kind)
+	}
+
+	var message PubSubMessage
+	for index, item := range items {
+		acknowledgement, ok := item.([]any)
+		if !ok {
+			return PubSubMessage{}, fmt.Errorf("pubsub acknowledgement %d returned %T, expected array", index, item)
+		}
+		message, err = parsePubSubAcknowledgement(acknowledgement, kind)
+		if err != nil {
+			return PubSubMessage{}, fmt.Errorf("pubsub acknowledgement %d: %w", index, err)
+		}
+	}
+	message.Raw = raw
+	return message, nil
+}
+
+func parseFlatPubSubMessage(items []any) (PubSubMessage, error) {
+	kind, err := responseString(items[0], nil)
+	if err != nil {
+		return PubSubMessage{}, fmt.Errorf("invalid pubsub event kind: %w", err)
+	}
+	kind = strings.ToLower(kind)
+	switch kind {
+	case "message":
+		if len(items) != 3 {
+			return PubSubMessage{}, fmt.Errorf("message event expected 3 fields, got %d", len(items))
+		}
+		channel, err := responseString(items[1], nil)
+		if err != nil {
+			return PubSubMessage{}, fmt.Errorf("message event has invalid channel: %w", err)
+		}
+		return PubSubMessage{Kind: kind, Channel: channel, Payload: items[2]}, nil
+	case "pmessage":
+		if len(items) != 4 {
+			return PubSubMessage{}, fmt.Errorf("pmessage event expected 4 fields, got %d", len(items))
+		}
+		pattern, err := responseString(items[1], nil)
+		if err != nil {
+			return PubSubMessage{}, fmt.Errorf("pmessage event has invalid pattern: %w", err)
+		}
+		channel, err := responseString(items[2], nil)
+		if err != nil {
+			return PubSubMessage{}, fmt.Errorf("pmessage event has invalid channel: %w", err)
+		}
+		return PubSubMessage{Kind: kind, Pattern: pattern, Channel: channel, Payload: items[3]}, nil
+	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
+		message, err := parsePubSubAcknowledgement(items, kind)
+		if err != nil {
+			return PubSubMessage{}, fmt.Errorf("invalid %s acknowledgement: %w", kind, err)
+		}
+		return message, nil
+	default:
+		return PubSubMessage{}, fmt.Errorf("unsupported pubsub event kind %q", kind)
+	}
+}
+
+func isPubSubAcknowledgementKind(kind string) bool {
+	switch kind {
+	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
+		return true
+	default:
+		return false
+	}
+}
+
 func pubSubMessageFromNative(value any) PubSubMessage {
 	message := PubSubMessage{Raw: value}
 	if event, err := nativeEventFromValue(value); err == nil && event.Name == "PUBSUB_MESSAGE" {
@@ -204,6 +354,9 @@ func nativeEventFromValue(value any) (NativeEvent, error) {
 		atMS, err = responseInt64(raw, nil)
 		if err != nil {
 			return NativeEvent{}, err
+		}
+		if atMS < 0 {
+			return NativeEvent{}, errors.New("native event timestamp must be non-negative")
 		}
 	}
 	return NativeEvent{

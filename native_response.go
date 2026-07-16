@@ -82,6 +82,9 @@ func validateNativeServerInitiatedResponse(frame nativeResponse) error {
 	if frame.requestID != 0 {
 		return nil
 	}
+	if err := nativeConnectionLevelError(frame); err != nil {
+		return err
+	}
 	if frame.laneID != 0 {
 		return fmt.Errorf("ferricstore native server-initiated frame uses data lane %d", frame.laneID)
 	}
@@ -94,6 +97,13 @@ func validateNativeServerInitiatedResponse(frame nativeResponse) error {
 	default:
 		return fmt.Errorf("ferricstore native opcode %d cannot use reserved request_id 0", frame.opcode)
 	}
+}
+
+func nativeConnectionLevelError(frame nativeResponse) error {
+	if frame.requestID == 0 && frame.opcode == 0 && frame.laneID == 0 && frame.status != nativeStatusOK {
+		return NativeError{Status: frame.status, Value: frame.value}
+	}
+	return nil
 }
 
 func (e *NativeExecutor) closeConnLocked() error {
@@ -155,21 +165,27 @@ func defaultNativeOptions(addr string, tlsEnabled bool) NativeOptions {
 func applyNativeOptions(options *NativeOptions, opts ...NativeOption) {
 	addressInput := options.addressInput
 	addressUsesDefault := options.addressUsesDefault
+	credentialsSet := options.credentialsSet
 	for _, opt := range opts {
 		if opt == nil {
 			continue
 		}
 		previousAddr := options.Addr
+		previousUsername, previousPassword := options.Username, options.Password
 		opt(options)
 		if options.Addr != previousAddr {
 			// An empty override retains the constructor's fallback behavior;
 			// any non-empty override is an exact endpoint owned by the option.
 			addressUsesDefault = options.Addr == ""
 		}
+		if options.credentialsSet || options.Username != previousUsername || options.Password != previousPassword {
+			credentialsSet = true
+		}
 		// Preserve constructor provenance even when a user-defined option
 		// replaces the exported NativeOptions value wholesale.
 		options.addressInput = addressInput
 		options.addressUsesDefault = addressUsesDefault
+		options.credentialsSet = credentialsSet
 	}
 	if options.addressUsesDefault || options.Addr == "" {
 		defaultPort := nativeDefaultPort

@@ -16,7 +16,7 @@ func TestNativeStaleReaderDropsBufferedServerEvents(t *testing.T) {
 
 	handled := make(chan nativeServerEvent, 1)
 	exec := NewNativeExecutor("unused", WithNativeHeartbeat(0, 0))
-	exec.opts.eventHandler = func(event nativeServerEvent) { handled <- event }
+	exec.opts.eventSubscription = &nativeEventSubscription{handler: func(event nativeServerEvent) { handled <- event }}
 	exec.mu.Lock()
 	exec.conn = newClient
 	exec.events = make(chan nativeQueuedEvent, 1)

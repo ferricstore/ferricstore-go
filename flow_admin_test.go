@@ -32,6 +32,34 @@ func TestScheduleCreateBuildsCommand(t *testing.T) {
 	}
 }
 
+func TestFlowAdminEnumInputsUseCanonicalWireValues(t *testing.T) {
+	exec := &fakeExecutor{values: []any{
+		map[string]any{"id": "sched-1", "status": "active", "kind": "interval"},
+		[]any{},
+		[]any{},
+	}}
+	client := NewClientWithExecutor(exec)
+	if _, err := client.ScheduleCreate(context.Background(), "sched-1", ScheduleOptions{
+		Kind: " INTERVAL ", EveryMS: Int64(1), OverlapPolicy: " SKIP ", Target: map[string]any{"type": "email"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ScheduleList(context.Background(), ScheduleListOptions{Kind: " CRON "}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ApprovalList(context.Background(), ApprovalListOptions{Status: " PENDING "}); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]any{
+		{"FLOW.SCHEDULE.CREATE", "sched-1", "KIND", "interval", "EVERY_MS", int64(1), "TARGET", map[string]any{"type": "email"}, "OVERLAP_POLICY", "skip"},
+		{"FLOW.SCHEDULE.LIST", "KIND", "cron"},
+		{"FLOW.APPROVAL.LIST", "STATUS", "pending"},
+	}
+	if !reflect.DeepEqual(exec.calls, want) {
+		t.Fatalf("canonical admin calls = %#v; want %#v", exec.calls, want)
+	}
+}
+
 func TestCountByStateBuildsStatsCommand(t *testing.T) {
 	exec := &fakeExecutor{value: map[string]any{"count": int64(42)}}
 	client := NewClientWithExecutor(exec)
@@ -285,6 +313,55 @@ func TestTypedAdminResultsRejectMalformedNumericAndNestedFields(t *testing.T) {
 				t.Fatal("expected malformed typed response to fail")
 			}
 		})
+	}
+}
+
+func TestTypedAdminResultsRejectMalformedStringFields(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "schedule id", run: func() error {
+			_, err := scheduleResult(map[string]any{"id": map[string]any{}}, nil)
+			return err
+		}},
+		{name: "effect status", run: func() error {
+			_, err := effectResult(map[string]any{"status": []any{"reserved"}}, nil)
+			return err
+		}},
+		{name: "approval scope", run: func() error {
+			_, err := approvalResult(map[string]any{"scope": true}, nil)
+			return err
+		}},
+		{name: "circuit status", run: func() error {
+			_, err := circuitResult(map[string]any{"status": int64(1)}, nil)
+			return err
+		}},
+		{name: "budget scope", run: func() error {
+			_, err := budgetResult(map[string]any{"scope": map[string]any{}}, nil)
+			return err
+		}},
+		{name: "limit scope", run: func() error {
+			_, err := limitResult(map[string]any{"scope": []any{}}, nil)
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.run(); err == nil {
+				t.Fatal("malformed admin string field was silently coerced")
+			}
+		})
+	}
+}
+
+func TestApprovalPolicyVersionPreservesNumericCompatibility(t *testing.T) {
+	result, err := approvalResult(map[string]any{"policy_version": int64(42)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PolicyVersion != "42" {
+		t.Fatalf("policy version = %q, want 42", result.PolicyVersion)
 	}
 }
 

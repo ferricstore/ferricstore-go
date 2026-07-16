@@ -2,10 +2,12 @@ package ferricstore
 
 import (
 	"context"
-	"fmt"
 )
 
 func (c *Client) Create(ctx context.Context, opt CreateOptions) (*FlowRecord, error) {
+	if err := validateCreateOptions(opt); err != nil {
+		return nil, err
+	}
 	state := opt.State
 	if state == "" {
 		state = "queued"
@@ -53,6 +55,9 @@ func (c *Client) Enqueue(ctx context.Context, opt CreateOptions) (*FlowRecord, e
 func (c *Client) CreateMany(ctx context.Context, opt CreateManyOptions) ([]FlowRecord, error) {
 	if len(opt.Items) == 0 {
 		return nil, nil
+	}
+	if err := validateCreateManyOptions(opt); err != nil {
+		return nil, err
 	}
 	mixed, err := createManyPartitionMode(opt.PartitionKey, opt.Items)
 	if err != nil {
@@ -133,7 +138,7 @@ func (c *Client) CreateMany(ctx context.Context, opt CreateManyOptions) ([]FlowR
 	if err != nil {
 		return nil, err
 	}
-	return recordsOrNil(value, c.codec)
+	return recordsOrNil(value, c.codec, len(opt.Items))
 }
 
 func (c *Client) EnqueueMany(ctx context.Context, opt CreateManyOptions) ([]FlowRecord, error) {
@@ -145,12 +150,22 @@ func (c *Client) EnqueueMany(ctx context.Context, opt CreateManyOptions) ([]Flow
 
 func (c *Client) appendNamedCounts(args *[]any, values map[string]any, refs map[string]string) error {
 	*args = append(*args, len(values))
-	for name, value := range values {
-		encoded, err := c.encode(value)
-		if err != nil {
-			return err
+	if keys := deterministicMapKeysForCodec(values, c.codec); keys != nil {
+		for _, name := range keys {
+			encoded, err := c.encode(values[name])
+			if err != nil {
+				return err
+			}
+			*args = append(*args, name, encoded)
 		}
-		*args = append(*args, name, encoded)
+	} else {
+		for name, value := range values {
+			encoded, err := c.encode(value)
+			if err != nil {
+				return err
+			}
+			*args = append(*args, name, encoded)
+		}
 	}
 	*args = append(*args, len(refs))
 	for name, ref := range refs {
@@ -159,57 +174,10 @@ func (c *Client) appendNamedCounts(args *[]any, values map[string]any, refs map[
 	return nil
 }
 
-func (c *Client) ValuePut(ctx context.Context, value any, opt ValuePutOptions) (any, error) {
-	encoded, err := c.encode(value)
-	if err != nil {
-		return nil, err
-	}
-	args := []any{"FLOW.VALUE.PUT", encoded, "NOW", valueOrNow(opt.NowMS)}
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	appendOpt(&args, "OWNER_FLOW_ID", opt.OwnerFlowID)
-	appendOpt(&args, "NAME", opt.Name)
-	appendBoolPtr(&args, "OVERRIDE", opt.Override)
-	appendInt64Ptr(&args, "TTL", opt.TTLMS)
-	return c.typedReply(ctx, args...)
-}
-
-func (c *Client) PutValue(ctx context.Context, name string, value any, opt ValuePutOptions) (any, error) {
-	opt.Name = name
-	return c.ValuePut(ctx, value, opt)
-}
-
-func (c *Client) ValueMGet(ctx context.Context, refs []string, maxBytes *int64) ([]any, error) {
-	if len(refs) == 0 {
-		return nil, nil
-	}
-	args := []any{"FLOW.VALUE.MGET"}
-	for _, ref := range refs {
-		args = append(args, ref)
-	}
-	appendInt64Ptr(&args, "MAX_BYTES", maxBytes)
-	value, err := c.typedReply(ctx, args...)
-	if err != nil {
-		return nil, err
-	}
-	items, ok := value.([]any)
-	if !ok {
-		return nil, fmt.Errorf("expected value array, got %T", value)
-	}
-	if len(items) != len(refs) {
-		return nil, fmt.Errorf("FLOW.VALUE.MGET returned %d values, expected %d", len(items), len(refs))
-	}
-	out := make([]any, 0, len(items))
-	for _, item := range items {
-		decoded, err := decodeValue(c.codec, item)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, decoded)
-	}
-	return out, nil
-}
-
 func (c *Client) Signal(ctx context.Context, opt SignalOptions) (any, error) {
+	if err := validateSignalOptions(opt); err != nil {
+		return nil, err
+	}
 	args := []any{"FLOW.SIGNAL", opt.ID, "SIGNAL", opt.Signal}
 	appendOpt(&args, "PARTITION", opt.PartitionKey)
 	appendOpt(&args, "IDEMPOTENCY", opt.IdempotencyKey)
@@ -237,6 +205,9 @@ func (c *Client) FlowSignal(ctx context.Context, opt SignalOptions) (any, error)
 }
 
 func (c *Client) StartAndClaim(ctx context.Context, opt StartAndClaimOptions) (*FlowRecord, error) {
+	if err := validateStartAndClaimOptions(opt); err != nil {
+		return nil, err
+	}
 	leaseMS := opt.LeaseMS
 	if leaseMS == 0 {
 		leaseMS = 30000
@@ -402,179 +373,4 @@ func (c *Client) reclaim(ctx context.Context, opt ReclaimOptions) (any, error) {
 	appendPayloadRead(&args, opt.Payload, opt.PayloadMaxBytes)
 	appendValueReturn(&args, opt.Values, opt.ValueMaxBytes)
 	return c.typedReply(ctx, args...)
-}
-
-func (c *Client) ExtendLease(ctx context.Context, id, leaseToken string, fencingToken, leaseMS int64, partitionKey string) (*FlowRecord, error) {
-	args := []any{"FLOW.EXTEND_LEASE", id, leaseToken, "FENCING", fencingToken, "LEASE_MS", leaseMS, "NOW", nowMS()}
-	appendOpt(&args, "PARTITION", partitionKey)
-	value, err := c.typedReply(ctx, args...)
-	if err != nil {
-		return nil, err
-	}
-	return recordOrNil(value, c.codec)
-}
-
-func (c *Client) Transition(ctx context.Context, opt TransitionOptions) (*FlowRecord, error) {
-	now := opt.NowMS
-	if now == 0 {
-		now = nowMS()
-	}
-	runAt := opt.RunAtMS
-	if runAt == 0 {
-		runAt = now
-	}
-	args := []any{"FLOW.TRANSITION", opt.ID, opt.FromState, opt.ToState, "LEASE_TOKEN", opt.LeaseToken, "FENCING", opt.FencingToken, "NOW", now}
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	if err := c.appendEncoded(&args, "PAYLOAD", opt.Payload); err != nil {
-		return nil, err
-	}
-	appendOpt(&args, "RUN_AT", runAt)
-	appendInt64Ptr(&args, "PRIORITY", opt.Priority)
-	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
-		return nil, err
-	}
-	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
-	appendStateMeta(&args, opt.StateMeta)
-	value, err := c.typedReplyOrQueue(ctx, !opt.ReturnRecord, args...)
-	if err != nil || !opt.ReturnRecord {
-		return nil, err
-	}
-	record, err := recordOrNil(value, c.codec)
-	return c.recordOrGet(ctx, record, err, opt.ID, opt.PartitionKey)
-}
-
-func (c *Client) StepContinue(ctx context.Context, opt StepContinueOptions) (*FlowRecord, error) {
-	leaseMS := opt.LeaseMS
-	if leaseMS == 0 {
-		leaseMS = 30000
-	}
-	now := opt.NowMS
-	if now == 0 {
-		now = nowMS()
-	}
-	args := []any{
-		"FLOW.STEP_CONTINUE", opt.ID, opt.LeaseToken, opt.FromState, opt.ToState,
-		"FENCING", opt.FencingToken,
-		"LEASE_MS", leaseMS,
-		"NOW", now,
-	}
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	appendOpt(&args, "WORKER", opt.Worker)
-	if err := c.appendEncoded(&args, "PAYLOAD", opt.Payload); err != nil {
-		return nil, err
-	}
-	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
-		return nil, err
-	}
-	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
-	appendStateMeta(&args, opt.StateMeta)
-	value, err := c.typedReply(ctx, args...)
-	if err != nil {
-		return nil, err
-	}
-	return recordOrNil(value, c.codec)
-}
-
-func (c *Client) Complete(ctx context.Context, opt CompleteOptions) (*FlowRecord, error) {
-	args := []any{"FLOW.COMPLETE", opt.ID, opt.LeaseToken, "FENCING", opt.FencingToken, "NOW", valueOrNow(opt.NowMS)}
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	if err := c.appendEncoded(&args, "RESULT", opt.Result); err != nil {
-		return nil, err
-	}
-	if err := c.appendEncoded(&args, "PAYLOAD", opt.Payload); err != nil {
-		return nil, err
-	}
-	appendInt64Ptr(&args, "TTL", opt.TTLMS)
-	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
-		return nil, err
-	}
-	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
-	appendStateMeta(&args, opt.StateMeta)
-	value, err := c.typedReplyOrQueue(ctx, !opt.ReturnRecord, args...)
-	if err != nil || !opt.ReturnRecord {
-		return nil, err
-	}
-	return recordOrNil(value, c.codec)
-}
-
-func (c *Client) Retry(ctx context.Context, opt RetryOptions) (*FlowRecord, error) {
-	args := []any{"FLOW.RETRY", opt.ID, opt.LeaseToken, "FENCING", opt.FencingToken, "NOW", valueOrNow(opt.NowMS)}
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	if err := c.appendEncoded(&args, "ERROR", opt.Error); err != nil {
-		return nil, err
-	}
-	if err := c.appendEncoded(&args, "PAYLOAD", opt.Payload); err != nil {
-		return nil, err
-	}
-	if opt.RunAtMS != 0 {
-		appendOpt(&args, "RUN_AT", opt.RunAtMS)
-	}
-	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
-		return nil, err
-	}
-	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
-	appendStateMeta(&args, opt.StateMeta)
-	value, err := c.typedReplyOrQueue(ctx, !opt.ReturnRecord, args...)
-	if err != nil || !opt.ReturnRecord {
-		return nil, err
-	}
-	return recordOrNil(value, c.codec)
-}
-
-func (c *Client) Fail(ctx context.Context, opt FailOptions) (*FlowRecord, error) {
-	args := []any{"FLOW.FAIL", opt.ID, opt.LeaseToken, "FENCING", opt.FencingToken, "NOW", valueOrNow(opt.NowMS)}
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	if err := c.appendEncoded(&args, "ERROR", opt.Error); err != nil {
-		return nil, err
-	}
-	if err := c.appendEncoded(&args, "PAYLOAD", opt.Payload); err != nil {
-		return nil, err
-	}
-	appendInt64Ptr(&args, "TTL", opt.TTLMS)
-	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
-		return nil, err
-	}
-	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
-	appendStateMeta(&args, opt.StateMeta)
-	value, err := c.typedReplyOrQueue(ctx, !opt.ReturnRecord, args...)
-	if err != nil || !opt.ReturnRecord {
-		return nil, err
-	}
-	return recordOrNil(value, c.codec)
-}
-
-func (c *Client) Cancel(ctx context.Context, opt CancelOptions) (*FlowRecord, error) {
-	args := []any{"FLOW.CANCEL", opt.ID, "FENCING", opt.FencingToken, "NOW", valueOrNow(opt.NowMS)}
-	appendOpt(&args, "LEASE_TOKEN", opt.LeaseToken)
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	if err := c.appendEncoded(&args, "REASON", opt.Reason); err != nil {
-		return nil, err
-	}
-	appendInt64Ptr(&args, "TTL", opt.TTLMS)
-	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
-		return nil, err
-	}
-	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
-	appendStateMeta(&args, opt.StateMeta)
-	value, err := c.typedReplyOrQueue(ctx, !opt.ReturnRecord, args...)
-	if err != nil || !opt.ReturnRecord {
-		return nil, err
-	}
-	return recordOrNil(value, c.codec)
-}
-
-func (c *Client) Rewind(ctx context.Context, opt RewindOptions) (*FlowRecord, error) {
-	args := []any{"FLOW.REWIND", opt.ID, "TO_EVENT", opt.ToEvent, "NOW", valueOrNow(opt.NowMS)}
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	appendOpt(&args, "EXPECT_STATE", opt.ExpectState)
-	if opt.RunAtMS != 0 {
-		appendOpt(&args, "RUN_AT", opt.RunAtMS)
-	}
-	appendOpt(&args, "REASON_REF", opt.ReasonRef)
-	value, err := c.typedReplyOrQueue(ctx, !opt.ReturnRecord, args...)
-	if err != nil || !opt.ReturnRecord {
-		return nil, err
-	}
-	record, err := recordOrNil(value, c.codec)
-	return c.recordOrGet(ctx, record, err, opt.ID, opt.PartitionKey)
 }

@@ -412,7 +412,7 @@ func TestTopologyChangedEventProactivelyRefreshesRoutes(t *testing.T) {
 			return
 		}
 		first, err := readNativeRequestFrame(reader)
-		if err != nil || first.opcode != nativeOpCommandExec {
+		if err != nil || first.opcode != nativeOpShards {
 			errCh <- errUnexpectedFrame(first)
 			return
 		}
@@ -428,7 +428,7 @@ func TestTopologyChangedEventProactivelyRefreshesRoutes(t *testing.T) {
 			return
 		}
 		second, err := readNativeRequestFrame(reader)
-		if err != nil || second.opcode != nativeOpCommandExec {
+		if err != nil || second.opcode != nativeOpShards {
 			errCh <- errUnexpectedFrame(second)
 			return
 		}

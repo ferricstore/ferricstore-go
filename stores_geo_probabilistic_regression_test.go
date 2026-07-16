@@ -273,12 +273,12 @@ func TestSpecializedRawDecodePathsDoNotAllocate(t *testing.T) {
 	var plain any = []any{[]byte("one"), []byte("two")}
 	var structured any = []any{[]any{[]byte("member"), []byte("1.5")}}
 	plainGeo := testing.AllocsPerRun(1000, func() {
-		if _, err := decodeGeoSearch(RawCodec{}, plain, nil, 0); err != nil {
+		if _, err := decodeGeoSearch(RawCodec{}, plain, nil, geoSearchMetadata{}); err != nil {
 			panic(err)
 		}
 	})
 	structuredGeo := testing.AllocsPerRun(1000, func() {
-		if _, err := decodeGeoSearch(RawCodec{}, structured, nil, 1); err != nil {
+		if _, err := decodeGeoSearch(RawCodec{}, structured, nil, geoSearchMetadata{withDistance: true}); err != nil {
 			panic(err)
 		}
 	})

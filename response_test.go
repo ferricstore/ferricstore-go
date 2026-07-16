@@ -125,6 +125,20 @@ func TestTypedHelpersRejectMalformedScalarResponses(t *testing.T) {
 	})
 }
 
+func TestKVResponseRejectsMalformedShapes(t *testing.T) {
+	for _, value := range []any{
+		int64(7),
+		true,
+		[]any{"dangling"},
+		map[any]any{int64(1): "value"},
+		"not-a-key-value-response",
+	} {
+		if parsed, err := kvResponse(value); err == nil {
+			t.Fatalf("kvResponse(%#v) = %#v; want shape error", value, parsed)
+		}
+	}
+}
+
 func TestBooleanResponsesAcceptAllGoIntegerWidthsStrictly(t *testing.T) {
 	for _, test := range []struct {
 		value any
@@ -148,6 +162,25 @@ func TestBooleanResponsesAcceptAllGoIntegerWidthsStrictly(t *testing.T) {
 		if _, err := responseBool(value, nil); err == nil {
 			t.Errorf("responseBool(%T(%v)) accepted a non-boolean integer", value, value)
 		}
+	}
+}
+
+func TestByteScalarResponseParsingDoesNotAllocate(t *testing.T) {
+	integer := []byte("12345")
+	boolean := []byte("true")
+	if allocations := testing.AllocsPerRun(1000, func() {
+		if _, err := responseInt64(integer, nil); err != nil {
+			panic(err)
+		}
+	}); allocations != 0 {
+		t.Fatalf("integer response allocations = %v, want 0", allocations)
+	}
+	if allocations := testing.AllocsPerRun(1000, func() {
+		if _, err := responseBool(boolean, nil); err != nil {
+			panic(err)
+		}
+	}); allocations != 0 {
+		t.Fatalf("boolean response allocations = %v, want 0", allocations)
 	}
 }
 
@@ -271,6 +304,99 @@ func TestFlowResponsesRejectMalformedCriticalFields(t *testing.T) {
 	})
 }
 
+func TestFlowResponsesRejectImpossibleCriticalValues(t *testing.T) {
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "empty record id", call: func() error {
+			_, err := recordFromMap(map[string]any{"id": ""}, RawCodec{})
+			return err
+		}},
+		{name: "negative record version", call: func() error {
+			_, err := recordFromMap(map[string]any{"id": "flow", "version": int64(-1)}, RawCodec{})
+			return err
+		}},
+		{name: "negative record fencing token", call: func() error {
+			_, err := recordFromMap(map[string]any{"id": "flow", "fencing_token": int64(-1)}, RawCodec{})
+			return err
+		}},
+		{name: "empty claimed id", call: func() error {
+			_, err := claimedItemFromNative([]any{"", "partition", "lease", int64(1)}, RawCodec{})
+			return err
+		}},
+		{name: "empty claimed lease", call: func() error {
+			_, err := claimedItemFromNative([]any{"flow", "partition", "", int64(1)}, RawCodec{})
+			return err
+		}},
+		{name: "negative claimed fencing token", call: func() error {
+			_, err := claimedItemFromNative(map[string]any{
+				"id": "flow", "lease_token": "lease", "fencing_token": int64(-1),
+			}, RawCodec{})
+			return err
+		}},
+		{name: "claimed tuple trailing field", call: func() error {
+			_, err := claimedItemFromNative([]any{
+				"flow", "partition", "lease", int64(1), "queued", map[string]any{}, "trailing",
+			}, RawCodec{})
+			return err
+		}},
+		{name: "typed claimed item", call: func() error {
+			_, err := claimedItemsFromNative([]ClaimedItem{{
+				ID: "flow", LeaseToken: "lease", FencingToken: -1,
+			}}, RawCodec{})
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.call(); err == nil {
+				t.Fatal("impossible Flow response was accepted")
+			}
+		})
+	}
+}
+
+func TestFlowResponsesRejectMalformedStringFields(t *testing.T) {
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "claimed map id",
+			call: func() error {
+				_, err := claimedItemFromNative(map[string]any{
+					"id": map[string]any{}, "lease_token": "lease", "fencing_token": int64(1),
+				}, RawCodec{})
+				return err
+			},
+		},
+		{
+			name: "claimed list lease",
+			call: func() error {
+				_, err := claimedItemFromNative([]any{"flow", "partition", map[string]any{}, int64(1)}, RawCodec{})
+				return err
+			},
+		},
+		{
+			name: "record state",
+			call: func() error {
+				_, err := recordFromMap(map[string]any{
+					"id": "flow", "type": "type", "state": []any{"queued"},
+				}, RawCodec{})
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.call(); err == nil {
+				t.Fatal("malformed string field was silently coerced")
+			}
+		})
+	}
+}
+
 func TestNativeMapRejectsNonStringKeysRecursively(t *testing.T) {
 	for _, value := range []any{
 		map[interface{}]interface{}{int64(1): "value"},
@@ -281,6 +407,24 @@ func TestNativeMapRejectsNonStringKeysRecursively(t *testing.T) {
 		if _, err := nativeMap(value); err == nil {
 			t.Errorf("nativeMap accepted non-string map key in %#v", value)
 		}
+	}
+}
+
+func TestNativeMapRejectsExcessiveNesting(t *testing.T) {
+	var value any = "leaf"
+	for range nativeMaxDecodeDepth + 2 {
+		value = map[string]any{"next": value}
+	}
+	if _, err := nativeMap(value); err == nil {
+		t.Fatal("nativeMap accepted a response beyond the protocol nesting limit")
+	}
+}
+
+func TestNativeMapRejectsAggregateContainerOverflow(t *testing.T) {
+	leaf := make([]any, nativeMaxContainerItems/2+1)
+	value := map[string]any{"items": []any{leaf, leaf}}
+	if _, err := nativeMap(value); err == nil {
+		t.Fatal("nativeMap accepted a response beyond the aggregate item limit")
 	}
 }
 
@@ -327,10 +471,13 @@ func TestNullableDecodedArraysPreserveProtocolNulls(t *testing.T) {
 }
 
 func TestAdminResponsesPreserveDocumentedShape(t *testing.T) {
-	normalized := normalizeAdminResponse(map[string]any{
+	normalized, err := normalizeAdminResponse(map[string]any{
 		"name":  []byte("cluster-a"),
 		"nodes": []any{map[interface{}]interface{}{"id": []byte("node-1")}},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := map[string]any{
 		"name":  "cluster-a",
 		"nodes": []any{map[string]any{"id": "node-1"}},

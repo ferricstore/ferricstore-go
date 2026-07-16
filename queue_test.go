@@ -100,7 +100,7 @@ func TestQueueWorkerBatchesSuccessfulCompletions(t *testing.T) {
 			"fencing_token": int64(2),
 		},
 	}
-	exec := &fakeExecutor{values: []any{claimed, []byte("OK")}}
+	exec := &fakeExecutor{values: []any{claimed, []any{[]byte("OK"), []byte("OK")}}}
 	client := NewClientWithExecutor(exec)
 	queue := NewQueueClient(client).Queue("email")
 
@@ -224,6 +224,35 @@ func TestQueueWorkerReturnPolicyDoesNotRetry(t *testing.T) {
 	}
 	if len(exec.calls) != 1 {
 		t.Fatalf("expected only claim call, got %d", len(exec.calls))
+	}
+}
+
+func TestQueueWorkerAppliesReturnPolicyToHandlerPanic(t *testing.T) {
+	exec := &fakeExecutor{value: []any{
+		map[string]any{
+			"id":            "job-1",
+			"type":          "email",
+			"state":         "queued",
+			"partition_key": "tenant:1",
+			"lease_token":   "lease-1",
+			"fencing_token": int64(1),
+		},
+	}}
+	queue := NewQueueClient(NewClientWithExecutor(exec)).Queue("email")
+
+	result, err := queue.Worker("worker-1", func(context.Context, FlowRecord) error {
+		panic(errWorkerHandlerPanic)
+	}, WorkerOptions{BatchSize: 1, ErrorPolicy: ErrorPolicyReturn}).RunOnce(context.Background())
+
+	var panicErr *HandlerPanicError
+	if !errors.As(err, &panicErr) || !errors.Is(err, errWorkerHandlerPanic) {
+		t.Fatalf("worker panic error = %T %v; want wrapped *HandlerPanicError", err, err)
+	}
+	if result.Claimed != 1 || result.Completed != 0 || result.Retried != 0 || result.Failed != 0 {
+		t.Fatalf("unexpected worker result: %+v", result)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("panic under return policy issued mutation calls: %#v", exec.calls)
 	}
 }
 

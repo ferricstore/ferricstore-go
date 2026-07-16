@@ -1,7 +1,6 @@
 package ferricstore
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -12,17 +11,18 @@ import (
 )
 
 type parsedFerricURL struct {
-	Host         string
-	Port         int
-	RawURL       string
-	Scheme       string
-	TLS          bool
-	Username     string
-	Password     string
-	ExplicitPort bool
-	Timeout      time.Duration
-	HasTimeout   bool
-	query        url.Values
+	Host           string
+	Port           int
+	RawURL         string
+	Scheme         string
+	TLS            bool
+	Username       string
+	Password       string
+	CredentialsSet bool
+	ExplicitPort   bool
+	Timeout        time.Duration
+	HasTimeout     bool
+	query          url.Values
 }
 
 func parseFerricURL(raw string) (parsedFerricURL, error) {
@@ -57,6 +57,13 @@ func parseFerricURL(raw string) (parsedFerricURL, error) {
 	if host == "" {
 		return parsedFerricURL{}, errors.New("FerricStore URL requires a host")
 	}
+	ipHost := host
+	if address, _, hasZone := strings.Cut(host, "%"); hasZone {
+		ipHost = address
+	}
+	if strings.Contains(ipHost, ":") && net.ParseIP(ipHost) == nil {
+		return parsedFerricURL{}, fmt.Errorf("invalid FerricStore URL host %q", host)
+	}
 	rawPort := parsed.Port()
 	if hasScheme && rawPort != "" {
 		explicitPort = true
@@ -88,7 +95,8 @@ func parseFerricURL(raw string) (parsedFerricURL, error) {
 	}
 	out := parsedFerricURL{
 		Host: host, Port: port, Scheme: scheme, TLS: tlsEnabled, Password: password,
-		ExplicitPort: explicitPort, Timeout: timeout, HasTimeout: hasTimeout, query: query,
+		CredentialsSet: parsed.User != nil,
+		ExplicitPort:   explicitPort, Timeout: timeout, HasTimeout: hasTimeout, query: query,
 	}
 	if parsed.User != nil {
 		out.Username = parsed.User.Username()
@@ -115,7 +123,7 @@ func (p parsedFerricURL) URL() string {
 		host = "[" + host + "]"
 	}
 	user := ""
-	if p.Username != "" || p.Password != "" {
+	if p.CredentialsSet {
 		user = url.UserPassword(p.Username, p.Password).String() + "@"
 	}
 	rawURL := fmt.Sprintf("%s://%s%s:%d", p.Scheme, user, host, p.Port)
@@ -199,18 +207,4 @@ func normalizedStringSet(values []string) map[string]struct{} {
 
 func stringSet(values ...string) map[string]struct{} {
 	return normalizedStringSet(values)
-}
-
-func isRetryableRouteError(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	if errors.Is(err, net.ErrClosed) || errors.Is(err, errNativeConnectionUnavailable) {
-		return true
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "connection closed") ||
-		strings.Contains(message, "shard not available") ||
-		strings.Contains(message, "leader") ||
-		strings.Contains(message, "route")
 }

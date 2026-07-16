@@ -65,17 +65,17 @@ func TestIntegrationAdminMetadataAndExpectedErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	requireCommandError(t, client.Select(ctx, 0))
+	requireRecognizedCommandError(t, client.Select(ctx, 0), "SELECT", 0)
 	_, err := client.ClusterJoin(ctx, "127.0.0.1:1", false)
-	requireCommandError(t, err)
+	requireRecognizedCommandError(t, err, "CLUSTER.JOIN", "127.0.0.1:1")
 	_, err = client.ClusterLeave(ctx)
-	requireCommandError(t, err)
+	requireRecognizedCommandError(t, err, "CLUSTER.LEAVE")
 	_, err = client.ClusterFailover(ctx, 0, "missing-node")
-	requireCommandError(t, err)
+	requireRecognizedCommandError(t, err, "CLUSTER.FAILOVER", 0, "missing-node")
 	_, err = client.ClusterPromote(ctx, "missing-node")
-	requireCommandError(t, err)
+	requireRecognizedCommandError(t, err, "CLUSTER.PROMOTE", "missing-node")
 	_, err = client.ClusterDemote(ctx, "missing-node")
-	requireCommandError(t, err)
+	requireRecognizedCommandError(t, err, "CLUSTER.DEMOTE", "missing-node")
 
 	if err := client.FlushDB(ctx, ""); err != nil {
 		t.Fatal(err)

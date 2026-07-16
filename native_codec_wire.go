@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 )
 
 const nativeMaxEncodeDepth = 64
@@ -37,14 +38,14 @@ func (b *nativeEncodeBuffer) writeByte(value byte) error {
 	if err := b.ensure(1); err != nil {
 		return err
 	}
-	return b.Buffer.WriteByte(value)
+	return b.WriteByte(value)
 }
 
 func (b *nativeEncodeBuffer) write(value []byte) error {
 	if err := b.ensure(len(value)); err != nil {
 		return err
 	}
-	_, err := b.Buffer.Write(value)
+	_, err := b.Write(value)
 	return err
 }
 
@@ -52,7 +53,7 @@ func (b *nativeEncodeBuffer) writeString(value string) error {
 	if err := b.ensure(len(value)); err != nil {
 		return err
 	}
-	_, err := b.Buffer.WriteString(value)
+	_, err := b.WriteString(value)
 	return err
 }
 
@@ -369,112 +370,6 @@ func writeNativeSingleFieldMap(buf *nativeEncodeBuffer, key string) error {
 	return writeNativeMapKey(buf, key)
 }
 
-func writeNativeReflect(buf *nativeEncodeBuffer, value any, state *nativeEncodeState, depth int) error {
-	rv := reflect.ValueOf(value)
-	if !rv.IsValid() {
-		return buf.writeByte(0)
-	}
-	switch rv.Kind() {
-	case reflect.Pointer, reflect.Interface:
-		if rv.IsNil() {
-			return buf.writeByte(0)
-		}
-		return writeNativeValue(buf, rv.Elem().Interface(), state, depth+1)
-	case reflect.Bool:
-		if rv.Bool() {
-			return buf.writeByte(1)
-		}
-		return buf.writeByte(2)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return writeNativeInt(buf, rv.Int())
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return writeNativeUint(buf, rv.Uint())
-	case reflect.Float32, reflect.Float64:
-		return writeNativeFloat(buf, rv.Float())
-	case reflect.String:
-		return writeNativeString(buf, rv.String())
-	case reflect.Slice:
-		if rv.Type().Elem().Kind() == reflect.Uint8 {
-			return writeNativeBytes(buf, rv.Bytes())
-		}
-		fallthrough
-	case reflect.Array:
-		if rv.Len() > math.MaxUint32 {
-			return errors.New("ferricstore native array is too large")
-		}
-		if err := ensureNativeEncodeContainerBudget("array", rv.Len(), state.remaining); err != nil {
-			return err
-		}
-		if err := writeNativeContainerHeader(buf, 5, rv.Len()); err != nil {
-			return err
-		}
-		for index := 0; index < rv.Len(); index++ {
-			if err := writeNativeValue(buf, rv.Index(index).Interface(), state, depth+1); err != nil {
-				return err
-			}
-		}
-		return nil
-	case reflect.Map:
-		if err := ensureNativeEncodeContainerBudget("map", rv.Len(), state.remaining); err != nil {
-			return err
-		}
-		if err := validateNativeReflectMapKeys(rv); err != nil {
-			return err
-		}
-		if err := writeNativeContainerHeader(buf, 6, rv.Len()); err != nil {
-			return err
-		}
-		iter := rv.MapRange()
-		for iter.Next() {
-			key, err := nativeReflectMapKey(iter.Key())
-			if err != nil {
-				return err
-			}
-			if err := writeNativeMapKey(buf, key); err != nil {
-				return err
-			}
-			if err := writeNativeValue(buf, iter.Value().Interface(), state, depth+1); err != nil {
-				return err
-			}
-		}
-		return nil
-	default:
-		return writeNativeBytes(buf, []byte(fmt.Sprint(value)))
-	}
-}
-
-func validateNativeReflectMapKeys(value reflect.Value) error {
-	if value.Type().Key().Kind() == reflect.String {
-		return nil
-	}
-	keys := make(map[string]struct{}, value.Len())
-	iter := value.MapRange()
-	for iter.Next() {
-		key, err := nativeReflectMapKey(iter.Key())
-		if err != nil {
-			return err
-		}
-		if _, exists := keys[key]; exists {
-			return fmt.Errorf("ferricstore native map contains duplicate textual key %q", key)
-		}
-		keys[key] = struct{}{}
-	}
-	return nil
-}
-
-func nativeReflectMapKey(value reflect.Value) (string, error) {
-	for value.IsValid() && value.Kind() == reflect.Interface {
-		if value.IsNil() {
-			return "", errors.New("ferricstore native map key must be a string, got nil")
-		}
-		value = value.Elem()
-	}
-	if !value.IsValid() || value.Kind() != reflect.String {
-		return "", fmt.Errorf("ferricstore native map key must be a string, got %s", value.Kind())
-	}
-	return value.String(), nil
-}
-
 func writeNativeInt(buf *nativeEncodeBuffer, value int64) error {
 	if err := buf.writeByte(3); err != nil {
 		return err
@@ -557,8 +452,17 @@ func writeNativeMap(buf *nativeEncodeBuffer, values map[string]any, state *nativ
 	if err := writeNativeContainerHeader(buf, 6, len(values)); err != nil {
 		return err
 	}
+	var localKeys [16]string
+	keys := localKeys[:0]
+	if len(values) > len(localKeys) {
+		keys = make([]string, 0, len(values))
+	}
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 	var raw [4]byte
-	for key, value := range values {
+	for _, key := range keys {
 		if uint64(len(key)) > math.MaxUint32 {
 			return errors.New("ferricstore native map key is too large")
 		}
@@ -569,7 +473,7 @@ func writeNativeMap(buf *nativeEncodeBuffer, values map[string]any, state *nativ
 		if err := buf.writeString(key); err != nil {
 			return err
 		}
-		if err := writeNativeValue(buf, value, state, depth+1); err != nil {
+		if err := writeNativeValue(buf, values[key], state, depth+1); err != nil {
 			return err
 		}
 	}

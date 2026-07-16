@@ -56,12 +56,15 @@ func validHashFieldResult(value int64, kind hashFieldResultKind) bool {
 	}
 }
 
-func decodeBlockingListPop(codec Codec, value any, err error, command string) (any, error) {
+func decodeBlockingListPop(codec Codec, value any, err error, command string, keys []string) (any, error) {
 	if err != nil || value == nil {
 		return value, err
 	}
 	items, err := exactArrayItems(value, nil, 2, command)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateBlockingListKey(items[0], keys, command); err != nil {
 		return nil, err
 	}
 	if streamCodecIsRaw(codec) {
@@ -74,7 +77,7 @@ func decodeBlockingListPop(codec Codec, value any, err error, command string) (a
 	return []any{items[0], decoded}, nil
 }
 
-func decodeBlockingListMPop(codec Codec, value any, err error) (any, error) {
+func decodeBlockingListMPop(codec Codec, value any, err error, keys []string, count *int) (any, error) {
 	if err != nil || value == nil {
 		return value, err
 	}
@@ -82,9 +85,22 @@ func decodeBlockingListMPop(codec Codec, value any, err error) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateBlockingListKey(items[0], keys, "BLMPOP"); err != nil {
+		return nil, err
+	}
 	values, ok := items[1].([]any)
 	if !ok {
 		return nil, fmt.Errorf("BLMPOP values returned %T, expected array", items[1])
+	}
+	if len(values) == 0 {
+		return nil, errors.New("BLMPOP returned an empty value array")
+	}
+	maximum := 1
+	if count != nil {
+		maximum = *count
+	}
+	if len(values) > maximum {
+		return nil, fmt.Errorf("BLMPOP returned %d values for COUNT %d", len(values), maximum)
 	}
 	if streamCodecIsRaw(codec) {
 		return value, nil
@@ -94,6 +110,18 @@ func decodeBlockingListMPop(codec Codec, value any, err error) (any, error) {
 		return nil, fmt.Errorf("decode BLMPOP values: %w", err)
 	}
 	return []any{items[0], decoded}, nil
+}
+
+func validateBlockingListKey(value any, keys []string, command string) error {
+	if err := validateStringResponse(value, nil); err != nil {
+		return fmt.Errorf("%s key: %w", command, err)
+	}
+	for _, key := range keys {
+		if responseTextEqual(value, key) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s returned an unrequested key", command)
 }
 
 func decodeAlternatingCollectionValues(
@@ -127,7 +155,15 @@ func decodeAlternatingCollectionValues(
 	return decoded, nil
 }
 
-func decodeCollectionScan(codec Codec, value any, err error, valueParity int, command string) (any, error) {
+type collectionScanKind uint8
+
+const (
+	setCollectionScan collectionScanKind = iota
+	hashCollectionScan
+	sortedSetCollectionScan
+)
+
+func decodeCollectionScan(codec Codec, value any, err error, kind collectionScanKind, command string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -135,26 +171,57 @@ func decodeCollectionScan(codec Codec, value any, err error, valueParity int, co
 	if err != nil {
 		return nil, err
 	}
+	if _, err := normalizeScanCursor(outer[0], true); err != nil {
+		return nil, fmt.Errorf("%s returned invalid cursor: %w", command, err)
+	}
 	items, ok := outer[1].([]any)
 	if !ok {
 		return nil, fmt.Errorf("%s values returned %T, expected array", command, outer[1])
 	}
-	if valueParity >= 0 && len(items)%2 != 0 {
+	if kind != setCollectionScan && len(items)%2 != 0 {
 		return nil, fmt.Errorf("%s returned odd field/value array length %d", command, len(items))
+	}
+	if err := validateCollectionScanMetadata(items, kind, command); err != nil {
+		return nil, err
 	}
 	if streamCodecIsRaw(codec) {
 		return value, nil
 	}
-	if valueParity < 0 {
+	if kind == setCollectionScan {
 		decoded, err := decodeArray(codec, items, nil)
 		if err != nil {
 			return nil, err
 		}
 		return []any{outer[0], decoded}, nil
 	}
-	decoded, err := decodeAlternatingCollectionValues(codec, items, nil, valueParity, command)
+	firstValue := 1
+	if kind == sortedSetCollectionScan {
+		firstValue = 0
+	}
+	decoded, err := decodeAlternatingCollectionValues(codec, items, nil, firstValue, command)
 	if err != nil {
 		return nil, err
 	}
 	return []any{outer[0], decoded}, nil
+}
+
+func validateCollectionScanMetadata(items []any, kind collectionScanKind, command string) error {
+	switch kind {
+	case setCollectionScan:
+		return nil
+	case hashCollectionScan:
+		for index := 0; index < len(items); index += 2 {
+			if items[index] == nil {
+				return fmt.Errorf("%s returned nil field at pair %d", command, index/2)
+			}
+			if _, err := responseString(items[index], nil); err != nil {
+				return fmt.Errorf("%s field %d: %w", command, index/2, err)
+			}
+		}
+		return nil
+	case sortedSetCollectionScan:
+		return validateSortedSetPairScores(items, sortedSetScoresUnordered, command)
+	default:
+		return fmt.Errorf("%s has unsupported scan response kind %d", command, kind)
+	}
 }

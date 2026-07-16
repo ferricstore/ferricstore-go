@@ -59,6 +59,7 @@ func (q *Queue) Worker(worker string, handler QueueHandler, opts WorkerOptions) 
 	if opts.State == "" && len(opts.States) == 0 {
 		opts.State = q.State
 	}
+	opts = snapshotWorkerOptions(opts)
 	return &QueueWorker{client: q.client, Type: q.Type, Worker: worker, Handler: handler, Options: opts}
 }
 
@@ -85,6 +86,20 @@ type WorkerOptions struct {
 	ReclaimRatio   *int64
 	ClaimPayload   bool
 	ErrorPolicy    ErrorPolicy
+}
+
+func snapshotWorkerOptions(opts WorkerOptions) WorkerOptions {
+	opts.States = append([]string(nil), opts.States...)
+	opts.PartitionKeys = append([]string(nil), opts.PartitionKeys...)
+	if opts.ReclaimExpired != nil {
+		value := *opts.ReclaimExpired
+		opts.ReclaimExpired = &value
+	}
+	if opts.ReclaimRatio != nil {
+		value := *opts.ReclaimRatio
+		opts.ReclaimRatio = &value
+	}
+	return opts
 }
 
 type QueueWorkerResult struct {
@@ -156,7 +171,7 @@ func (w *QueueWorker) RunOnce(ctx context.Context) (QueueWorkerResult, error) {
 		}
 	}
 	run := func(job FlowRecord) {
-		handlerErr := w.Handler(ctx, job)
+		handlerErr := invokeQueueHandler(w.Handler, ctx, job)
 		if handlerErr == nil {
 			successfulJobs <- ClaimedItem{
 				ID:           job.ID,

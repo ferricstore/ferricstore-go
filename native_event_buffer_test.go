@@ -8,7 +8,7 @@ import (
 func TestNativeManagementOnlyConnectionDoesNotAllocatePublicEventQueue(t *testing.T) {
 	options := defaultNativeOptions("unused", false)
 	options.HeartbeatInterval = 0
-	options.eventHandler = func(nativeServerEvent) {}
+	options.eventSubscription = &nativeEventSubscription{handler: func(nativeServerEvent) {}}
 	exec := newNativeExecutor(options)
 	exec.mu.Lock()
 	exec.installNativeConnectionLocked(&nativeConnectedTransport{

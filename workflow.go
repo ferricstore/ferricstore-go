@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -108,29 +109,58 @@ func (c *WorkflowClient) Workflow(flowType, initialState string) *Workflow {
 }
 
 type Workflow struct {
-	client        *Client
-	Type          string
-	InitialState  string
-	handlers      map[string]WorkflowHandler
-	statePolicies map[string]FlowStatePolicy
+	client           *Client
+	Type             string
+	InitialState     string
+	handlers         map[string]WorkflowHandler
+	statePolicies    map[string]FlowStatePolicy
+	configurationErr error
 }
 
 func (w *Workflow) State(name string, handler WorkflowHandler, policy ...FlowStatePolicy) *Workflow {
+	if strings.TrimSpace(name) == "" {
+		w.recordConfigurationError(errors.New("workflow state name must be a non-empty string"))
+		return w
+	}
+	if handler == nil {
+		w.recordConfigurationError(fmt.Errorf("workflow state %q requires a handler", name))
+		return w
+	}
+	if len(policy) > 1 {
+		w.recordConfigurationError(fmt.Errorf("workflow state %q accepts at most one state policy", name))
+		return w
+	}
+	if _, exists := w.handlers[name]; exists {
+		w.recordConfigurationError(fmt.Errorf("duplicate workflow state %q", name))
+		return w
+	}
 	w.handlers[name] = handler
 	if len(policy) > 0 {
-		w.statePolicies[name] = policy[0]
+		w.statePolicies[name] = snapshotFlowStatePolicy(policy[0])
 	}
 	return w
 }
 
+func (w *Workflow) recordConfigurationError(err error) {
+	if w.configurationErr == nil {
+		w.configurationErr = err
+	}
+}
+
 func (w *Workflow) InstallPolicy(ctx context.Context, opt PolicyOptions) (any, error) {
-	statePolicies := map[string]FlowStatePolicy{}
+	if w.configurationErr != nil {
+		return nil, w.configurationErr
+	}
+	statePolicies := make(map[string]FlowStatePolicy, len(opt.StatePolicies)+len(w.statePolicies))
 	for state, policy := range opt.StatePolicies {
-		statePolicies[state] = policy
+		statePolicies[state] = snapshotFlowStatePolicy(policy)
 	}
 	for state, policy := range w.statePolicies {
 		if _, exists := opt.States[state]; exists {
 			return nil, fmt.Errorf("flow state %q appears in both States and workflow state policies", state)
+		}
+		if existing, exists := statePolicies[state]; exists && !equivalentFlowStatePolicy(existing, policy) {
+			return nil, fmt.Errorf("flow state %q has conflicting PolicyOptions and workflow state policies", state)
 		}
 		statePolicies[state] = policy
 	}
@@ -145,7 +175,34 @@ func (w *Workflow) InstallPolicy(ctx context.Context, opt PolicyOptions) (any, e
 	return value, nil
 }
 
+func snapshotFlowStatePolicy(policy FlowStatePolicy) FlowStatePolicy {
+	if policy.Retry != nil {
+		retry := *policy.Retry
+		policy.Retry = &retry
+	}
+	return policy
+}
+
+func equivalentFlowStatePolicy(left, right FlowStatePolicy) bool {
+	leftMode, leftErr := flowStateModeCommandToken(left.Mode)
+	rightMode, rightErr := flowStateModeCommandToken(right.Mode)
+	if leftErr != nil || rightErr != nil {
+		if left.Mode != right.Mode {
+			return false
+		}
+	} else if leftMode != rightMode {
+		return false
+	}
+	if left.Retry == nil || right.Retry == nil {
+		return left.Retry == nil && right.Retry == nil
+	}
+	return *left.Retry == *right.Retry
+}
+
 func (w *Workflow) Start(ctx context.Context, id string, payload any, opt CreateOptions) (*FlowRecord, error) {
+	if w.configurationErr != nil {
+		return nil, w.configurationErr
+	}
 	opt.ID = id
 	opt.Type = w.Type
 	opt.State = w.InitialState
@@ -159,10 +216,9 @@ func (w *Workflow) Worker(worker string, states []string, opts WorkerOptions) *W
 			states = append(states, state)
 		}
 		slices.Sort(states)
-	} else {
-		states = append([]string(nil), states...)
 	}
 	opts.States = states
+	opts = snapshotWorkerOptions(opts)
 	return &WorkflowWorker{workflow: w, Worker: worker, Options: opts}
 }
 
@@ -179,6 +235,9 @@ type WorkflowWorker struct {
 }
 
 func (w *WorkflowWorker) RunOnce(ctx context.Context) (WorkflowWorkerResult, error) {
+	if w.workflow.configurationErr != nil {
+		return WorkflowWorkerResult{}, w.workflow.configurationErr
+	}
 	opts := w.Options
 	if len(opts.States) == 0 {
 		return WorkflowWorkerResult{}, errors.New("workflow worker requires at least one state")
@@ -257,7 +316,11 @@ func (w *WorkflowWorker) RunOnce(ctx context.Context) (WorkflowWorkerResult, err
 }
 
 func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName string, handler WorkflowHandler) error {
-	outcome, err := handler(ctx, WorkflowContext{Client: w.workflow.client, Job: job, StateName: stateName})
+	outcome, err := invokeWorkflowHandler(
+		handler,
+		ctx,
+		WorkflowContext{Client: w.workflow.client, Job: job, StateName: stateName},
+	)
 	if err != nil {
 		if w.Options.ErrorPolicy == ErrorPolicyReturn {
 			return err

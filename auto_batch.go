@@ -90,17 +90,7 @@ func NewAutoBatchExecutor(client *Client, opt AutoBatchOptions) *AutoBatchExecut
 
 func NewAutoBatchClient(addr string, batch AutoBatchOptions, opts ...ClientOption) *Client {
 	base := NewClient(addr, opts...)
-	exec := NewAutoBatchExecutor(base, batch)
-	client := NewClientWithExecutor(exec, opts...)
-	client.closer = func() error {
-		autoErr := exec.Close()
-		baseErr := base.Close()
-		if autoErr != nil {
-			return autoErr
-		}
-		return baseErr
-	}
-	return client
+	return newAutoBatchClient(base, batch)
 }
 
 func NewAutoBatchClientFromURL(rawurl string, batch AutoBatchOptions, opts ...ClientOption) (*Client, error) {
@@ -108,17 +98,19 @@ func NewAutoBatchClientFromURL(rawurl string, batch AutoBatchOptions, opts ...Cl
 	if err != nil {
 		return nil, err
 	}
+	return newAutoBatchClient(base, batch), nil
+}
+
+func newAutoBatchClient(base *Client, batch AutoBatchOptions) *Client {
 	exec := NewAutoBatchExecutor(base, batch)
-	client := NewClientWithExecutor(exec, opts...)
+	client := NewClientWithExecutor(exec)
+	client.codec = base.codec
 	client.closer = func() error {
 		autoErr := exec.Close()
 		baseErr := base.Close()
-		if autoErr != nil {
-			return autoErr
-		}
-		return baseErr
+		return errors.Join(autoErr, baseErr)
 	}
-	return client, nil
+	return client
 }
 
 func (e *AutoBatchExecutor) Do(ctx context.Context, args ...any) (any, error) {

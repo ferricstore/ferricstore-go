@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -173,7 +174,7 @@ func TestBufferedFlowWithoutReturnRecordQueuesSafely(t *testing.T) {
 		call func() (*FlowRecord, error)
 	}{
 		{name: "Transition", call: func() (*FlowRecord, error) {
-			return client.Transition(ctx, TransitionOptions{ID: "job-1", FromState: "queued", ToState: "running", NowMS: 3})
+			return client.Transition(ctx, TransitionOptions{ID: "job-1", FromState: "queued", ToState: "ready", NowMS: 3})
 		}},
 		{name: "Retry", call: func() (*FlowRecord, error) {
 			return client.Retry(ctx, RetryOptions{ID: "job-1", LeaseToken: "lease-1", FencingToken: 1, NowMS: 4})
@@ -272,6 +273,102 @@ func TestBufferedExecutorConcurrentDo(t *testing.T) {
 	stats := exec.Stats()
 	if stats.Flushes != 1 || stats.CommandsSent != count || stats.MaxDepth != count {
 		t.Fatalf("unexpected stats after concurrent flush: %+v", stats)
+	}
+}
+
+func TestBufferedExecutorEnforcesCommandCapacityAndReleasesItAfterFlush(t *testing.T) {
+	client := NewClientWithExecutor(&fakePipelineExecutor{})
+	exec := NewBufferedExecutorWithOptions(client, BufferedOptions{
+		MaxCommands: 2,
+		MaxBytes:    1 << 20,
+	})
+	for index := range 2 {
+		if _, err := exec.Do(context.Background(), "SET", index, index); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := exec.Do(context.Background(), "SET", 3, 3); !errors.Is(err, ErrBufferedCapacity) {
+		t.Fatalf("third buffered command error = %v, want %v", err, ErrBufferedCapacity)
+	}
+	if len(exec.commands) != 2 {
+		t.Fatalf("buffered depth = %d, want 2", len(exec.commands))
+	}
+	if _, err := exec.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Do(context.Background(), "SET", 4, 4); err != nil {
+		t.Fatalf("enqueue after flush failed: %v", err)
+	}
+}
+
+func TestBufferedExecutorRejectsCommandAboveRetainedByteCapacity(t *testing.T) {
+	exec := NewBufferedExecutorWithOptions(nil, BufferedOptions{
+		MaxCommands: 10,
+		MaxBytes:    128,
+	})
+	value := make([]byte, 256)
+	if _, err := exec.Do(context.Background(), "SET", "key", value); !errors.Is(err, ErrBufferedCapacity) {
+		t.Fatalf("oversized buffered command error = %v, want %v", err, ErrBufferedCapacity)
+	}
+	if len(exec.commands) != 0 || exec.queuedBytes != 0 {
+		t.Fatalf("oversized command consumed capacity: depth=%d bytes=%d", len(exec.commands), exec.queuedBytes)
+	}
+}
+
+func TestBufferedExecutorHasBoundedDefaults(t *testing.T) {
+	exec := NewBufferedExecutor(nil)
+	if exec.maxCommands != defaultBufferedMaxCommands || exec.maxBytes != defaultBufferedMaxBytes {
+		t.Fatalf("buffered defaults = %d commands/%d bytes, want %d/%d",
+			exec.maxCommands, exec.maxBytes, defaultBufferedMaxCommands, defaultBufferedMaxBytes)
+	}
+}
+
+func TestBufferedExecutorEnforcesCapacityUnderConcurrentAdmission(t *testing.T) {
+	const capacity = 8
+	exec := NewBufferedExecutorWithOptions(nil, BufferedOptions{
+		MaxCommands: capacity,
+		MaxBytes:    1 << 20,
+	})
+	var admitted atomic.Int64
+	var wg sync.WaitGroup
+	for index := range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := exec.Do(context.Background(), "SET", index, index); err == nil {
+				admitted.Add(1)
+			} else if !errors.Is(err, ErrBufferedCapacity) {
+				t.Errorf("concurrent admission error = %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if admitted.Load() != capacity || len(exec.commands) != capacity {
+		t.Fatalf("concurrent admitted/depth = %d/%d, want %d/%d", admitted.Load(), len(exec.commands), capacity, capacity)
+	}
+}
+
+func TestBufferedExecutorReleasesRetainedByteCapacityAfterFlush(t *testing.T) {
+	command := []any{"SET", "key", []byte("value")}
+	commandBytes, ok := bufferedCommandRetainedSize(command, defaultBufferedMaxBytes)
+	if !ok {
+		t.Fatal("test command size exceeded default capacity")
+	}
+	exec := NewBufferedExecutorWithOptions(
+		NewClientWithExecutor(&fakePipelineExecutor{}),
+		BufferedOptions{MaxCommands: 10, MaxBytes: commandBytes},
+	)
+	if _, err := exec.Do(context.Background(), command...); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Do(context.Background(), command...); !errors.Is(err, ErrBufferedCapacity) {
+		t.Fatalf("combined byte-capacity error = %v, want %v", err, ErrBufferedCapacity)
+	}
+	if _, err := exec.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Do(context.Background(), command...); err != nil {
+		t.Fatalf("enqueue after byte-capacity release failed: %v", err)
 	}
 }
 

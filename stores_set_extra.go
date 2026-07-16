@@ -52,7 +52,7 @@ func (s *SetStore) RandMember(ctx context.Context, key string, count *int) ([]an
 		decoded, err := s.client.codec.Decode(value)
 		return []any{decoded}, err
 	}
-	return decodeArray(s.client.codec, value, nil)
+	return decodeArrayWithLimit(s.client.codec, value, nil, countMagnitude(*count), "SRANDMEMBER")
 }
 
 func (s *SetStore) Pop(ctx context.Context, key string, count *int) ([]any, error) {
@@ -74,7 +74,7 @@ func (s *SetStore) Pop(ctx context.Context, key string, count *int) ([]any, erro
 		decoded, err := s.client.codec.Decode(value)
 		return []any{decoded}, err
 	}
-	return decodeArray(s.client.codec, value, nil)
+	return decodeArrayWithLimit(s.client.codec, value, nil, uint64(*count), "SPOP")
 }
 
 func (s *SetStore) Diff(ctx context.Context, keys ...string) ([]any, error) {
@@ -157,7 +157,16 @@ func (s *SetStore) Move(ctx context.Context, source, destination string, member 
 	return responseBool(value, err)
 }
 
-func (s *SetStore) Scan(ctx context.Context, key string, cursor any, match string, count *int) (any, error) {
+func (s *SetStore) Scan(ctx context.Context, key string, cursor int64, match string, count *int) (any, error) {
+	return s.scanCursor(ctx, key, cursor, match, count)
+}
+
+// ScanCursor continues SSCAN using an opaque cursor returned by FerricStore.
+func (s *SetStore) ScanCursor(ctx context.Context, key string, cursor any, match string, count *int) (any, error) {
+	return s.scanCursor(ctx, key, cursor, match, count)
+}
+
+func (s *SetStore) scanCursor(ctx context.Context, key string, cursor any, match string, count *int) (any, error) {
 	normalizedCursor, err := normalizeScanCursor(cursor, true)
 	if err != nil {
 		return nil, err
@@ -171,5 +180,5 @@ func (s *SetStore) Scan(ctx context.Context, key string, cursor any, match strin
 	}
 	appendScanCount(&args, count)
 	value, err := s.client.typedReply(ctx, args...)
-	return decodeCollectionScan(s.client.codec, value, err, -1, "SSCAN")
+	return decodeCollectionScan(s.client.codec, value, err, setCollectionScan, "SSCAN")
 }

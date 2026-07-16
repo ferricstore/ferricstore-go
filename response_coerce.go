@@ -68,48 +68,6 @@ func asInt64(value any) int64 {
 	}
 }
 
-func asFloat64(value any) float64 {
-	switch v := value.(type) {
-	case nil:
-		return 0
-	case float64:
-		return v
-	case float32:
-		return float64(v)
-	case int64:
-		return float64(v)
-	case int:
-
-		return float64(v)
-	case string:
-		n, _ := strconv.ParseFloat(v, 64)
-		return n
-	case []byte:
-		n, _ := strconv.ParseFloat(string(v), 64)
-		return n
-	default:
-		n, _ := strconv.ParseFloat(fmt.Sprint(v), 64)
-		return n
-	}
-}
-
-func asBool(value any) bool {
-	switch v := value.(type) {
-	case bool:
-		return v
-	case string:
-		return v == "1" || v == "true" || v == "OK"
-	case []byte:
-		return asBool(string(v))
-	case int64:
-		return v != 0
-	case int:
-		return v != 0
-	default:
-		return value != nil
-	}
-}
-
 func isOK(value any) bool {
 	switch v := value.(type) {
 	case string:

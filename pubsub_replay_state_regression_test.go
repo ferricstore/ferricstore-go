@@ -3,7 +3,7 @@ package ferricstore
 import "testing"
 
 func TestEventReplayReplacesSupersededFlowWakeFilter(t *testing.T) {
-	p := &PubSub{exec: &NativeExecutor{}}
+	p := newPubSub(&NativeExecutor{}, false)
 	p.trackEventSubscription(nativeOpSubscribeEvents, map[string]any{
 		"events": []any{"TOPOLOGY_CHANGED"},
 	})
@@ -26,7 +26,7 @@ func TestEventReplayReplacesSupersededFlowWakeFilter(t *testing.T) {
 }
 
 func TestEventReplayEmptySubscribeMatchesServerNoop(t *testing.T) {
-	p := &PubSub{exec: &NativeExecutor{}}
+	p := newPubSub(&NativeExecutor{}, false)
 	p.trackEventSubscription(nativeOpSubscribeEvents, map[string]any{
 		"events": []any{},
 	})
@@ -37,7 +37,7 @@ func TestEventReplayEmptySubscribeMatchesServerNoop(t *testing.T) {
 }
 
 func TestPubSubReplayStateReleasesEmptyBackingStorage(t *testing.T) {
-	p := &PubSub{exec: &NativeExecutor{}}
+	p := newPubSub(&NativeExecutor{}, false)
 	p.trackPubSubCommand([]any{"SUBSCRIBE", "jobs", "alerts"})
 	p.trackPubSubCommand([]any{"UNSUBSCRIBE"})
 	if p.channels != nil {

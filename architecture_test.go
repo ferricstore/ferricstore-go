@@ -10,7 +10,7 @@ import (
 )
 
 func TestGoFilesStayWithinLineLimits(t *testing.T) {
-	const productionLimit = 675
+	const productionLimit = maxProductionGoFileLines
 	const testLimit = 800
 	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {

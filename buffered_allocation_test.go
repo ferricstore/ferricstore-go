@@ -10,6 +10,30 @@ type bufferedStaticPipelineExecutor struct {
 	results []pipelineItemResult
 }
 
+var bufferedRetainedSizeSink int
+
+func TestBufferedCommonCommandCapacitySizingDoesNotAllocate(t *testing.T) {
+	command := []any{"SET", "key", []byte("value")}
+	allocs := testing.AllocsPerRun(1000, func() {
+		size, ok := bufferedCommandRetainedSize(command, defaultBufferedMaxBytes)
+		if !ok {
+			t.Fatal("common buffered command did not fit the default byte capacity")
+		}
+		bufferedRetainedSizeSink = size
+	})
+	if allocs != 0 {
+		t.Fatalf("buffered capacity sizing allocations = %.0f; want 0", allocs)
+	}
+}
+
+func BenchmarkBufferedCommandCapacitySizing(b *testing.B) {
+	command := []any{"SET", "key", []byte("value")}
+	b.ReportAllocs()
+	for b.Loop() {
+		bufferedRetainedSizeSink, _ = bufferedCommandRetainedSize(command, defaultBufferedMaxBytes)
+	}
+}
+
 func (*bufferedStaticPipelineExecutor) Do(context.Context, ...any) (any, error) {
 	return nil, errors.New("unexpected direct Do call")
 }

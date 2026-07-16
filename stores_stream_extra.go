@@ -14,7 +14,7 @@ func (s *StreamStore) RevRange(ctx context.Context, key, end, start string, coun
 	args := []any{"XREVRANGE", key, end, start}
 	appendIntPtr(&args, "COUNT", count)
 	value, err := s.client.typedReply(ctx, args...)
-	return decodeStreamEntries(s.client.codec, value, err)
+	return decodeStreamEntriesLimitedOrder(s.client.codec, value, err, count, streamResponseDescending)
 }
 
 type StreamReadOptions struct {
@@ -43,7 +43,7 @@ func (s *StreamStore) Read(ctx context.Context, opt StreamReadOptions) (any, err
 		args = append(args, stream.ID)
 	}
 	value, err := s.client.typedReply(ctx, args...)
-	return decodeStreamRead(s.client.codec, value, err)
+	return decodeStreamReadExpected(s.client.codec, value, err, opt.Streams, opt.Count)
 }
 
 func (s *StreamStore) Trim(ctx context.Context, key string, approximate bool, threshold string, limit *int) (int64, error) {
@@ -74,7 +74,8 @@ func (s *StreamStore) Del(ctx context.Context, key string, ids ...string) (int64
 }
 
 func (s *StreamStore) Info(ctx context.Context, key string) (any, error) {
-	return s.client.typedReply(ctx, "XINFO", "STREAM", key)
+	value, err := s.client.typedReply(ctx, "XINFO", "STREAM", key)
+	return validateStreamInfo(value, err)
 }
 
 func (s *StreamStore) GroupCreate(ctx context.Context, key, group, id string, mkStream bool) error {
@@ -108,7 +109,7 @@ func (s *StreamStore) ReadGroup(ctx context.Context, opt StreamReadGroupOptions)
 		args = append(args, stream.ID)
 	}
 	value, err := s.client.typedReply(ctx, args...)
-	return decodeStreamRead(s.client.codec, value, err)
+	return decodeStreamReadExpected(s.client.codec, value, err, opt.Streams, opt.Count)
 }
 
 func (s *StreamStore) Ack(ctx context.Context, key, group string, ids ...string) (int64, error) {

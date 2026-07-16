@@ -5,6 +5,12 @@ import (
 	"strings"
 )
 
+type topologyRouteData struct {
+	command  nativeCommand
+	route    RoutingRoute
+	snapshot topologyRoutingSnapshot
+}
+
 func routingKeyForCommand(args []any) (any, bool) {
 	if len(args) == 0 {
 		return nil, false
@@ -63,7 +69,7 @@ func routingKeyForBuiltCommand(args []any, command nativeCommand) (any, bool) {
 // policy must inspect. COMMAND_EXEC transport metadata is not part of the
 // wrapped command's argument grammar and must never be interpreted as a key.
 func topologyCommandArgs(args []any) []any {
-	for len(args) > 1 && strings.EqualFold(asString(args[0]), "COMMAND_EXEC") {
+	for len(args) > 1 && commandPart(args[0]) == "COMMAND_EXEC" {
 		args = args[1:]
 	}
 	payload, _, _ := splitNativeRequestContext(args)
@@ -71,7 +77,7 @@ func topologyCommandArgs(args []any) []any {
 }
 
 func topologyRequestContext(args []any) (any, bool) {
-	if len(args) < 3 || !strings.EqualFold(asString(args[0]), "COMMAND_EXEC") {
+	if len(args) < 3 || commandPart(args[0]) != "COMMAND_EXEC" {
 		return nil, false
 	}
 	_, requestContext, ok := splitNativeRequestContext(args)
@@ -182,7 +188,11 @@ func commandName(args []any) string {
 }
 
 func commandPart(value any) string {
-	return strings.ToUpper(asString(value))
+	text, ok := commandText(value)
+	if !ok {
+		return ""
+	}
+	return strings.ToUpper(text)
 }
 
 func routeSlotForKey(key any) int {

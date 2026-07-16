@@ -88,6 +88,33 @@ func TestWithNativeOptionsIgnoredForCustomExecutor(t *testing.T) {
 	}
 }
 
+func TestWithNativeOptionsDoesNotMutateInjectedNativeExecutor(t *testing.T) {
+	exec := NewNativeExecutor("127.0.0.1:6388",
+		WithNativeTimeout(3*time.Second),
+		WithNativeHeartbeat(4*time.Second, 5*time.Second),
+		WithNativeReconnect(6),
+	)
+	defer func() { _ = exec.Close() }()
+
+	client := NewClientWithExecutor(exec, WithNativeOptions(
+		WithNativeTimeout(time.Millisecond),
+		WithNativeHeartbeat(0, 0),
+		WithNativeReconnect(0),
+	))
+	if client.exec != exec {
+		t.Fatalf("client executor = %T %p, want injected executor %p", client.exec, client.exec, exec)
+	}
+	if exec.opts.Timeout != 3*time.Second || exec.opts.Dialer.Timeout != 3*time.Second {
+		t.Fatalf("injected timeout mutated to %s/%s", exec.opts.Timeout, exec.opts.Dialer.Timeout)
+	}
+	if exec.opts.HeartbeatInterval != 4*time.Second || exec.opts.HeartbeatTimeout != 5*time.Second {
+		t.Fatalf("injected heartbeat mutated to %s/%s", exec.opts.HeartbeatInterval, exec.opts.HeartbeatTimeout)
+	}
+	if exec.opts.ReconnectMaxRetries != 6 {
+		t.Fatalf("injected reconnect retries mutated to %d", exec.opts.ReconnectMaxRetries)
+	}
+}
+
 func TestClientConstructorHandlesNilDependencies(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("PONG")}
 	client := NewClientWithExecutor(exec, nil)
@@ -345,7 +372,7 @@ func TestStartAndClaimBuildsCommand(t *testing.T) {
 		RootFlowID:    "root-1",
 		CorrelationID: "corr-1",
 		NowMS:         100,
-		Priority:      Int64(5),
+		Priority:      Int64(2),
 		StateMeta:     map[string]any{"version": 1},
 		Attributes:    map[string]any{"tenant": "acme"},
 	})
@@ -361,7 +388,7 @@ func TestStartAndClaimBuildsCommand(t *testing.T) {
 		"WORKER", "worker-1", "LEASE_MS", int64(45_000), "NOW", int64(100),
 		"PARTITION", "tenant:1", "PAYLOAD", []byte("payload"),
 		"PARENT_FLOW_ID", "parent-1", "ROOT_FLOW_ID", "root-1", "CORRELATION_ID", "corr-1",
-		"PRIORITY", int64(5), "ATTRIBUTE", "tenant", "acme", "STATE_META", "version", 1,
+		"PRIORITY", int64(2), "ATTRIBUTE", "tenant", "acme", "STATE_META", "version", 1,
 	}
 	assertCall(t, exec, want)
 }
@@ -635,7 +662,7 @@ func TestClaimJobsBuildsPartitionKeysAndDecodesFencing(t *testing.T) {
 }
 
 func TestCompleteManyMixedBuildsItems(t *testing.T) {
-	exec := &fakeExecutor{value: []byte("OK")}
+	exec := &fakeExecutor{value: []any{[]byte("OK"), []byte("OK")}}
 	client := NewClientWithExecutor(exec)
 	independent := true
 
@@ -707,7 +734,6 @@ func TestRewindReturnRecordLoadsRecordWithoutReturnOption(t *testing.T) {
 		PartitionKey: "tenant:1",
 		ExpectState:  "completed",
 		RunAtMS:      120,
-		ReasonRef:    "reason",
 		NowMS:        100,
 		ReturnRecord: true,
 	})
@@ -721,7 +747,6 @@ func TestRewindReturnRecordLoadsRecordWithoutReturnOption(t *testing.T) {
 	wantRewind := []any{
 		"FLOW.REWIND", "flow-1", "TO_EVENT", "event-1", "NOW", int64(100),
 		"PARTITION", "tenant:1", "EXPECT_STATE", "completed", "RUN_AT", int64(120),
-		"REASON_REF", "reason",
 	}
 	if !reflect.DeepEqual(exec.calls[0], wantRewind) {
 		t.Fatalf("unexpected rewind call\n got: %#v\nwant: %#v", exec.calls[0], wantRewind)

@@ -254,11 +254,21 @@ func assertStreamBitmapHllGeoCommands(t *testing.T, ctx context.Context, client 
 	requireNonNegative(t, must[int64](t)(client.Geo().SearchStore(ctx, prefix+"geo-dst", geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}}, false)))
 	stored, err := client.Geo().SearchStore(ctx, prefix+"geo-dist-dst", geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}}, true)
 	if err != nil {
-		requireCommandError(t, err)
+		if !isUnsupportedGeoSearchStoreDist(err) {
+			t.Fatal(err)
+		}
 		skipIntegrationCommandCoverage("server image does not support GEOSEARCHSTORE STOREDIST", "GEOSEARCHSTORE STOREDIST")
 	} else {
 		requireNonNegative(t, stored)
 	}
+}
+
+func isUnsupportedGeoSearchStoreDist(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "syntax error") && strings.Contains(message, "storedist")
 }
 
 func assertBatchFlowCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
@@ -510,6 +520,15 @@ func isUnsupportedFlowSearchCommand(err error) bool {
 		strings.Contains(message, "is not indexed for broad search")
 }
 
+func isUnsupportedValueMGetCommand(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unknown command 'flow.value.mget'") ||
+		strings.Contains(message, "native unsupported opcode")
+}
+
 func isUnsupportedNativePolicyOption(err error) bool {
 	if err == nil {
 		return false
@@ -544,9 +563,30 @@ func assertManyMutationCommands(t *testing.T, ctx context.Context, client *Clien
 
 	cancelPartition := "go-sdk:cancel-many:" + runID + ":partition"
 	createManyState(t, ctx, client, typeName, cancelPartition, "cancel-many", runID, "cancel-many", now)
-	cancelJobs := claimMany(t, ctx, client, typeName, "cancel-many", cancelPartition, "go-sdk-cancel-many-worker", now, 2)
-	_, err := client.CancelMany(ctx, CancelManyOptions{PartitionKey: cancelPartition, Items: fencedItems(cancelJobs), Reason: map[string]any{"cancelled": true}})
-	requireCommandError(t, err)
+	cancelRecords := make([]*FlowRecord, 0, 2)
+	for _, suffix := range []string{"a", "b"} {
+		id := "go-sdk:cancel-many:" + runID + ":" + suffix
+		cancelRecords = append(cancelRecords, must[*FlowRecord](t)(client.Get(ctx, id, cancelPartition, nil, nil)))
+	}
+	cancelItems := make([]FencedItem, 0, len(cancelRecords))
+	for _, record := range cancelRecords {
+		cancelItems = append(cancelItems, FencedItem{
+			ID:           record.ID,
+			PartitionKey: record.PartitionKey,
+			FencingToken: record.FencingToken,
+		})
+	}
+	_ = must[[]FlowRecord](t)(client.CancelMany(ctx, CancelManyOptions{
+		PartitionKey: cancelPartition,
+		Items:        cancelItems,
+		Reason:       map[string]any{"cancelled": true},
+	}))
+	for _, record := range cancelRecords {
+		updated := must[*FlowRecord](t)(client.Get(ctx, record.ID, cancelPartition, nil, nil))
+		if updated == nil || updated.State != "cancelled" {
+			t.Fatalf("FLOW.CANCEL_MANY record = %#v", updated)
+		}
+	}
 }
 
 func assertRepairIndexAndRewindCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {

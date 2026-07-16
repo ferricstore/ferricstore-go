@@ -191,7 +191,6 @@ func (e *NativeExecutor) nextEvent(ctx context.Context) (any, error) {
 	}
 	e.mu.Lock()
 	events := e.events
-	closed := e.closed
 	isClosed := e.isClosed
 	generationBefore := e.connectionGeneration
 	e.mu.Unlock()
@@ -210,7 +209,7 @@ func (e *NativeExecutor) nextEvent(ctx context.Context) (any, error) {
 	}
 	e.mu.Lock()
 	events = e.events
-	closed = e.closed
+	closed := e.closed
 	connectionDone := e.connectionDone
 	isClosed = e.isClosed
 	generationAfter := e.connectionGeneration

@@ -153,7 +153,15 @@ func (s *SortedSetStore) zpop(ctx context.Context, command, key string, count *i
 		args = append(args, *count)
 	}
 	value, err := s.client.typedReply(ctx, args...)
-	return decodeAlternatingCollectionValues(s.client.codec, value, err, 0, command)
+	maximum := uint64(1)
+	if count != nil {
+		maximum = uint64(*count)
+	}
+	order := sortedSetScoresAscending
+	if command == "ZPOPMAX" {
+		order = sortedSetScoresDescending
+	}
+	return decodeSortedSetPairs(s.client.codec, value, err, maximum, true, order, command)
 }
 
 func (s *SortedSetStore) RandMember(ctx context.Context, key string, count *int, withScores bool) (any, error) {
@@ -174,10 +182,11 @@ func (s *SortedSetStore) RandMember(ctx context.Context, key string, count *int,
 	if count == nil {
 		return decodeValue(s.client.codec, value)
 	}
+	maximum := countMagnitude(*count)
 	if withScores {
-		return decodeAlternatingCollectionValues(s.client.codec, value, nil, 0, "ZRANDMEMBER")
+		return decodeSortedSetPairs(s.client.codec, value, nil, maximum, true, sortedSetScoresUnordered, "ZRANDMEMBER")
 	}
-	return decodeArray(s.client.codec, value, nil)
+	return decodeArrayWithLimit(s.client.codec, value, nil, maximum, "ZRANDMEMBER")
 }
 
 func (s *SortedSetStore) MScore(ctx context.Context, key string, members ...any) ([]float64, error) {
@@ -213,7 +222,11 @@ func (s *SortedSetStore) RangeByScore(ctx context.Context, key, min, max string,
 	}
 	value, err := s.client.typedReply(ctx, args...)
 	if withScores {
-		return decodeAlternatingCollectionValues(s.client.codec, value, err, 0, "ZRANGEBYSCORE")
+		maximum, limited := rangeResultLimit(limitCount)
+		return decodeSortedSetPairs(s.client.codec, value, err, maximum, limited, sortedSetScoresAscending, "ZRANGEBYSCORE")
+	}
+	if maximum, limited := rangeResultLimit(limitCount); limited {
+		return decodeArrayWithLimit(s.client.codec, value, err, maximum, "ZRANGEBYSCORE")
 	}
 	return decodeArray(s.client.codec, value, err)
 }
@@ -234,12 +247,25 @@ func (s *SortedSetStore) RevRangeByScore(ctx context.Context, key, max, min stri
 	}
 	value, err := s.client.typedReply(ctx, args...)
 	if withScores {
-		return decodeAlternatingCollectionValues(s.client.codec, value, err, 0, "ZREVRANGEBYSCORE")
+		maximum, limited := rangeResultLimit(limitCount)
+		return decodeSortedSetPairs(s.client.codec, value, err, maximum, limited, sortedSetScoresDescending, "ZREVRANGEBYSCORE")
+	}
+	if maximum, limited := rangeResultLimit(limitCount); limited {
+		return decodeArrayWithLimit(s.client.codec, value, err, maximum, "ZREVRANGEBYSCORE")
 	}
 	return decodeArray(s.client.codec, value, err)
 }
 
-func (s *SortedSetStore) Scan(ctx context.Context, key string, cursor any, match string, count *int) (any, error) {
+func (s *SortedSetStore) Scan(ctx context.Context, key string, cursor int64, match string, count *int) (any, error) {
+	return s.scanCursor(ctx, key, cursor, match, count)
+}
+
+// ScanCursor continues ZSCAN using an opaque cursor returned by FerricStore.
+func (s *SortedSetStore) ScanCursor(ctx context.Context, key string, cursor any, match string, count *int) (any, error) {
+	return s.scanCursor(ctx, key, cursor, match, count)
+}
+
+func (s *SortedSetStore) scanCursor(ctx context.Context, key string, cursor any, match string, count *int) (any, error) {
 	normalizedCursor, err := normalizeScanCursor(cursor, true)
 	if err != nil {
 		return nil, err
@@ -253,5 +279,12 @@ func (s *SortedSetStore) Scan(ctx context.Context, key string, cursor any, match
 	}
 	appendScanCount(&args, count)
 	value, err := s.client.typedReply(ctx, args...)
-	return decodeCollectionScan(s.client.codec, value, err, 0, "ZSCAN")
+	return decodeCollectionScan(s.client.codec, value, err, sortedSetCollectionScan, "ZSCAN")
+}
+
+func rangeResultLimit(count *int64) (uint64, bool) {
+	if count == nil || *count < 0 {
+		return 0, false
+	}
+	return uint64(*count), true
 }

@@ -22,9 +22,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache: true
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
       - run: govulncheck ./...
 
   codeql:
@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache: true
       - uses: github/codeql-action/init@v4
         with:

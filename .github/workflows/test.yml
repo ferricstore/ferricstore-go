@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ["1.24.x", "1.25.x", "1.26.4"]
+        go-version: ["1.24.x", "1.25.x", "1.26.5"]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -45,12 +45,30 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache: true
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           args: --timeout=5m ./...
+
+  hardening:
+    name: Fuzz, Stress, and Performance Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - run: go mod download
+      - name: Run protocol and URL fuzz smoke suite
+        run: ./scripts/fuzz-smoke.sh
+      - name: Run repeated race stress and allocation benchmarks
+        env:
+          FERRICSTORE_STRESS_COUNT: "5"
+          FERRICSTORE_BENCHTIME: 25x
+        run: ./scripts/stress.sh
 
   package:
     name: Package Dry Run
@@ -59,34 +77,35 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache: true
       - run: go mod tidy
       - name: Verify go.mod is tidy
         run: git diff --exit-code -- go.mod go.sum
+      - run: go mod verify
       - run: go list ./...
+      - name: Verify exported API compatibility
+        run: ./scripts/api-compat.sh
       - run: go test ./cmd/dbos-style-benchmark
 
   integration:
-    name: Integration
+    name: Integration FerricStore ${{ matrix.server-version }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        server-version: ["0.7.5"]
+    env:
+      FERRICSTORE_IMAGE: ghcr.io/ferricstore/ferricstore:${{ matrix.server-version }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache: true
-      - run: docker compose up -d ferricstore
-      - name: Run integration tests
-        run: |
-          for i in $(seq 1 30); do
-            if go test -tags integration ./...; then
-              exit 0
-            fi
-            sleep 2
-          done
-          go test -tags integration ./...
-      - if: always()
-        run: docker compose logs ferricstore
-      - if: always()
-        run: docker compose down -v
+      - name: Run versioned integration tests
+        run: ./scripts/integration-docker.sh
+      - name: Run protected-mode, ACL, TLS, and mTLS tests
+        run: ./scripts/integration-security-docker.sh
+      - name: Run multi-node routing and failover tests
+        run: ./scripts/integration-cluster-docker.sh

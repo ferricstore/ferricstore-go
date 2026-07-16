@@ -25,9 +25,10 @@ The SDK sends FerricStore commands over the native binary protocol and decodes s
 - compact native KV `SET`/`GET` pipeline payloads
 - `CreateMany`, `CompleteMany`, `TransitionMany`, `RetryMany`, `FailMany`, `CancelMany`
 - `Pipeline`
-- `BufferedExecutor`
+- bounded `BufferedExecutor` queues with explicit command/retained-byte limits
 - `AutoBatchExecutor` and `NewAutoBatchClient`
-- raw `Command` for new or advanced commands
+- raw `Command` for new or advanced commands, plus `CommandForKey` when an
+  extension command needs an explicit topology routing key
 
 Default transport behavior is intentionally simple and aligned with the Python SDK latency-first path: one connection per client, 30s request timeout, TCP keepalive, idle protocol heartbeat, and no hidden auto-batching. Throughput code can opt into `NewAutoBatchClient`, explicit `Pipeline`, or FerricFlow batch APIs.
 
@@ -37,9 +38,12 @@ Workers use goroutines for handler concurrency:
 
 - `QueueWorker.RunOnce` claims a batch and handles jobs concurrently up to `WorkerOptions.Concurrency`.
 - `WorkflowWorker.RunOnce` does the same for state handlers.
-- Completion, retry, fail, and transition commands are sent per job unless the caller uses batch APIs directly.
+- `QueueWorker` batches successful queue completions as jobs finish, while retry and fail mutations remain per job so their individual errors are preserved. `WorkflowWorker` applies each handler outcome per job; callers can use the explicit `*Many` APIs for larger uniform batches.
 
-Long-running worker lifecycle helpers are intentionally not hidden yet. Applications can run `RunOnce` in their own loop and control shutdown with `context.Context`.
+Applications can either call `RunOnce` from their own loop or use the built-in
+`RunForever`/`Start` lifecycle helpers. A started worker is controlled through
+its handle's `Stop`, `Join`, and `Stats` methods, while `context.Context`
+continues to provide parent cancellation and shutdown propagation.
 
 ## Codecs
 

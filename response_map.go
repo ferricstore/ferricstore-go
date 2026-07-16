@@ -1,14 +1,30 @@
 package ferricstore
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 )
 
 func nativeMap(value any) (map[string]any, error) {
+	budget := nativeNormalizeBudget{remaining: nativeMaxContainerItems}
+	return nativeMapDepth(value, &budget, 0)
+}
+
+type nativeNormalizeBudget struct {
+	remaining int
+}
+
+func nativeMapDepth(value any, budget *nativeNormalizeBudget, depth int) (map[string]any, error) {
+	if depth > nativeMaxDecodeDepth {
+		return nil, fmt.Errorf("native response exceeds maximum nesting depth %d", nativeMaxDecodeDepth)
+	}
 	switch v := value.(type) {
 	case map[interface{}]interface{}:
+		if err := budget.consume(len(v)); err != nil {
+			return nil, err
+		}
 		out := make(map[string]any, len(v))
 		for key, val := range v {
 			name, err := nativeMapKey(key)
@@ -18,7 +34,7 @@ func nativeMap(value any) (map[string]any, error) {
 			if _, exists := out[name]; exists {
 				return nil, fmt.Errorf("duplicate native map key %q", name)
 			}
-			normalized, err := normalizeNativeChecked(val)
+			normalized, err := normalizeNativeCheckedDepth(val, budget, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -26,9 +42,12 @@ func nativeMap(value any) (map[string]any, error) {
 		}
 		return out, nil
 	case map[string]any:
+		if err := budget.consume(len(v)); err != nil {
+			return nil, err
+		}
 		out := make(map[string]any, len(v))
 		for key, val := range v {
-			normalized, err := normalizeNativeChecked(val)
+			normalized, err := normalizeNativeCheckedDepth(val, budget, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -36,13 +55,19 @@ func nativeMap(value any) (map[string]any, error) {
 		}
 		return out, nil
 	case []any:
-		return pairArrayMap(v)
+		return pairArrayMapDepth(v, budget, depth)
 	default:
 		return nil, fmt.Errorf("expected native map, got %T", value)
 	}
 }
 
-func pairArrayMap(items []any) (map[string]any, error) {
+func pairArrayMapDepth(items []any, budget *nativeNormalizeBudget, depth int) (map[string]any, error) {
+	if depth > nativeMaxDecodeDepth {
+		return nil, fmt.Errorf("native response exceeds maximum nesting depth %d", nativeMaxDecodeDepth)
+	}
+	if err := budget.consume(len(items)); err != nil {
+		return nil, err
+	}
 	if len(items) == 0 {
 		return map[string]any{}, nil
 	}
@@ -50,6 +75,9 @@ func pairArrayMap(items []any) (map[string]any, error) {
 		out := make(map[string]any, len(items))
 		for _, pair := range items {
 			p := pair.([]any)
+			if err := budget.consume(len(p)); err != nil {
+				return nil, err
+			}
 			key, err := nativeMapKey(p[0])
 			if err != nil {
 				return nil, err
@@ -57,7 +85,7 @@ func pairArrayMap(items []any) (map[string]any, error) {
 			if _, exists := out[key]; exists {
 				return nil, fmt.Errorf("duplicate native map key %q", key)
 			}
-			normalized, err := normalizeNativeChecked(p[1])
+			normalized, err := normalizeNativeCheckedDepth(p[1], budget, depth+2)
 			if err != nil {
 				return nil, err
 			}
@@ -77,7 +105,7 @@ func pairArrayMap(items []any) (map[string]any, error) {
 		if _, exists := out[key]; exists {
 			return nil, fmt.Errorf("duplicate native map key %q", key)
 		}
-		normalized, err := normalizeNativeChecked(items[i+1])
+		normalized, err := normalizeNativeCheckedDepth(items[i+1], budget, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -97,16 +125,22 @@ func nativeMapKey(value any) (string, error) {
 	}
 }
 
-func normalizeNativeChecked(value any) (any, error) {
+func normalizeNativeCheckedDepth(value any, budget *nativeNormalizeBudget, depth int) (any, error) {
+	if depth > nativeMaxDecodeDepth {
+		return nil, fmt.Errorf("native response exceeds maximum nesting depth %d", nativeMaxDecodeDepth)
+	}
 	switch v := value.(type) {
 	case map[interface{}]interface{}:
-		return nativeMap(v)
+		return nativeMapDepth(v, budget, depth)
 	case map[string]any:
-		return nativeMap(v)
+		return nativeMapDepth(v, budget, depth)
 	case []interface{}:
+		if err := budget.consume(len(v)); err != nil {
+			return nil, err
+		}
 		out := make([]any, len(v))
 		for i, item := range v {
-			normalized, err := normalizeNativeChecked(item)
+			normalized, err := normalizeNativeCheckedDepth(item, budget, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -116,6 +150,14 @@ func normalizeNativeChecked(value any) (any, error) {
 	default:
 		return value, nil
 	}
+}
+
+func (budget *nativeNormalizeBudget) consume(count int) error {
+	if count < 0 || count > budget.remaining {
+		return fmt.Errorf("native response exceeds maximum item count %d", nativeMaxContainerItems)
+	}
+	budget.remaining -= count
+	return nil
 }
 
 func allPairs(items []any) bool {
@@ -128,29 +170,25 @@ func allPairs(items []any) bool {
 	return true
 }
 
-func stringObjectMap(value any) map[string]any {
-	if value == nil {
-		return map[string]any{}
-	}
-	mapping, err := nativeMap(value)
-	if err != nil {
-		return map[string]any{}
-	}
-	return mapping
-}
-
 func kvResponse(value any) (map[string]any, error) {
 	if value == nil {
 		return map[string]any{}, nil
 	}
-	if mapping, err := nativeMap(value); err == nil {
-		return mapping, nil
+	var text string
+	switch typed := value.(type) {
+	case map[interface{}]interface{}, map[string]any, []any:
+		return nativeMap(value)
+	case string:
+		text = typed
+	case []byte:
+		text = string(typed)
+	default:
+		return nil, fmt.Errorf("expected key/value map or text response, got %T", value)
 	}
-	text := asString(value)
 	out := make(map[string]any)
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		key, raw, ok := strings.Cut(line, ":")
@@ -159,13 +197,23 @@ func kvResponse(value any) (map[string]any, error) {
 			if !ok {
 				fields := strings.Fields(line)
 				if len(fields) < 2 {
-					continue
+					return nil, fmt.Errorf("malformed key/value text line %q", line)
 				}
 				key = fields[0]
 				raw = strings.Join(fields[1:], " ")
 			}
 		}
-		out[strings.TrimSpace(key)] = coerceTextValue(strings.TrimSpace(raw))
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, errors.New("key/value text response contains an empty key")
+		}
+		if _, exists := out[key]; exists {
+			return nil, fmt.Errorf("duplicate key/value text field %q", key)
+		}
+		out[key] = coerceTextValue(strings.TrimSpace(raw))
+	}
+	if len(out) == 0 && strings.TrimSpace(text) != "" {
+		return nil, errors.New("expected key/value text response")
 	}
 	return out, nil
 }
@@ -188,23 +236,4 @@ func coerceTextValue(value string) any {
 		return false
 	}
 	return value
-}
-
-func normalizeNative(value any) any {
-	switch v := value.(type) {
-	case map[interface{}]interface{}:
-		out := make(map[string]any, len(v))
-		for key, val := range v {
-			out[asString(key)] = normalizeNative(val)
-		}
-		return out
-	case []interface{}:
-		out := make([]any, len(v))
-		for i, val := range v {
-			out[i] = normalizeNative(val)
-		}
-		return out
-	default:
-		return value
-	}
 }

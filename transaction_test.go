@@ -50,6 +50,33 @@ func (p *blockingTransactionProvider) acquireCommandSession(context.Context, ...
 	return p.session, nil
 }
 
+type terminalReplyAfterCancelSession struct {
+	entered   chan struct{}
+	aborted   chan struct{}
+	abortOnce sync.Once
+	terminal  string
+	reply     any
+}
+
+func (s *terminalReplyAfterCancelSession) Do(_ context.Context, args ...any) (any, error) {
+	command := commandName(args)
+	if command == "MULTI" {
+		return []byte("OK"), nil
+	}
+	if command == s.terminal {
+		close(s.entered)
+		<-s.aborted
+		return s.reply, nil
+	}
+	return nil, errors.New("unexpected transaction command")
+}
+
+func (s *terminalReplyAfterCancelSession) Abort(error) {
+	s.abortOnce.Do(func() { close(s.aborted) })
+}
+
+func (s *terminalReplyAfterCancelSession) Release() { s.Abort(nil) }
+
 func (e *transactionRecordingExecutor) Do(ctx context.Context, args ...any) (any, error) {
 	if err := e.gate.readLock(ctx); err != nil {
 		return nil, err
@@ -281,6 +308,88 @@ func TestTransactionParentCancellationInterruptsActiveCommand(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("transaction context cancellation did not interrupt the active command")
 	}
+}
+
+func TestTransactionValidExecReplyWinsParentCancellationRace(t *testing.T) {
+	session := &terminalReplyAfterCancelSession{
+		entered:  make(chan struct{}),
+		aborted:  make(chan struct{}),
+		terminal: "EXEC",
+		reply:    []any{[]byte("committed")},
+	}
+	provider := &commitRaceTransactionProvider{session: session}
+	client := NewClientWithExecutor(provider)
+	txCtx, cancel := context.WithCancel(context.Background())
+	tx, err := client.Transaction(txCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		items []any
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		items, err := tx.Exec(context.Background())
+		done <- result{items: items, err: err}
+	}()
+	select {
+	case <-session.entered:
+	case <-time.After(time.Second):
+		t.Fatal("EXEC did not reach the session")
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if got.err != nil || len(got.items) != 1 || asString(got.items[0]) != "committed" {
+			t.Fatalf("EXEC result = %#v, %v; want committed reply", got.items, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("EXEC did not finish after cancellation")
+	}
+}
+
+func TestTransactionValidDiscardReplyWinsParentCancellationRace(t *testing.T) {
+	session := &terminalReplyAfterCancelSession{
+		entered:  make(chan struct{}),
+		aborted:  make(chan struct{}),
+		terminal: "DISCARD",
+		reply:    []byte("OK"),
+	}
+	client := NewClientWithExecutor(&commitRaceTransactionProvider{session: session})
+	txCtx, cancel := context.WithCancel(context.Background())
+	tx, err := client.Transaction(txCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- tx.Discard(context.Background()) }()
+	select {
+	case <-session.entered:
+	case <-time.After(time.Second):
+		t.Fatal("DISCARD did not reach the session")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("DISCARD error = %v, want acknowledged success", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("DISCARD did not finish after cancellation")
+	}
+}
+
+type commitRaceTransactionProvider struct {
+	session *terminalReplyAfterCancelSession
+}
+
+func (*commitRaceTransactionProvider) Do(context.Context, ...any) (any, error) {
+	return nil, errors.New("unexpected non-session execution")
+}
+
+func (p *commitRaceTransactionProvider) acquireCommandSession(context.Context, ...any) (commandSession, error) {
+	return p.session, nil
 }
 
 func TestGenericCommandRejectsConnectionStateOperations(t *testing.T) {

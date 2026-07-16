@@ -4,17 +4,31 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 type PubSub struct {
-	exec  *NativeExecutor
-	owned bool
+	// exec retains the originally selected executor for compatibility with
+	// package-internal diagnostics. Runtime operations use currentExec so a
+	// topology-backed view can atomically move away from a retired adapter.
+	exec           *NativeExecutor
+	currentExec    *atomic.Pointer[NativeExecutor]
+	selectExecutor pubSubExecutorSelector
+	owned          bool
+	*pubSubState
+}
 
+type pubSubExecutorSelector interface {
+	pubSubControlAdapter(context.Context, *NativeExecutor) (*NativeExecutor, error)
+}
+
+type pubSubState struct {
 	mu             sync.Mutex
 	replayMu       sync.Mutex
 	channels       map[string]struct{}
 	patterns       map[string]struct{}
 	eventReplays   []pubSubEventReplay
+	lastExecutor   *NativeExecutor
 	lastGeneration uint64
 
 	eventMu            sync.Mutex
@@ -23,6 +37,29 @@ type PubSub struct {
 	messageEvents      []nativeQueuedEvent
 	nativeEvents       []nativeQueuedEvent
 	eventBufferedBytes int
+}
+
+func newPubSub(exec *NativeExecutor, owned bool) *PubSub {
+	pubsub := &PubSub{
+		exec:        exec,
+		currentExec: new(atomic.Pointer[NativeExecutor]),
+		owned:       owned,
+		pubSubState: &pubSubState{},
+	}
+	pubsub.currentExec.Store(exec)
+	return pubsub
+}
+
+func (p *PubSub) nativeExecutor() *NativeExecutor {
+	if p == nil {
+		return nil
+	}
+	if p.currentExec != nil {
+		if exec := p.currentExec.Load(); exec != nil {
+			return exec
+		}
+	}
+	return p.exec
 }
 
 type pubSubEventReplay struct {
@@ -73,7 +110,7 @@ type FlowWakeSubscriptionOptions struct {
 func NewPubSub(addr string, opts ...NativeOption) *PubSub {
 	exec := NewNativeExecutor(addr, opts...)
 	exec.enableEventDelivery()
-	return &PubSub{exec: exec, owned: true}
+	return newPubSub(exec, true)
 }
 
 // NewPubSubFromURL creates an isolated pub/sub connection from a ferric:// or ferrics:// URL.
@@ -83,45 +120,104 @@ func NewPubSubFromURL(rawurl string, opts ...NativeOption) (*PubSub, error) {
 		return nil, err
 	}
 	exec.enableEventDelivery()
-	return &PubSub{exec: exec, owned: true}, nil
+	return newPubSub(exec, true), nil
 }
 
 // OpenPubSub opens a pub/sub view over the client's existing multiplexed native connection.
 func (c *Client) OpenPubSub() (*PubSub, error) {
-	native, ok := c.exec.(*NativeExecutor)
+	if c == nil {
+		return nil, errors.New("pubsub requires a native client executor")
+	}
+	exec := eventExecutor(c.exec)
+	native, ok := exec.(*NativeExecutor)
 	if ok {
 		native.enableEventDelivery()
-		return &PubSub{exec: native}, nil
+		return newPubSub(native, false), nil
 	}
-	topology, ok := c.exec.(*TopologyNativeExecutor)
+	topology, ok := exec.(*TopologyNativeExecutor)
 	if ok {
 		control, err := topology.controlAdapter(context.Background())
 		if err != nil {
 			return nil, err
 		}
 		control.enableEventDelivery()
-		return &PubSub{exec: control}, nil
+		pubsub := newPubSub(control, false)
+		pubsub.selectExecutor = topology
+		return pubsub, nil
 	}
 	return nil, errors.New("pubsub requires a native client executor")
 }
 
+func eventExecutor(exec Executor) Executor {
+	// Built-in batching wrappers retain the owning client rather than hiding a
+	// separate transport. Unwrap only these known layers; arbitrary executors
+	// remain opaque. The depth bound also keeps malformed internal wrapper
+	// cycles from looping forever.
+	for range 16 {
+		switch wrapped := exec.(type) {
+		case *AutoBatchExecutor:
+			if wrapped == nil || wrapped.client == nil {
+				return nil
+			}
+			exec = wrapped.client.exec
+		case *BufferedExecutor:
+			if wrapped == nil || wrapped.client == nil {
+				return nil
+			}
+			exec = wrapped.client.exec
+		default:
+			return exec
+		}
+	}
+	return nil
+}
+
+// DroppedEvents returns the aggregate number of events dropped by active
+// topology connections. An adapter is counted once even if multiple endpoint
+// identities temporarily refer to it during a topology transition.
+func (e *TopologyNativeExecutor) DroppedEvents() uint64 {
+	if e == nil {
+		return 0
+	}
+	e.mu.Lock()
+	adapters := make(map[*NativeExecutor]struct{}, len(e.adapters)+len(e.retiringAdapters))
+	for _, adapter := range e.adapters {
+		if adapter != nil {
+			adapters[adapter] = struct{}{}
+		}
+	}
+	for adapter := range e.retiringAdapters {
+		if adapter != nil {
+			adapters[adapter] = struct{}{}
+		}
+	}
+	e.mu.Unlock()
+	var dropped uint64
+	for adapter := range adapters {
+		dropped += adapter.DroppedEvents()
+	}
+	return dropped
+}
+
 // Close closes isolated pub/sub connections. Shared client pub/sub views are left open.
 func (p *PubSub) Close() error {
-	if p == nil || p.exec == nil {
+	exec := p.nativeExecutor()
+	if exec == nil {
 		return nil
 	}
 	if !p.owned {
 		return nil
 	}
-	return p.exec.Close()
+	return exec.Close()
 }
 
 // DroppedEvents returns native events dropped because the client event buffer was full.
 func (p *PubSub) DroppedEvents() uint64 {
-	if p == nil || p.exec == nil {
+	exec := p.nativeExecutor()
+	if exec == nil {
 		return 0
 	}
-	return p.exec.DroppedEvents()
+	return exec.DroppedEvents()
 }
 
 // Subscribe subscribes to Redis-compatible pub/sub channels.
@@ -214,19 +310,19 @@ func (p *PubSub) SubscribeFlowWake(ctx context.Context, opt FlowWakeSubscription
 
 // Next waits for the next Redis-compatible pub/sub message.
 func (p *PubSub) Next(ctx context.Context) (PubSubMessage, error) {
-	if p == nil || p.exec == nil {
+	if p.nativeExecutor() == nil {
 		return PubSubMessage{}, errors.New("pubsub is closed")
 	}
 	value, err := p.nextDemultiplexedEvent(ctx, pubSubRedisEvent)
 	if err != nil {
 		return PubSubMessage{}, err
 	}
-	return pubSubMessageFromNative(nativeServerEventValue(value)), nil
+	return parsePubSubMessage(nativeServerEventValue(value))
 }
 
 // NextEvent waits for the next native protocol event.
 func (p *PubSub) NextEvent(ctx context.Context) (NativeEvent, error) {
-	if p == nil || p.exec == nil {
+	if p.nativeExecutor() == nil {
 		return NativeEvent{}, errors.New("pubsub is closed")
 	}
 	value, err := p.nextDemultiplexedEvent(ctx, pubSubNativeEvent)
@@ -237,13 +333,13 @@ func (p *PubSub) NextEvent(ctx context.Context) (NativeEvent, error) {
 }
 
 func (p *PubSub) pubsubCommand(ctx context.Context, args ...any) (PubSubMessage, error) {
-	if p == nil || p.exec == nil {
+	if p.nativeExecutor() == nil {
 		return PubSubMessage{}, errors.New("pubsub is closed")
 	}
 	p.replayMu.Lock()
 	defer p.replayMu.Unlock()
-	value, generation, err := p.requestWithReplayRetryLocked(ctx, func() (any, error) {
-		return p.exec.command(ctx, args...)
+	value, stamp, err := p.requestWithReplayRetryLocked(ctx, func(exec *NativeExecutor) (any, error) {
+		return exec.command(ctx, args...)
 	})
 	if err != nil {
 		return PubSubMessage{}, err
@@ -253,9 +349,9 @@ func (p *PubSub) pubsubCommand(ctx context.Context, args ...any) (PubSubMessage,
 		return PubSubMessage{}, err
 	}
 	p.trackPubSubCommand(args)
-	reconnected := p.exec.currentConnectionGeneration() != generation
+	reconnected := !p.connectionStampCurrent(stamp)
 	if reconnected {
-		p.requireReplayFromGeneration(generation)
+		p.requireReplayFromStamp(stamp)
 		if err := p.reconnectAndReplayLocked(ctx); err != nil {
 			return PubSubMessage{}, err
 		}
@@ -267,13 +363,13 @@ func (p *PubSub) pubsubCommand(ctx context.Context, args ...any) (PubSubMessage,
 }
 
 func (p *PubSub) eventSubscription(ctx context.Context, opcode uint16, payload map[string]any) (EventSubscription, error) {
-	if p == nil || p.exec == nil {
+	if p.nativeExecutor() == nil {
 		return EventSubscription{}, errors.New("pubsub is closed")
 	}
 	p.replayMu.Lock()
 	defer p.replayMu.Unlock()
-	value, generation, err := p.requestWithReplayRetryLocked(ctx, func() (any, error) {
-		return p.exec.request(ctx, opcode, 0, payload, 0)
+	value, stamp, err := p.requestWithReplayRetryLocked(ctx, func(exec *NativeExecutor) (any, error) {
+		return exec.request(ctx, opcode, 0, payload, 0)
 	})
 	if err != nil {
 		return EventSubscription{}, err
@@ -291,8 +387,8 @@ func (p *PubSub) eventSubscription(ctx context.Context, opcode uint16, payload m
 		return EventSubscription{}, err
 	}
 	p.trackEventSubscription(opcode, payload)
-	if p.exec.currentConnectionGeneration() != generation {
-		p.requireReplayFromGeneration(generation)
+	if !p.connectionStampCurrent(stamp) {
+		p.requireReplayFromStamp(stamp)
 		if err := p.reconnectAndReplayLocked(ctx); err != nil {
 			return EventSubscription{}, err
 		}

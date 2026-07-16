@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 )
 
 func decodeNativeCompactValue(opcode uint16, data []byte) (any, bool, error) {
@@ -202,7 +203,11 @@ func tryDecodeNativeCompactClaimJobsLayout(data []byte, offset, count int, layou
 		if len(data)-offset < 8 {
 			return nil, false
 		}
-		fencing := int64(binary.BigEndian.Uint64(data[offset : offset+8]))
+		fencingRaw := binary.BigEndian.Uint64(data[offset : offset+8])
+		if fencingRaw > math.MaxInt64 {
+			return nil, false
+		}
+		fencing := int64(fencingRaw)
 		offset += 8
 		item := ClaimedItem{
 			ID:           string(id),
@@ -219,10 +224,11 @@ func tryDecodeNativeCompactClaimJobsLayout(data []byte, offset, count int, layou
 			}
 			consumed := len(data[offset:]) - len(rest)
 			offset += consumed
-			if _, ok := attrs.(map[string]any); !ok {
+			attributes, ok := attrs.(map[string]any)
+			if !ok {
 				return nil, false
 			}
-			item.Attributes = stringObjectMap(attrs)
+			item.Attributes = attributes
 		case nativeCompactClaimState:
 			runState, next, err := readNativeCompactOptionalBinary(data, offset)
 			if err != nil {
@@ -242,11 +248,12 @@ func tryDecodeNativeCompactClaimJobsLayout(data []byte, offset, count int, layou
 			}
 			consumed := len(data[offset:]) - len(rest)
 			offset += consumed
-			if _, ok := attrs.(map[string]any); !ok {
+			attributes, ok := attrs.(map[string]any)
+			if !ok {
 				return nil, false
 			}
 			item.RunState = string(runState)
-			item.Attributes = stringObjectMap(attrs)
+			item.Attributes = attributes
 		}
 		items = append(items, item)
 	}

@@ -23,8 +23,12 @@ func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 	if valueRef == "" {
 		t.Fatalf("FLOW.VALUE.PUT did not return ref: %#v", valueResponse)
 	}
-	_, err := client.ValueMGet(ctx, []string{valueRef}, nil)
-	requireCommandError(t, err)
+	if _, err := client.ValueMGet(ctx, []string{valueRef}, nil); err != nil {
+		if !isUnsupportedValueMGetCommand(err) {
+			t.Fatal(err)
+		}
+		skipIntegrationCommandCoverage("server image does not expose FLOW.VALUE.MGET", "FLOW.VALUE.MGET")
+	}
 
 	signalID := "go-sdk:signal:" + runID
 	signalPartition := signalID + ":partition"

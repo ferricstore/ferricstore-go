@@ -77,13 +77,19 @@ func (s *HashStore) RandField(ctx context.Context, key string, count *int, withV
 		args = append(args, "WITHVALUES")
 	}
 	value, err := s.client.typedReply(ctx, args...)
-	if withValues {
-		return decodeAlternatingCollectionValues(s.client.codec, value, err, 1, "HRANDFIELD")
-	}
-	return value, err
+	return decodeHashRandomField(s.client.codec, value, err, count, withValues)
 }
 
-func (s *HashStore) Scan(ctx context.Context, key string, cursor any, match string, count *int) (any, error) {
+func (s *HashStore) Scan(ctx context.Context, key string, cursor int64, match string, count *int) (any, error) {
+	return s.scanCursor(ctx, key, cursor, match, count)
+}
+
+// ScanCursor continues HSCAN using an opaque cursor returned by FerricStore.
+func (s *HashStore) ScanCursor(ctx context.Context, key string, cursor any, match string, count *int) (any, error) {
+	return s.scanCursor(ctx, key, cursor, match, count)
+}
+
+func (s *HashStore) scanCursor(ctx context.Context, key string, cursor any, match string, count *int) (any, error) {
 	normalizedCursor, err := normalizeScanCursor(cursor, true)
 	if err != nil {
 		return nil, err
@@ -97,7 +103,7 @@ func (s *HashStore) Scan(ctx context.Context, key string, cursor any, match stri
 	}
 	appendScanCount(&args, count)
 	value, err := s.client.typedReply(ctx, args...)
-	return decodeCollectionScan(s.client.codec, value, err, 1, "HSCAN")
+	return decodeCollectionScan(s.client.codec, value, err, hashCollectionScan, "HSCAN")
 }
 
 func (s *HashStore) GetDel(ctx context.Context, key string, fields ...string) ([]any, error) {

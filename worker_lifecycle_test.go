@@ -111,7 +111,7 @@ func TestWorkerLifecycleAcceptsNilContext(t *testing.T) {
 			name: "queue RunForever",
 			run: func(client *Client) error {
 				worker := NewQueueClient(client).Queue("email").Worker("worker-1", nil, WorkerOptions{})
-				_, err := worker.RunForever(nil, time.Millisecond)
+				_, err := worker.RunForever(nil, time.Millisecond) //nolint:staticcheck // exercises the documented nil fallback
 				return err
 			},
 		},
@@ -119,7 +119,7 @@ func TestWorkerLifecycleAcceptsNilContext(t *testing.T) {
 			name: "queue Start",
 			run: func(client *Client) error {
 				worker := NewQueueClient(client).Queue("email").Worker("worker-1", nil, WorkerOptions{})
-				_, err := worker.Start(nil, time.Millisecond).Join()
+				_, err := worker.Start(nil, time.Millisecond).Join() //nolint:staticcheck // exercises the documented nil fallback
 				return err
 			},
 		},
@@ -127,7 +127,7 @@ func TestWorkerLifecycleAcceptsNilContext(t *testing.T) {
 			name: "workflow RunForever",
 			run: func(client *Client) error {
 				workflow := NewWorkflowClient(client).Workflow("order", "ready")
-				_, err := workflow.Worker("worker-1", nil, WorkerOptions{}).RunForever(nil, time.Millisecond)
+				_, err := workflow.Worker("worker-1", nil, WorkerOptions{}).RunForever(nil, time.Millisecond) //nolint:staticcheck // exercises the documented nil fallback
 				return err
 			},
 		},
@@ -135,7 +135,7 @@ func TestWorkerLifecycleAcceptsNilContext(t *testing.T) {
 			name: "workflow Start",
 			run: func(client *Client) error {
 				workflow := NewWorkflowClient(client).Workflow("order", "ready")
-				_, err := workflow.Worker("worker-1", nil, WorkerOptions{}).Start(nil, time.Millisecond).Join()
+				_, err := workflow.Worker("worker-1", nil, WorkerOptions{}).Start(nil, time.Millisecond).Join() //nolint:staticcheck // exercises the documented nil fallback
 				return err
 			},
 		},

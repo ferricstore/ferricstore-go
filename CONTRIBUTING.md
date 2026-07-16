@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Go 1.24 or newer; the dev toolchain is pinned by `mise.toml`
+- Go 1.24 or newer; the security-patched dev toolchain is pinned by `mise.toml`
 - Docker for integration/dev server work
 
 ```bash
@@ -32,13 +32,23 @@ mise exec -- go run ./examples/durable_queue
 mise exec -- go run ./examples/state_workflow
 ```
 
-Run formatting before sending a change:
+Run formatting and the local correctness checks before sending a change:
 
 ```bash
 mise exec -- gofmt -w .
 mise exec -- go mod tidy
+mise exec -- go vet ./...
 mise exec -- go test ./...
+mise exec -- go test -race ./...
+./scripts/api-compat.sh
+./scripts/fuzz-smoke.sh
+./scripts/stress.sh
+./scripts/integration-docker.sh
+./scripts/integration-security-docker.sh
+./scripts/integration-cluster-docker.sh
 ```
+
+The Docker suites respectively cover the released server command surface, protected mode/ACL/TLS/mTLS, and real multi-node routing/failover. `scripts/api-compat.sh` compares exported declarations with the tag stored in `.api-baseline`; update that file only after publishing the new compatibility baseline.
 
 ## API Guidelines
 
@@ -46,7 +56,8 @@ mise exec -- go test ./...
 - Keep `Client.Command` as the escape hatch for commands that do not have polished typed helpers yet.
 - Do not add another persistence layer; FerricStore is the durable backend.
 - Keep worker helpers explicit about state transitions and error policy.
-- Add unit tests for command shape and response decoding when adding a helper.
+- Add a failing test first for every bug fix, including command shape, response decoding, cancellation, and ownership behavior where relevant.
+- Keep production Go files at or below the repository's 525-line architecture ceiling by splitting responsibilities.
 
 ## Compatibility
 

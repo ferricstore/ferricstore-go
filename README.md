@@ -20,7 +20,7 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses `ghcr.io/ferricstore/ferricstore:latest` by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.7.5`, by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Client
@@ -90,6 +90,11 @@ defer func() { _ = client.Close() }()
 Autobatching is opt-in because it can add up to `FlushInterval` latency to a single lonely request. For latency-first services, use `NewClient`; for high-throughput producers, use `NewAutoBatchClient`, `Pipeline`, or FerricFlow batch APIs.
 
 If a request context is canceled before an autobatch flush starts, the SDK skips that command. Once a command has been flushed to FerricStore, cancellation only stops the caller from waiting; the server may still commit the command.
+
+Manual buffering is bounded by default to 4,096 commands and 16 MiB of
+retained command data. Use `NewBufferedExecutorWithOptions` to choose smaller
+application-specific limits; admission returns `ErrBufferedCapacity` instead
+of growing the process heap without bound.
 
 ## Durable Queue
 
@@ -218,6 +223,10 @@ client := ferricstore.NewClient(
 )
 ```
 
+`WithNativeOptions` configures only executors owned by `NewClient` and
+`NewClientFromURL`. When using `NewClientWithExecutor`, pass native options to
+`NewNativeExecutor` itself; the client never mutates a caller-owned executor.
+
 Native options also configure timeout, heartbeat, TLS, credentials, and client name:
 
 ```go
@@ -247,6 +256,15 @@ if err != nil {
 	return err
 }
 defer func() { _ = client.Close() }()
+```
+
+Topology commands honor structured reroute responses and replay at most once,
+only when the server explicitly returns `safe_to_retry: true`. For a new
+server/module command that the SDK cannot infer a routing key for, provide the
+key explicitly:
+
+```go
+value, err := client.CommandForKey(ctx, "tenant:42", "MODULE.CUSTOM", "argument")
 ```
 
 The seed URL scheme selects the transport for every learned endpoint. Use
@@ -308,9 +326,9 @@ schedule, err := client.ScheduleCreate(ctx, "daily-report", ferricstore.Schedule
 	Cron:     "0 9 * * *",
 	Timezone: "America/New_York",
 	Target: map[string]any{
-		"type":  "report",
-		"state": "queued",
-		"id":    "report-{{fire_id}}",
+		"type":      "report",
+		"state":     "queued",
+		"id_prefix": "report-",
 	},
 	Overwrite: ferricstore.Bool(true),
 })
@@ -322,7 +340,7 @@ Schedules can be paused, resumed, deleted, manually fired, and listed:
 _, _ = client.SchedulePause(ctx, "daily-report", nil)
 _, _ = client.ScheduleResume(ctx, "daily-report", nil)
 _, _ = client.ScheduleFire(ctx, "daily-report", nil)
-schedules, _ := client.ScheduleList(ctx, ferricstore.ScheduleListOptions{Limit: ferricstore.Int(100)})
+schedules, _ := client.ScheduleList(ctx, ferricstore.ScheduleListOptions{Count: ferricstore.Int(100)})
 ```
 
 Governance helpers expose approvals, budgets, limits, effects, and circuit breakers without dropping to raw commands:
@@ -338,6 +356,11 @@ approval, err := client.ApprovalRequest(ctx, "approval-1", ferricstore.ApprovalR
 budget, err := client.BudgetReserve(ctx, "llm:tenant:acme", 100, ferricstore.Int64(10_000), ferricstore.Int64(60_000), "reservation-1", nil)
 ```
 
+FerricStore 0.7.5 releases distributed-limit credits by amount through
+`LimitRelease`. Newer servers return reservation IDs from `LimitSpend`; pass
+those IDs to `LimitReleaseWithOptions` for exact release. The exact method
+never falls back to an amount-only release.
+
 Circuit breakers are cheap reads in the normal path and explicit writes when the circuit changes:
 
 ```go
@@ -350,9 +373,23 @@ _, _ = client.CircuitOpen(ctx, "vendor:payments", ferricstore.Int64(30_000), nil
 _, _ = client.CircuitClose(ctx, "vendor:payments", nil)
 ```
 
+## Prometheus Metrics
+
+Use `FerricStoreMetricsText` to retrieve the server's Prometheus exposition
+without parsing or normalization:
+
+```go
+scrape, err := client.FerricStoreMetricsText(ctx)
+```
+
+The raw text preserves comments, metric types, labels, duplicate samples,
+timestamps, and numeric spellings. `FerricStoreMetrics` remains available only
+for source compatibility with Go SDK v0.1.6; its map representation is lossy
+and is deprecated.
+
 ## Toolchain
 
-The module requires Go 1.24 or newer. This repo pins the development toolchain with mise:
+The module requires Go 1.24 or newer. This repo pins Go 1.26.5 for development and release verification with mise:
 
 ```bash
 brew install mise
@@ -360,11 +397,18 @@ mise trust ./mise.toml
 mise exec -- go test ./...
 ```
 
-Run the Docker-backed integration suite against the released FerricStore image:
+Before release, run the compatibility, fuzz, stress/performance, and three Docker-backed integration gates:
 
 ```bash
+./scripts/api-compat.sh
+./scripts/fuzz-smoke.sh
+./scripts/stress.sh
 ./scripts/integration-docker.sh
+./scripts/integration-security-docker.sh
+./scripts/integration-cluster-docker.sh
 ```
+
+`api-compat.sh` compares the exported API with the release named in `.api-baseline`. The security suite covers protected mode, ACLs, TLS verification, and mTLS. The cluster suite starts three real nodes and exercises learned routing and failover.
 
 For release gating against a server image that should support every current command,
 enable strict command coverage:

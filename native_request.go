@@ -211,11 +211,11 @@ func (e *NativeExecutor) requestOnceOnConnection(ctx context.Context, opcode uin
 		e.lastActivityUnixNano.Store(time.Now().UnixNano())
 		return frame.value, nil, false
 	case <-ctx.Done():
-		if nativeOpcodeUsesFlowCredit(opcode) {
+		if nativeOpcodeDrainsOnCancellation(opcode) {
 			// The native protocol has no per-request cancellation frame. Drain the
 			// connection without admitting new work, preserve unrelated requests
 			// already in flight, then reset it so an infinite blocker cannot retain
-			// a flow-control credit forever.
+			// a flow-control credit or prevent a topology refresh retry forever.
 			e.cancelPendingDataRequest(requestID, conn)
 		} else {
 			// Control requests do not consume flow credit, so a late response can
@@ -258,6 +258,10 @@ func (e *NativeExecutor) nextRequestIDLocked() uint64 {
 
 func nativeOpcodeUsesFlowCredit(opcode uint16) bool {
 	return opcode >= nativeOpCommandExec || opcode == nativeOpPipeline
+}
+
+func nativeOpcodeDrainsOnCancellation(opcode uint16) bool {
+	return nativeOpcodeUsesFlowCredit(opcode) || opcode == nativeOpShards
 }
 
 type nativeCommandSession struct {

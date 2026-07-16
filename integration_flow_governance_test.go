@@ -129,9 +129,20 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 
 	limitScope := "limit:" + runID
 	requireValue(t, must[LimitResult](t)(client.LimitLease(ctx, limitScope, 0, 5, 30_000, Int64(10), Int64(now+26))))
-	requireValue(t, must[LimitResult](t)(client.LimitSpend(ctx, limitScope, 0, 2, Int64(now+27))))
-	requireValue(t, must[LimitResult](t)(client.LimitRelease(ctx, limitScope, 0, 1)))
-	requireValue(t, must[*LimitResult](t)(client.LimitGet(ctx, limitScope, Int64(now+28))))
-	requireValue(t, must[[]LimitResult](t)(client.LimitList(ctx, limitScope, "", Int(10), Int64(now+29))))
+	spent := must[LimitResult](t)(client.LimitSpend(ctx, limitScope, 0, 2, Int64(now+27)))
+	switch len(spent.ReservationIDs) {
+	case 0:
+		// FerricStore 0.7.5 exposes the released amount-based contract.
+		requireValue(t, must[LimitResult](t)(client.LimitRelease(ctx, limitScope, 0, 1)))
+	case 2:
+		// Newer servers expose reservation identities for exact release.
+		requireValue(t, must[LimitResult](t)(client.LimitReleaseWithOptions(ctx, limitScope, LimitReleaseOptions{
+			ShardID: 0, ReservationIDs: spent.ReservationIDs[:1], NowMS: Int64(now + 28),
+		})))
+	default:
+		t.Fatalf("limit spend reservation ids = %#v", spent.ReservationIDs)
+	}
+	requireValue(t, must[*LimitResult](t)(client.LimitGet(ctx, limitScope, Int64(now+29))))
+	requireValue(t, must[[]LimitResult](t)(client.LimitList(ctx, limitScope, "", Int(10), Int64(now+30))))
 	requireValue(t, must[GovernanceOverview](t)(client.GovernanceOverview(ctx, ApprovalListOptions{Limit: Int(10)})))
 }

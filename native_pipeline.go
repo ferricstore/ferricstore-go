@@ -57,10 +57,6 @@ func pipelineChunkAffectedCommands(err error, fallback int) int {
 	return fallback
 }
 
-func compactPipelinePayload(commands [][]any) ([]byte, bool, error) {
-	return compactPipelinePayloadWithLimit(commands, nativeMaxFrameBytes)
-}
-
 func compactPipelinePayloadWithLimit(commands [][]any, limit int) ([]byte, bool, error) {
 	plan, ok, err := compactPipelinePlanWithLimit(commands, limit)
 	if !ok || err != nil {
@@ -82,7 +78,7 @@ func compactPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompactPip
 	if len(commands[0]) == 0 {
 		return nativeCompactPipelinePlan{}, false, nil
 	}
-	first := strings.ToUpper(asString(commands[0][0]))
+	first := commandPart(commands[0][0])
 	switch first {
 	case "SET":
 		return compactSetPipelinePlanWithLimit(commands, limit)
@@ -111,7 +107,7 @@ func compactSetPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompact
 		return nativeCompactPipelinePlan{}, true, nativeEncodeLimitError{limit: limit}
 	}
 	for _, command := range commands {
-		if len(command) != 3 || !strings.EqualFold(asString(command[0]), "SET") {
+		if len(command) != 3 || commandPart(command[0]) != "SET" {
 			return nativeCompactPipelinePlan{}, false, nil
 		}
 		key, keyOK := compactBytes(command[1])
@@ -132,25 +128,13 @@ func compactSetPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompact
 	return nativeCompactPipelinePlan{kind: 0x81, commands: commands, size: size}, true, nil
 }
 
-func compactGetPipelinePayload(commands [][]any) ([]byte, bool, error) {
-	return compactGetPipelinePayloadWithLimit(commands, nativeMaxFrameBytes)
-}
-
-func compactGetPipelinePayloadWithLimit(commands [][]any, limit int) ([]byte, bool, error) {
-	plan, ok, err := compactGetPipelinePlanWithLimit(commands, limit)
-	if !ok || err != nil {
-		return nil, ok, err
-	}
-	return plan.encode(), true, nil
-}
-
 func compactGetPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompactPipelinePlan, bool, error) {
 	size := 5
 	if limit < size {
 		return nativeCompactPipelinePlan{}, true, nativeEncodeLimitError{limit: limit}
 	}
 	for _, command := range commands {
-		if len(command) != 2 || !strings.EqualFold(asString(command[0]), "GET") {
+		if len(command) != 2 || commandPart(command[0]) != "GET" {
 			return nativeCompactPipelinePlan{}, false, nil
 		}
 		key, ok := compactBytes(command[1])
@@ -198,14 +182,6 @@ func appendUint32(payload []byte, value uint32) []byte {
 	payload = append(payload, 0, 0, 0, 0)
 	binary.BigEndian.PutUint32(payload[offset:offset+4], value)
 	return payload
-}
-
-func pipelineValues(value any, expected int) ([]any, error) {
-	results, err := pipelineItemResults(value, expected)
-	if err != nil {
-		return nil, err
-	}
-	return pipelineResultValues(results)
 }
 
 func pipelineItemResults(value any, expected int) ([]pipelineItemResult, error) {

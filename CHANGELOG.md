@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Honor structured status-5 reroutes, retry explicitly safe single-route commands and pipelines at most once, and keep topology PubSub subscriptions alive across learned-endpoint retirement.
+- Make injected native executors configuration-immutable, validate policy acknowledgements fail-closed, bound manual buffers by command count and retained bytes, and add explicit routing for extension commands through `CommandForKey`.
+- Accept both released and tokenized `FETCH_OR_COMPUTE` protocol shapes through additive APIs while preserving the v0.1.6 exported signatures.
+- Add strict response validation across typed store, Flow administration, governance, PubSub, and native event surfaces so malformed protocol data fails instead of becoming plausible zero values.
+- Handle connection-level native error frames, request cancellation, stale connections, reconnect generations, GOAWAY draining, and unsolicited frames without corrupting multiplexed requests.
+- Add `SHARDS` topology discovery, exact endpoint trust checks, typed KV routing/scatter paths, snapshot-consistent refreshes, and real three-node routing/failover coverage.
+- Add protected-mode, ACL, TLS verification, and mTLS integration coverage; pin the development and CI toolchain to Go 1.26.5 for the `crypto/tls` fix tracked as GO-2026-5856.
+- Fix invalid URL authorities and expand bounded fuzz coverage for URLs, native values, compact responses, decoded surfaces, and round trips.
+- Reduce compact claim-response decoding time and allocations, and add repeatable allocation, race-stress, and benchmark regression gates.
+- Restore exported API compatibility with v0.1.6, adding opaque scan cursors and tokenized fetch-or-compute helpers without breaking existing callers.
+- Add `FerricStoreMetricsText` as the canonical lossless Prometheus exposition API while retaining the deprecated v0.1.6 metrics-map API for source compatibility.
+- Preserve FerricStore 0.7.5's amount-based `LimitRelease` contract and add non-downgrading exact reservation-ID release support for newer servers.
+- Split large native, topology, Flow admin, store, and client files by responsibility and enforce a 525-line production-file ceiling.
+- Pin Docker Compose and all integration/release jobs to FerricStore 0.7.5; gate releases on API compatibility, fuzzing, stress/performance, vulnerability scanning, and all live integration modes.
+- Exercise recognized cluster errors, successful `FLOW.CANCEL_MANY`, stateful transactions/WATCH, buffering, autobatching, reconnect, cancellation, and strict command/version coverage against the released server.
+
 ## 0.1.6 - 2026-07-08
 
 - Add opt-in FIFO/PARALLEL Flow state policies, queue/workflow policy installation, and FIFO priority guardrails.

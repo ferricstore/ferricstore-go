@@ -2,19 +2,14 @@ package ferricstore
 
 import (
 	"context"
-	"errors"
 )
 
 func (c *Client) SpawnChildren(ctx context.Context, opt SpawnChildrenOptions) (any, error) {
-	group := opt.GroupID
-	if group == "" {
-		group = "default"
+	opt = normalizeSpawnChildrenOptions(opt)
+	if err := validateSpawnChildrenOptions(opt); err != nil {
+		return nil, err
 	}
-	wait := opt.Wait
-	if wait == "" {
-		wait = "all"
-	}
-	args := []any{"FLOW.SPAWN_CHILDREN", opt.ParentID, "GROUP", group, "WAIT", wait, "NOW", valueOrNow(opt.NowMS)}
+	args := []any{"FLOW.SPAWN_CHILDREN", opt.ParentID, "GROUP", opt.GroupID, "WAIT", opt.Wait, "NOW", valueOrNow(opt.NowMS)}
 	appendOpt(&args, "PARTITION", opt.PartitionKey)
 	appendOpt(&args, "LEASE_TOKEN", opt.LeaseToken)
 	appendInt64Ptr(&args, "FENCING", opt.FencingToken)
@@ -29,12 +24,13 @@ func (c *Client) SpawnChildren(ctx context.Context, opt SpawnChildrenOptions) (a
 	if extended {
 		args = append(args, "ITEMS_EXT", len(opt.Children))
 		for _, child := range opt.Children {
-			if mixed && child.PartitionKey == "" {
-				return nil, errors.New("mixed spawn children require partition key")
-			}
 			partition := child.PartitionKey
 			if partition == "" {
-				partition = "-"
+				if mixed {
+					partition = opt.PartitionKey
+				} else {
+					partition = "-"
+				}
 			}
 			encoded, err := c.encode(child.Payload)
 			if err != nil {
@@ -59,10 +55,11 @@ func (c *Client) SpawnChildren(ctx context.Context, opt SpawnChildrenOptions) (a
 				return nil, err
 			}
 			if mixed {
-				if child.PartitionKey == "" {
-					return nil, errors.New("mixed spawn children require partition key")
+				partition := child.PartitionKey
+				if partition == "" {
+					partition = opt.PartitionKey
 				}
-				args = append(args, child.ID, child.PartitionKey, child.Type, encoded)
+				args = append(args, child.ID, partition, child.Type, encoded)
 			} else {
 				args = append(args, child.ID, child.Type, encoded)
 			}

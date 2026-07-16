@@ -31,7 +31,6 @@ func topologyMSetCommand(args []any) (
 	if len(commandArgs) == 0 || commandName(commandArgs) != "MSET" {
 		return nil, nil, nil, false, false, nil
 	}
-	matched = true
 	if len(commandArgs) < 3 || (len(commandArgs)-1)%2 != 0 {
 		return nil, nil, nil, false, true, errors.New("MSET requires at least one key/value pair")
 	}
@@ -184,7 +183,7 @@ func (e *TopologyNativeExecutor) executeTopologyMSet(
 		}
 	}
 	if len(failures) > 0 {
-		return nil, &TopologyPartialWriteError{Command: "MSET", Succeeded: succeeded, Failures: failures}
+		return nil, newTopologyPartialWriteError("MSET", succeeded, failures)
 	}
 	return []byte("OK"), nil
 }

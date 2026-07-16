@@ -190,11 +190,12 @@ func (c *Client) setLegacySessionLocked(session commandSession) {
 }
 
 func affineCommandArgs(args []any) []any {
-	if len(args) == 0 || strings.EqualFold(asString(args[0]), "COMMAND_EXEC") {
+	if len(args) == 0 || commandPart(args[0]) == "COMMAND_EXEC" {
 		return append([]any(nil), args...)
 	}
+	command, _ := commandText(args[0])
 	out := make([]any, 0, len(args)+1)
-	out = append(out, "COMMAND_EXEC", asString(args[0]))
+	out = append(out, "COMMAND_EXEC", command)
 	return append(out, args[1:]...)
 }
 
@@ -202,9 +203,9 @@ func connectionStateCommand(args []any) (string, bool) {
 	if len(args) == 0 {
 		return "", false
 	}
-	name := strings.ToUpper(asString(args[0]))
+	name := commandPart(args[0])
 	if name == "COMMAND_EXEC" && len(args) > 1 {
-		name = strings.ToUpper(asString(args[1]))
+		name = commandPart(args[1])
 	}
 	switch name {
 	case "WATCH", "UNWATCH", "MULTI", "EXEC", "DISCARD":
@@ -219,12 +220,12 @@ func connectionStateMutationCommand(args []any) (string, bool) {
 		return "", false
 	}
 	offset := 0
-	name := strings.ToUpper(asString(args[0]))
+	name := commandPart(args[0])
 	if name == "COMMAND_EXEC" && len(args) > 1 {
 		offset = 1
-		name = strings.ToUpper(asString(args[1]))
+		name = commandPart(args[1])
 	}
-	if name == "CLIENT" && len(args) > offset+1 && strings.EqualFold(asString(args[offset+1]), "SETNAME") {
+	if name == "CLIENT" && len(args) > offset+1 && commandPart(args[offset+1]) == "SETNAME" {
 		name = "CLIENT.SETNAME"
 	}
 	switch name {
@@ -388,8 +389,9 @@ func (t *Transaction) Command(ctx context.Context, args ...any) (any, error) {
 		t.abort(err)
 		return nil, err
 	}
-	if !strings.EqualFold(asString(value), "QUEUED") {
-		err := fmt.Errorf("transaction command returned %q, expected QUEUED", asString(value))
+	status, statusErr := responseString(value, nil)
+	if statusErr != nil || !strings.EqualFold(status, "QUEUED") {
+		err := fmt.Errorf("transaction command returned %T (%v), expected QUEUED string", value, value)
 		t.abort(err)
 		return nil, err
 	}
@@ -417,9 +419,6 @@ func (t *Transaction) Exec(ctx context.Context) ([]any, error) {
 		t.abort(err)
 		return nil, err
 	}
-	if err := t.closedStateError(); err != nil {
-		return nil, err
-	}
 	t.release()
 	return items, nil
 }
@@ -439,9 +438,6 @@ func (t *Transaction) Discard(ctx context.Context) error {
 	}
 	if _, err = responseOK(response, nil); err != nil {
 		t.abort(err)
-		return err
-	}
-	if err := t.closedStateError(); err != nil {
 		return err
 	}
 	t.release()

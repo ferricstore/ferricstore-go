@@ -59,7 +59,8 @@ func (s *ListStore) Pos(ctx context.Context, key string, value any, rank, count,
 	appendInt64Ptr(&args, "RANK", rank)
 	appendInt64Ptr(&args, "COUNT", count)
 	appendInt64Ptr(&args, "MAXLEN", maxLen)
-	return s.client.typedReply(ctx, args...)
+	response, err := s.client.typedReply(ctx, args...)
+	return listPositionResponse(response, err, rank, count)
 }
 
 func (s *ListStore) Insert(ctx context.Context, key string, before bool, pivot, value any) (int64, error) {
@@ -126,7 +127,7 @@ func (s *ListStore) BLPop(ctx context.Context, timeoutSeconds int64, keys ...str
 	}
 	args = append(args, timeoutSeconds)
 	value, err := s.client.typedReply(ctx, args...)
-	return decodeBlockingListPop(s.client.codec, value, err, "BLPOP")
+	return decodeBlockingListPop(s.client.codec, value, err, "BLPOP", keys)
 }
 
 func (s *ListStore) BRPop(ctx context.Context, timeoutSeconds int64, keys ...string) (any, error) {
@@ -142,7 +143,7 @@ func (s *ListStore) BRPop(ctx context.Context, timeoutSeconds int64, keys ...str
 	}
 	args = append(args, timeoutSeconds)
 	value, err := s.client.typedReply(ctx, args...)
-	return decodeBlockingListPop(s.client.codec, value, err, "BRPOP")
+	return decodeBlockingListPop(s.client.codec, value, err, "BRPOP", keys)
 }
 
 func (s *ListStore) BLMove(ctx context.Context, source, destination, whereFrom, whereTo string, timeoutSeconds int64) (any, error) {
@@ -179,7 +180,7 @@ func (s *ListStore) BLMPop(ctx context.Context, timeoutSeconds float64, keys []s
 	args = append(args, where)
 	appendIntPtr(&args, "COUNT", count)
 	value, err := s.client.typedReply(ctx, args...)
-	return decodeBlockingListMPop(s.client.codec, value, err)
+	return decodeBlockingListMPop(s.client.codec, value, err, keys, count)
 }
 
 func validListDirection(direction string) bool {

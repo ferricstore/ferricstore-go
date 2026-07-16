@@ -12,6 +12,8 @@ type commandCloneVisit struct {
 	kind   reflect.Kind
 	typeID reflect.Type
 	ptr    uintptr
+	len    int
+	cap    int
 }
 
 func snapshotCommandArgs(args []any) ([]any, error) {
@@ -223,6 +225,10 @@ func commandMapKeyNeedsClone(valueType reflect.Type) bool {
 
 func enterCommandClone(value reflect.Value, visiting map[commandCloneVisit]struct{}) (func(), error) {
 	visit := commandCloneVisit{kind: value.Kind(), typeID: value.Type(), ptr: value.Pointer()}
+	if value.Kind() == reflect.Slice {
+		visit.len = value.Len()
+		visit.cap = value.Cap()
+	}
 	if _, exists := visiting[visit]; exists {
 		return nil, fmt.Errorf("mutable command argument contains a reference cycle")
 	}

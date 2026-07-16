@@ -85,10 +85,6 @@ func intArrayExact(value any, err error, expected int, command string) ([]int64,
 	return out, nil
 }
 
-func floatArray(value any, err error) ([]float64, error) {
-	return floatArrayPolicy(value, err, false, false)
-}
-
 func nullableFloatArray(value any, err error) ([]float64, error) {
 	return floatArrayPolicy(value, err, true, false)
 }
@@ -167,4 +163,14 @@ func mapKeysForCodec[V any](values map[string]V, codec Codec) []string {
 		sort.Strings(keys)
 	}
 	return keys
+}
+
+// deterministicMapKeysForCodec returns nil for codecs whose result cannot
+// depend on invocation order, preserving allocation-free map iteration on the
+// built-in fast path. Custom codecs receive a stable sequence.
+func deterministicMapKeysForCodec[V any](values map[string]V, codec Codec) []string {
+	if !codecNeedsDeterministicMapOrder(codec) {
+		return nil
+	}
+	return sortedKeys(values)
 }

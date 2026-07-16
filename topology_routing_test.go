@@ -1,6 +1,7 @@
 package ferricstore
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"hash/crc32"
@@ -217,5 +218,33 @@ func TestTopologyRouteRejectsUnsupportedKeyTypes(t *testing.T) {
 		if route, err := exec.Route(key); err == nil {
 			t.Errorf("TopologyNativeExecutor.Route(%T) = %#v; want unsupported-type error", key, route)
 		}
+	}
+}
+
+func TestCommandForKeyRoutesUnknownCommandToExplicitTopologyShard(t *testing.T) {
+	listenerA, _, _ := startRoutedNativeEndpoint(t, func(nativeFrame, int) any {
+		return []byte("wrong-shard")
+	})
+	listenerB, framesB, errB := startRoutedNativeEndpoint(t, func(nativeFrame, int) any {
+		return []byte("selected-shard")
+	})
+	exec, _, keyB := topologyExecutorForTwoEndpoints(t, listenerA, listenerB)
+	defer func() { _ = exec.Close() }()
+
+	value, err := NewClientWithExecutor(exec).CommandForKey(
+		context.Background(), keyB, "MODULE.CUSTOM", "argument",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asString(value) != "selected-shard" {
+		t.Fatalf("explicitly routed command = %#v, want selected-shard", value)
+	}
+	frame := <-framesB
+	if frame.laneID != 2 || frame.opcode != nativeOpCommandExec {
+		t.Fatalf("explicitly routed frame = lane %d opcode %d, want lane 2 COMMAND_EXEC", frame.laneID, frame.opcode)
+	}
+	if err := <-errB; err != nil {
+		t.Fatal(err)
 	}
 }

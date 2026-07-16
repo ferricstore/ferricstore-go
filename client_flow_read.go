@@ -6,6 +6,9 @@ import (
 )
 
 func (c *Client) Get(ctx context.Context, id string, partitionKey string, values []string, valueMaxBytes *int64) (*FlowRecord, error) {
+	if err := validateFlowGet(id, values, valueMaxBytes); err != nil {
+		return nil, err
+	}
 	args := []any{"FLOW.GET", id}
 	appendOpt(&args, "PARTITION", partitionKey)
 	appendValueReturn(&args, values, valueMaxBytes)
@@ -31,6 +34,9 @@ func (c *Client) recordOrGet(ctx context.Context, record *FlowRecord, err error,
 }
 
 func (c *Client) List(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
+	if err := validateFlowReadKey("flow type", flowType, opt); err != nil {
+		return nil, err
+	}
 	args := []any{"FLOW.LIST", flowType}
 	appendReadOptions(&args, opt)
 	value, err := c.typedReply(ctx, args...)
@@ -41,6 +47,9 @@ func (c *Client) List(ctx context.Context, flowType string, opt ReadOptions) ([]
 }
 
 func (c *Client) Search(ctx context.Context, opt SearchOptions) ([]FlowRecord, error) {
+	if err := validateFlowSearch(opt); err != nil {
+		return nil, err
+	}
 	args := []any{"FLOW.SEARCH"}
 	appendOpt(&args, "TYPE", opt.Type)
 	appendOpt(&args, "STATE", opt.State)
@@ -95,6 +104,9 @@ func (c *Client) ByCorrelation(ctx context.Context, correlationID string, opt Re
 }
 
 func (c *Client) indexRead(ctx context.Context, command, key string, opt ReadOptions) ([]FlowRecord, error) {
+	if err := validateFlowReadKey("flow query key", key, opt); err != nil {
+		return nil, err
+	}
 	args := []any{command, key}
 	appendReadOptions(&args, opt)
 	value, err := c.typedReply(ctx, args...)
@@ -118,6 +130,9 @@ func appendReadOptions(args *[]any, opt ReadOptions) {
 }
 
 func (c *Client) Info(ctx context.Context, flowType, partitionKey string, includeCold, consistentProjection *bool) (map[string]any, error) {
+	if err := validateRequiredText("flow type", flowType); err != nil {
+		return nil, err
+	}
 	args := []any{"FLOW.INFO", flowType}
 	appendOpt(&args, "PARTITION", partitionKey)
 	appendBoolPtr(&args, "INCLUDE_COLD", includeCold)
@@ -130,6 +145,9 @@ func (c *Client) Info(ctx context.Context, flowType, partitionKey string, includ
 }
 
 func (c *Client) Stuck(ctx context.Context, flowType string, partitionKey string, count *int, olderThanMS, now *int64) ([]FlowRecord, error) {
+	if err := validateFlowStuck(flowType, count, olderThanMS, now); err != nil {
+		return nil, err
+	}
 	args := []any{"FLOW.STUCK", flowType}
 	appendOpt(&args, "PARTITION", partitionKey)
 	appendIntPtr(&args, "COUNT", count)
@@ -143,6 +161,9 @@ func (c *Client) Stuck(ctx context.Context, flowType string, partitionKey string
 }
 
 func (c *Client) History(ctx context.Context, opt HistoryOptions) ([]any, error) {
+	if err := validateFlowHistory(opt); err != nil {
+		return nil, err
+	}
 	count := opt.Count
 	if count == 0 {
 		count = 100

@@ -482,7 +482,7 @@ func TestNativeGoAwayDrainsPendingRequestAndReconnects(t *testing.T) {
 	if got, err := client.Ping(ctx, "before-goaway"); err != nil || got != "PONG" {
 		t.Fatalf("in-flight request during GOAWAY = %q, %v; want PONG", got, err)
 	}
-	event, err := (&PubSub{exec: exec}).NextEvent(ctx)
+	event, err := newPubSub(exec, false).NextEvent(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

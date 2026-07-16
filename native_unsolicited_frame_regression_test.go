@@ -2,10 +2,54 @@ package ferricstore
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestNativeHandshakeReturnsConnectionLevelServerError(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		reader, writer := bufio.NewReader(conn), bufio.NewWriter(conn)
+		if _, err := readNativeRequestFrame(reader); err != nil {
+			serverErr <- err
+			return
+		}
+		serverErr <- writeNativeTestResponse(writer, nativeFrame{}, 1, []byte("ERR TLS required"))
+	}()
+
+	client := NewClient(listener.Addr().String(), WithNativeOptions(
+		WithNativeHeartbeat(0, 0),
+		WithNativeReconnect(0),
+		WithNativeTimeout(time.Second),
+	))
+	defer func() { _ = client.Close() }()
+	_, err = client.Ping(context.Background())
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "tls required") {
+		t.Fatalf("connection-level error = %v", err)
+	}
+	var nativeErr NativeError
+	if !errors.As(err, &nativeErr) || nativeErr.Status != 1 {
+		t.Fatalf("connection-level error type = %T, %v", err, err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestNativeReaderRejectsInvalidReservedRequestIDFrame(t *testing.T) {
 	client, server := net.Pipe()

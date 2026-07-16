@@ -17,6 +17,10 @@ func (c *Client) InstallRetryPolicy(ctx context.Context, flowType string, retry 
 }
 
 func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptions) (any, error) {
+	if err := validatePolicyOptions(flowType, opt); err != nil {
+		return nil, err
+	}
+	opt = canonicalizePolicyMetadataKeys(opt)
 	args := []any{"FLOW.POLICY.SET", flowType}
 	if opt.IndexedAttributes != nil {
 		appendOpt(&args, "INDEXED_ATTRIBUTES", opt.IndexedAttributes)
@@ -27,14 +31,13 @@ func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptio
 	if opt.Retry != nil {
 		appendRetryPolicy(&args, *opt.Retry)
 	}
-	for state, policy := range opt.States {
-		if _, exists := opt.StatePolicies[state]; exists {
-			return nil, fmt.Errorf("flow state %q appears in both States and StatePolicies", state)
-		}
+	for _, state := range sortedKeys(opt.States) {
+		policy := opt.States[state]
 		args = append(args, "STATE", state)
 		appendRetryPolicy(&args, policy)
 	}
-	for state, policy := range opt.StatePolicies {
+	for _, state := range sortedKeys(opt.StatePolicies) {
+		policy := opt.StatePolicies[state]
 		args = append(args, "STATE", state)
 		if policy.Mode != "" {
 			mode, err := flowStateModeCommandToken(policy.Mode)
@@ -57,15 +60,35 @@ func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptio
 	return value, nil
 }
 
+func canonicalizePolicyMetadataKeys(opt PolicyOptions) PolicyOptions {
+	if opt.IndexedAttributes != nil {
+		normalized := make([]string, len(opt.IndexedAttributes))
+		for index, name := range opt.IndexedAttributes {
+			normalized[index] = canonicalFlowMetadataKey(name)
+		}
+		opt.IndexedAttributes = normalized
+	}
+	opt.IndexedStateMeta = canonicalFlowMetadataKey(opt.IndexedStateMeta)
+	return opt
+}
+
 func validateAppliedPolicy(value any, opt PolicyOptions) error {
 	if opt.Retry == nil && len(opt.States) == 0 && len(opt.StatePolicies) == 0 && opt.IndexedAttributes == nil && opt.IndexedStateMeta == "" && !opt.IndexedStateMetaSet {
 		return nil
 	}
-	policy, err := nativeMap(normalizeAdminResponse(value))
+	normalized, normalizeErr := normalizeAdminResponse(value)
+	if normalizeErr != nil {
+		return normalizeErr
+	}
+	policy, err := nativeMap(normalized)
 	if err != nil {
-		// Some compatible executors return only an acknowledgement. There is no
-		// response state to verify in that case.
-		return nil
+		// Some compatible executors return only an acknowledgement. Accept that
+		// compatibility shape only when it is the protocol's exact OK response;
+		// arbitrary scalars contain no state and must fail closed.
+		if _, ackErr := responseOK(normalized, nil); ackErr == nil {
+			return nil
+		}
+		return fmt.Errorf("FLOW.POLICY.SET expected a policy map or OK acknowledgement: %w", err)
 	}
 	if opt.IndexedAttributes != nil {
 		actual := stringList(policy["indexed_attributes"])
@@ -180,16 +203,22 @@ func validateAppliedPolicyInteger(values map[string]any, field string, expected 
 }
 
 func (c *Client) PolicyGet(ctx context.Context, flowType, state string) (map[string]any, error) {
+	if err := validateRequiredText("flow type", flowType); err != nil {
+		return nil, err
+	}
 	args := []any{"FLOW.POLICY.GET", flowType}
 	appendOpt(&args, "STATE", state)
 	value, err := c.typedReply(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
-	return nativeMap(normalizeAdminResponse(value))
+	return normalizedAdminMap(value)
 }
 
 func (c *Client) RetentionCleanup(ctx context.Context, opt RetentionCleanupOptions) (map[string]any, error) {
+	if err := validateRetentionCleanup(opt); err != nil {
+		return nil, err
+	}
 	args := []any{"FLOW.RETENTION_CLEANUP"}
 	appendIntPtr(&args, "LIMIT", opt.Limit)
 	appendInt64Ptr(&args, "NOW", opt.NowMS)
@@ -204,7 +233,11 @@ func appendRetryPolicy(args *[]any, policy RetryPolicy) {
 	if policy.MaxRetries != 0 || policy.MaxRetriesSet {
 		appendOpt(args, "MAX_RETRIES", policy.MaxRetries)
 	}
-	appendOpt(args, "BACKOFF", policy.Backoff)
+	backoff := policy.Backoff
+	if backoff != "" {
+		backoff = strings.ToLower(strings.TrimSpace(backoff))
+	}
+	appendOpt(args, "BACKOFF", backoff)
 	if policy.BaseMS != 0 || policy.BaseMSSet {
 		appendOpt(args, "BASE_MS", policy.BaseMS)
 	}

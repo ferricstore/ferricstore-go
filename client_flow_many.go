@@ -8,6 +8,9 @@ func (c *Client) CompleteMany(ctx context.Context, opt CompleteManyOptions) ([]F
 	if len(opt.Items) == 0 {
 		return nil, nil
 	}
+	if err := validateCompleteManyOptions(opt); err != nil {
+		return nil, err
+	}
 	if err := validateClaimedItemPartitions(opt.PartitionKey, opt.Items, "FLOW.COMPLETE_MANY"); err != nil {
 		return nil, err
 	}
@@ -35,12 +38,15 @@ func (c *Client) CompleteMany(ctx context.Context, opt CompleteManyOptions) ([]F
 	if err != nil {
 		return nil, err
 	}
-	return recordsOrNil(value, c.codec)
+	return recordsOrNil(value, c.codec, len(opt.Items))
 }
 
 func (c *Client) TransitionMany(ctx context.Context, opt TransitionManyOptions) ([]FlowRecord, error) {
 	if len(opt.Items) == 0 {
 		return nil, nil
+	}
+	if err := validateTransitionManyOptions(opt); err != nil {
+		return nil, err
 	}
 	if err := validateFencedItemPartitions(opt.PartitionKey, opt.Items, "FLOW.TRANSITION_MANY"); err != nil {
 		return nil, err
@@ -65,12 +71,15 @@ func (c *Client) TransitionMany(ctx context.Context, opt TransitionManyOptions) 
 	if err != nil {
 		return nil, err
 	}
-	return recordsOrNil(value, c.codec)
+	return recordsOrNil(value, c.codec, len(opt.Items))
 }
 
 func (c *Client) RetryMany(ctx context.Context, opt RetryManyOptions) ([]FlowRecord, error) {
 	if len(opt.Items) == 0 {
 		return nil, nil
+	}
+	if err := validateRetryManyOptions(opt); err != nil {
+		return nil, err
 	}
 	if err := validateClaimedItemPartitions(opt.PartitionKey, opt.Items, "FLOW.RETRY_MANY"); err != nil {
 		return nil, err
@@ -97,12 +106,15 @@ func (c *Client) RetryMany(ctx context.Context, opt RetryManyOptions) ([]FlowRec
 	if err != nil {
 		return nil, err
 	}
-	return recordsOrNil(value, c.codec)
+	return recordsOrNil(value, c.codec, len(opt.Items))
 }
 
 func (c *Client) FailMany(ctx context.Context, opt FailManyOptions) ([]FlowRecord, error) {
 	if len(opt.Items) == 0 {
 		return nil, nil
+	}
+	if err := validateFailManyOptions(opt); err != nil {
+		return nil, err
 	}
 	if err := validateClaimedItemPartitions(opt.PartitionKey, opt.Items, "FLOW.FAIL_MANY"); err != nil {
 		return nil, err
@@ -127,12 +139,15 @@ func (c *Client) FailMany(ctx context.Context, opt FailManyOptions) ([]FlowRecor
 	if err != nil {
 		return nil, err
 	}
-	return recordsOrNil(value, c.codec)
+	return recordsOrNil(value, c.codec, len(opt.Items))
 }
 
 func (c *Client) CancelMany(ctx context.Context, opt CancelManyOptions) ([]FlowRecord, error) {
 	if len(opt.Items) == 0 {
 		return nil, nil
+	}
+	if err := validateCancelManyOptions(opt); err != nil {
+		return nil, err
 	}
 	if err := validateFencedItemPartitions(opt.PartitionKey, opt.Items, "FLOW.CANCEL_MANY"); err != nil {
 		return nil, err
@@ -154,7 +169,7 @@ func (c *Client) CancelMany(ctx context.Context, opt CancelManyOptions) ([]FlowR
 	if err != nil {
 		return nil, err
 	}
-	return recordsOrNil(value, c.codec)
+	return recordsOrNil(value, c.codec, len(opt.Items))
 }
 
 func (c *Client) RunStepsMany(ctx context.Context, opt RunStepsManyOptions) error {

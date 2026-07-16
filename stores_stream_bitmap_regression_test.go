@@ -33,8 +33,20 @@ func TestStreamOptionsRejectInvalidWireStatesBeforeTransport(t *testing.T) {
 			_, err := store.Read(context.Background(), StreamReadOptions{BlockMS: &negativeMS, Streams: []StreamRef{{Key: "stream", ID: "0-0"}}})
 			return err
 		}},
+		{name: "XREAD empty stream ID", call: func(store *StreamStore) error {
+			_, err := store.Read(context.Background(), StreamReadOptions{Streams: []StreamRef{{Key: "stream"}}})
+			return err
+		}},
+		{name: "XREAD group-only ID", call: func(store *StreamStore) error {
+			_, err := store.Read(context.Background(), StreamReadOptions{Streams: []StreamRef{{Key: "stream", ID: ">"}}})
+			return err
+		}},
 		{name: "XREADGROUP empty streams", call: func(store *StreamStore) error {
 			_, err := store.ReadGroup(context.Background(), StreamReadGroupOptions{Group: "group", Consumer: "consumer"})
+			return err
+		}},
+		{name: "XREADGROUP read-only ID", call: func(store *StreamStore) error {
+			_, err := store.ReadGroup(context.Background(), StreamReadGroupOptions{Group: "group", Consumer: "consumer", Streams: []StreamRef{{Key: "stream", ID: "$"}}})
 			return err
 		}},
 		{name: "XREADGROUP negative block", call: func(store *StreamStore) error {

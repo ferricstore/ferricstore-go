@@ -67,6 +67,9 @@ func validateClaimCommon(
 	if limit < 0 {
 		return errors.New("flow claim limit must be positive")
 	}
+	if limit > maxFlowBatchItems {
+		return fmt.Errorf("flow claim limit exceeds maximum %d", maxFlowBatchItems)
+	}
 	if nowMS < 0 {
 		return errors.New("flow now milliseconds must be non-negative")
 	}

@@ -73,8 +73,18 @@ func (s *GeoStore) Search(ctx context.Context, key string, opt GeoSearchOptions)
 		return nil, err
 	}
 	value, err := s.client.typedReply(ctx, args...)
-	metadataFields := boolInt(opt.WithCoord) + boolInt(opt.WithDist) + boolInt(opt.WithHash)
-	return decodeGeoSearch(s.client.codec, value, err, metadataFields)
+	metadata := geoSearchMetadata{
+		withDistance:    opt.WithDist,
+		withHash:        opt.WithHash,
+		withCoordinates: opt.WithCoord,
+		ascending:       opt.Asc,
+		descending:      opt.Desc,
+	}
+	if opt.Count != nil {
+		metadata.maximumResults = *opt.Count
+		metadata.limited = true
+	}
+	return decodeGeoSearch(s.client.codec, value, err, metadata)
 }
 
 func (s *GeoStore) SearchStore(ctx context.Context, destination, source string, opt GeoSearchOptions, storeDist bool) (int64, error) {
@@ -87,7 +97,14 @@ func (s *GeoStore) SearchStore(ctx context.Context, destination, source string, 
 		args = append(args, "STOREDIST")
 	}
 	value, err := s.client.typedReply(ctx, args...)
-	return nonNegativeInt64Response("GEOSEARCHSTORE", value, err)
+	stored, err := nonNegativeInt64Response("GEOSEARCHSTORE", value, err)
+	if err != nil {
+		return 0, err
+	}
+	if opt.Count != nil && stored > int64(*opt.Count) {
+		return 0, errors.New("GEOSEARCHSTORE returned a count above COUNT")
+	}
+	return stored, nil
 }
 
 func (s *GeoStore) geoSearchArgs(command, key string, opt GeoSearchOptions) ([]any, error) {

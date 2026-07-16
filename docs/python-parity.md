@@ -89,7 +89,7 @@ Default behavior matches the Python SDK for normal client usage: one native prot
 | `budget_list` | `BudgetList` | Covered |
 | `limit_lease` | `LimitLease` | Covered |
 | `limit_spend` | `LimitSpend` | Covered |
-| `limit_release` | `LimitRelease` | Covered |
+| `limit_release` | `LimitRelease`, `LimitReleaseWithOptions` | Covered; amount contract for FerricStore 0.7.5 plus exact reservation-ID contract for newer servers |
 | `limit_get` | `LimitGet` | Covered |
 | `limit_list` | `LimitList` | Covered |
 
@@ -153,7 +153,7 @@ Default behavior matches the Python SDK for normal client usage: one native prot
 | `cluster_demote` | `ClusterDemote` | Covered |
 | `ferricstore_config` | `FerricStoreConfig` | Covered |
 | `ferricstore_hotness` | `FerricStoreHotness` | Covered |
-| `ferricstore_metrics` | `FerricStoreMetrics` | Covered |
+| `ferricstore_metrics` | `FerricStoreMetricsText` | Covered; returns the server's lossless Prometheus text (`FerricStoreMetrics` is deprecated v0.1.6 map compatibility) |
 | `ferricstore_blobgc` | `FerricStoreBlobGC` | Covered |
 | `ferricstore_doctor` | `FerricStoreDoctor` | Covered |
 | `watch`, `unwatch` | `Watch`, `Unwatch` | Covered |

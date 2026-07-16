@@ -3,12 +3,10 @@ package ferricstore
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"math"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +34,7 @@ const (
 
 	nativeOpAuth                   = 0x0002
 	nativeOpPing                   = 0x0003
+	nativeOpShards                 = 0x0007
 	nativeOpGoAway                 = 0x000A
 	nativeOpStartup                = 0x000C
 	nativeOpWindowUpdate           = 0x000D
@@ -54,6 +53,7 @@ const (
 	nativeOpFlowCompleteMany       = 0x0210
 	nativeOpFlowPolicySet          = 0x021E
 	nativeOpFlowPolicyGet          = 0x021F
+	nativeOpFlowSpawnChildren      = 0x0220
 	nativeOpFlowStepContinue       = 0x0222
 	nativeOpFlowStartAndClaim      = 0x0223
 	nativeOpFlowRunStepsMany       = 0x0224
@@ -101,119 +101,6 @@ const (
 )
 
 type nativeCompactOKCount int
-
-type NativeOptions struct {
-	Addr                string
-	Username            string
-	Password            string
-	TLS                 bool
-	TLSConfig           *tls.Config
-	ClientName          string
-	Timeout             time.Duration
-	Dialer              *net.Dialer
-	HeartbeatInterval   time.Duration
-	HeartbeatTimeout    time.Duration
-	GoAwayDrainTimeout  time.Duration
-	ReconnectMaxRetries int
-	ProtocolLanes       uint32
-	MaxQueuedRequests   int
-	startupEvents       []string
-	eventHandler        func(nativeServerEvent)
-	addressInput        string
-	addressUsesDefault  bool
-}
-
-type NativeOption func(*NativeOptions)
-
-func WithNativeCredentials(username, password string) NativeOption {
-	return func(opts *NativeOptions) {
-		opts.Username = username
-		opts.Password = password
-	}
-}
-
-func WithNativeTLS(config *tls.Config) NativeOption {
-	return func(opts *NativeOptions) {
-		opts.TLS = true
-		opts.TLSConfig = config
-	}
-}
-
-func WithNativeTimeout(timeout time.Duration) NativeOption {
-	return func(opts *NativeOptions) {
-		if timeout < 0 {
-			timeout = 0
-		}
-		opts.Timeout = timeout
-		if opts.Dialer == nil {
-			opts.Dialer = &net.Dialer{}
-		}
-		opts.Dialer.Timeout = timeout
-	}
-}
-
-func WithNativeClientName(name string) NativeOption {
-	return func(opts *NativeOptions) {
-		opts.ClientName = name
-	}
-}
-
-func WithNativeHeartbeat(interval, timeout time.Duration) NativeOption {
-	return func(opts *NativeOptions) {
-		opts.HeartbeatInterval = interval
-		opts.HeartbeatTimeout = timeout
-	}
-}
-
-func WithNativeReconnect(maxRetries int) NativeOption {
-	return func(opts *NativeOptions) {
-		if maxRetries < 0 {
-			maxRetries = 0
-		}
-		opts.ReconnectMaxRetries = maxRetries
-	}
-}
-
-// WithNativeGoAwayDrainTimeout bounds how long an old connection may retain
-// live requests after it stops admitting new work. This is especially
-// important when another request on the connection blocks indefinitely.
-func WithNativeGoAwayDrainTimeout(timeout time.Duration) NativeOption {
-	return func(opts *NativeOptions) {
-		if timeout <= 0 {
-			timeout = nativeDefaultGoAwayDrainTimeout
-		}
-		opts.GoAwayDrainTimeout = timeout
-	}
-}
-
-// WithNativeLanes caps automatic data-lane use. The server-advertised STARTUP
-// limit may reduce this value further.
-func WithNativeLanes(lanes uint32) NativeOption {
-	return func(opts *NativeOptions) {
-		if lanes == 0 {
-			lanes = 1
-		}
-		opts.ProtocolLanes = lanes
-	}
-}
-
-// WithNativeMaxQueuedRequests bounds requests waiting for server-advertised
-// native flow-control credits. A zero limit rejects instead of queueing.
-func WithNativeMaxQueuedRequests(limit int) NativeOption {
-	return func(opts *NativeOptions) {
-		if limit < 0 {
-			limit = 0
-		}
-		opts.MaxQueuedRequests = limit
-	}
-}
-
-func withNativeEventSubscription(events []string, handler func(nativeServerEvent)) NativeOption {
-	return func(opts *NativeOptions) {
-		opts.startupEvents = append([]string(nil), events...)
-		opts.eventHandler = handler
-	}
-}
 
 type NativeExecutor struct {
 	opts NativeOptions
@@ -313,6 +200,7 @@ func NewNativeExecutorFromURL(rawurl string, opts ...NativeOption) (*NativeExecu
 	options := defaultNativeOptions(address, parsed.TLS)
 	options.Username = parsed.Username
 	options.Password = parsed.Password
+	options.credentialsSet = parsed.CredentialsSet
 	if parsed.HasTimeout {
 		options.Timeout = parsed.Timeout
 		options.Dialer.Timeout = parsed.Timeout
@@ -329,7 +217,7 @@ func newNativeExecutor(options NativeOptions) *NativeExecutor {
 		maxPipelineCommands:  nativeDefaultPipelineCommands,
 		maxDataLanes:         1,
 		flow:                 newNativeFlowController(nativeDefaultConnectionCredits, nativeDefaultLaneCredits, nativeDefaultLaneQueue, options.MaxQueuedRequests),
-		eventDeliveryEnabled: options.eventHandler == nil,
+		eventDeliveryEnabled: nativeConfiguredEventHandler(options.eventSubscription) == nil,
 	}
 }
 
@@ -384,15 +272,15 @@ func (e *NativeExecutor) rememberConnectionState(args []any, command nativeComma
 	if len(args) == 0 {
 		return
 	}
-	name := strings.ToUpper(asString(args[0]))
+	name := commandPart(args[0])
 	if name == "COMMAND_EXEC" && len(args) > 1 {
-		name = strings.ToUpper(asString(args[1]))
+		name = commandPart(args[1])
 		args = args[1:]
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	switch {
-	case name == "CLIENT" && len(args) > 2 && strings.EqualFold(asString(args[1]), "SETNAME"):
+	case name == "CLIENT" && len(args) > 2 && commandPart(args[1]) == "SETNAME":
 		e.opts.ClientName = asString(args[2])
 	case name == "WINDOW_UPDATE":
 		payload, ok := command.payload.(map[string]any)
@@ -572,7 +460,7 @@ func nativePipelinePayload(commands [][]any, laneID uint32, maxFrameBytes int) (
 			// Typed PIPELINE items require map bodies. Rebuild compact/custom
 			// commands through COMMAND_EXEC, matching an ordinary command's wire
 			// semantics without embedding an opaque body the server cannot parse.
-			command, err = commandExecNativeCommand(strings.ToUpper(asString(args[0])), args[1:])
+			command, err = commandExecNativeCommand(commandPart(args[0]), args[1:])
 			if err != nil {
 				return nil, 0, &pipelineCommandBuildError{index: idx, cause: err}
 			}

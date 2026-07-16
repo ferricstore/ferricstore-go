@@ -594,7 +594,7 @@ func TestNativeSubscribeFlowWakeUsesMultiplexedEvents(t *testing.T) {
 }
 
 func TestEventSubscriptionHelpersValidateOptions(t *testing.T) {
-	pubsub := &PubSub{exec: &NativeExecutor{}}
+	pubsub := newPubSub(&NativeExecutor{}, false)
 	if _, err := pubsub.SubscribeFlowWake(context.Background(), FlowWakeSubscriptionOptions{
 		Type:   "email",
 		State:  "queued",

@@ -113,6 +113,42 @@ func TestWorkflowWorkerFailPolicyFailsJob(t *testing.T) {
 	}
 }
 
+func TestWorkflowWorkerAppliesFailPolicyToHandlerPanic(t *testing.T) {
+	claimed := []any{
+		map[string]any{
+			"id":            "flow-1",
+			"type":          "order",
+			"state":         "validate",
+			"partition_key": "tenant:1",
+			"lease_token":   "lease-1",
+			"fencing_token": int64(9),
+		},
+	}
+	exec := &fakeExecutor{values: []any{claimed, []byte("OK")}}
+	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "validate")
+	workflow.State("validate", func(context.Context, WorkflowContext) (Outcome, error) {
+		panic(errWorkerHandlerPanic)
+	})
+
+	result, err := workflow.Worker("worker-1", []string{"validate"}, WorkerOptions{
+		BatchSize:   1,
+		ErrorPolicy: ErrorPolicyFail,
+	}).RunOnce(context.Background())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Claimed != 1 || result.Applied != 1 {
+		t.Fatalf("unexpected worker result: %+v", result)
+	}
+	if len(exec.calls) != 2 || exec.calls[1][0] != "FLOW.FAIL" {
+		t.Fatalf("panic did not follow fail policy: %#v", exec.calls)
+	}
+	if got := asString(exec.calls[1][indexOf(exec.calls[1], "ERROR")+1]); !strings.Contains(got, errWorkerHandlerPanic.Error()) {
+		t.Fatalf("fail error = %q; want panic cause", got)
+	}
+}
+
 func TestWorkflowInstallsFIFOStatePolicyAndRejectsPriorityTransition(t *testing.T) {
 	exec := &fakeExecutor{values: []any{
 		[]byte("OK"),

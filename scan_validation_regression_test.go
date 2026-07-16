@@ -81,7 +81,7 @@ func TestScanHelpersForwardServerCursorTokens(t *testing.T) {
 			cursor:     "last:key",
 			wantPrefix: []any{"SCAN", "last:key"},
 			call: func(client *Client, cursor string) error {
-				_, err := client.Scan(context.Background(), cursor, "", nil)
+				_, err := client.ScanCursor(context.Background(), cursor, "", nil)
 				return err
 			},
 		},
@@ -90,7 +90,7 @@ func TestScanHelpersForwardServerCursorTokens(t *testing.T) {
 			cursor:     "~ZmllbGQ",
 			wantPrefix: []any{"HSCAN", "key", "~ZmllbGQ"},
 			call: func(client *Client, cursor string) error {
-				_, err := client.Hash().Scan(context.Background(), "key", cursor, "", nil)
+				_, err := client.Hash().ScanCursor(context.Background(), "key", cursor, "", nil)
 				return err
 			},
 		},
@@ -99,7 +99,7 @@ func TestScanHelpersForwardServerCursorTokens(t *testing.T) {
 			cursor:     "~bWVtYmVy",
 			wantPrefix: []any{"SSCAN", "key", "~bWVtYmVy"},
 			call: func(client *Client, cursor string) error {
-				_, err := client.SetStore().Scan(context.Background(), "key", cursor, "", nil)
+				_, err := client.SetStore().ScanCursor(context.Background(), "key", cursor, "", nil)
 				return err
 			},
 		},
@@ -108,7 +108,7 @@ func TestScanHelpersForwardServerCursorTokens(t *testing.T) {
 			cursor:     "~c29ydGVk",
 			wantPrefix: []any{"ZSCAN", "key", "~c29ydGVk"},
 			call: func(client *Client, cursor string) error {
-				_, err := client.SortedSet().Scan(context.Background(), "key", cursor, "", nil)
+				_, err := client.SortedSet().ScanCursor(context.Background(), "key", cursor, "", nil)
 				return err
 			},
 		},

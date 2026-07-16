@@ -157,6 +157,20 @@ func TestNativeCompactClaimJobsDecodesStateWithoutAttributes(t *testing.T) {
 	}
 }
 
+func TestNativeCompactClaimJobsRejectsFencingOverflow(t *testing.T) {
+	var claim bytes.Buffer
+	claim.WriteByte(nativeCompactFlowClaimJobs)
+	_ = binary.Write(&claim, binary.BigEndian, uint32(1))
+	writeCompactBinary(&claim, []byte("flow-1"))
+	writeCompactOptionalBinary(&claim, nil)
+	writeCompactBinary(&claim, []byte("lease-1"))
+	_ = binary.Write(&claim, binary.BigEndian, uint64(math.MaxInt64)+1)
+
+	if _, err := decodeNativeCompactClaimJobs(claim.Bytes()); err == nil {
+		t.Fatal("compact claim accepted a fencing token above int64")
+	}
+}
+
 func TestNativeFlowCompactCommandBuilders(t *testing.T) {
 	claim, err := buildNativeCommand([]any{
 		"FLOW.CLAIM_DUE",

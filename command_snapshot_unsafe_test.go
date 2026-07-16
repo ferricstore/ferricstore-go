@@ -45,3 +45,30 @@ func TestBufferedSnapshotRejectsUnsnapshotableTopLevelReferences(t *testing.T) {
 		})
 	}
 }
+
+func TestBufferedSnapshotAcceptsNonCyclicOverlappingSlices(t *testing.T) {
+	value := []any{"original", nil}
+	value[1] = value[:1]
+	buffered := NewBufferedExecutor(nil)
+
+	if _, err := buffered.Do(context.Background(), "CUSTOM", value); err != nil {
+		t.Fatalf("non-cyclic overlapping slices were rejected: %v", err)
+	}
+	value[0] = "mutated"
+	queued := buffered.commands[0][1].([]any)
+	if queued[0] != "original" {
+		t.Fatalf("queued outer value = %#v; want owned snapshot", queued[0])
+	}
+	nested := queued[1].([]any)
+	if nested[0] != "original" {
+		t.Fatalf("queued nested value = %#v; want owned snapshot", nested[0])
+	}
+}
+
+func TestBufferedSnapshotStillRejectsSliceCycles(t *testing.T) {
+	value := make([]any, 1)
+	value[0] = value
+	if _, err := NewBufferedExecutor(nil).Do(context.Background(), "CUSTOM", value); err == nil {
+		t.Fatal("cyclic slice was queued")
+	}
+}

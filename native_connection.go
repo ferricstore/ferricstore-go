@@ -49,7 +49,6 @@ func (e *NativeExecutor) ensureConnectedLocked(ctx context.Context) error {
 		var connectCtx context.Context
 		if attempt == nil {
 			options = e.opts
-			options.startupEvents = append([]string(nil), e.opts.startupEvents...)
 			replayWindow = make(map[string]any, len(e.replayWindowUpdate))
 			for key, value := range e.replayWindowUpdate {
 				replayWindow[key] = value
@@ -131,6 +130,7 @@ func (e *NativeExecutor) runConnectAttempt(ctx context.Context, attempt *nativeC
 }
 
 func (e *NativeExecutor) openNativeConnection(ctx context.Context, options NativeOptions, replayWindow map[string]any) (*nativeConnectedTransport, error) {
+	startupEvents := nativeStartupEvents(options)
 	dialer := options.Dialer
 	if dialer == nil {
 		dialer = &net.Dialer{Timeout: options.Timeout, KeepAlive: 30 * time.Second}
@@ -177,8 +177,8 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 		"driver_name": "ferricstore-go",
 		"compression": "none",
 	}
-	if len(options.startupEvents) > 0 && options.Password == "" {
-		startup["events"] = append([]string(nil), options.startupEvents...)
+	if len(startupEvents) > 0 && !options.credentialsSet {
+		startup["events"] = startupEvents
 	}
 	startupResponse, err := e.nativeHandshakeRequest(ctx, options.Timeout, conn, reader, writer, nativeDefaultRequestFrameBytes, nativeOpStartup, startup)
 	if err != nil {
@@ -188,7 +188,7 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 	if n, ok := nativeCapabilityInteger(startupResponse, "max_frame_bytes", []string{"limits", "payload"}, true); ok {
 		maxFrameBytes = boundedNativeFrameBytes(n)
 	}
-	if options.Password != "" {
+	if options.credentialsSet {
 		username := options.Username
 		if username == "" {
 			username = "default"
@@ -205,8 +205,8 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 			return nil, err
 		}
 	}
-	if options.Password != "" && len(options.startupEvents) > 0 {
-		payload := map[string]any{"events": append([]string(nil), options.startupEvents...)}
+	if options.credentialsSet && len(startupEvents) > 0 {
+		payload := map[string]any{"events": startupEvents}
 		if _, err := e.nativeHandshakeRequest(ctx, options.Timeout, conn, reader, writer, maxFrameBytes, nativeOpSubscribeEvents, payload); err != nil {
 			return nil, err
 		}
@@ -262,6 +262,9 @@ func (e *NativeExecutor) nativeHandshakeRequest(ctx context.Context, timeout tim
 	}
 	frame, err := readNativeResponse(reader)
 	if err != nil {
+		return nil, err
+	}
+	if err := nativeConnectionLevelError(frame); err != nil {
 		return nil, err
 	}
 	if frame.requestID != requestID || frame.opcode != opcode || frame.laneID != 0 {
@@ -476,139 +479,4 @@ func nativeWriteContextError(ctx context.Context, err error) error {
 		return contextErr
 	}
 	return err
-}
-
-func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader) {
-	assembler := newNativeResponseAssembler(nativeMaxFrameBytes, nativeMaxResponseChunkFrames)
-	for {
-		wireFrame, err := readNativeFrame(reader)
-		if err != nil {
-			e.closeConnAndFailPendingIfCurrent(conn, err)
-			return
-		}
-		assembled, err := assembler.add(wireFrame)
-		if err != nil {
-			e.closeConnAndFailPendingIfCurrent(conn, err)
-			return
-		}
-		if assembled == nil {
-			continue
-		}
-		frame := *assembled
-		if frame.requestID == 0 {
-			if err := validateNativeServerInitiatedResponse(frame); err != nil {
-				e.closeConnAndFailPendingIfCurrent(conn, err)
-				return
-			}
-			e.mu.Lock()
-			current := e.conn == conn
-			e.mu.Unlock()
-			if !current {
-				return
-			}
-			e.lastActivityUnixNano.Store(time.Now().UnixNano())
-			if frame.opcode == nativeOpGoAway {
-				e.handleGoAway(conn)
-			}
-			event := nativeServerEvent{
-				flags: frame.flags, laneID: frame.laneID, opcode: frame.opcode, value: frame.value,
-				wireBytes: frame.wireBytes,
-			}
-			if handler := e.opts.eventHandler; handler != nil {
-				handler(event)
-			}
-			e.deliverEvent(event)
-			continue
-		}
-		e.mu.Lock()
-		if e.conn != conn {
-			e.mu.Unlock()
-			return
-		}
-		e.lastActivityUnixNano.Store(time.Now().UnixNano())
-		pending := e.pending[frame.requestID]
-		if pending != nil && (pending.opcode != frame.opcode || pending.laneID != frame.laneID) {
-			e.mu.Unlock()
-			mismatchErr := fmt.Errorf(
-				"ferricstore native response mismatch: got lane=%d opcode=%d request=%d",
-				frame.laneID, frame.opcode, frame.requestID,
-			)
-			e.closeConnAndFailPendingIfCurrent(conn, mismatchErr)
-			return
-		}
-		delete(e.pending, frame.requestID)
-		var drained map[uint64]*nativePendingRequest
-		if e.conn == conn && e.goAway && !e.hasLivePendingLocked() {
-			drained = e.takePendingLocked()
-			_ = e.closeConnLocked()
-		}
-		abandoned := pending != nil && pending.abandoned
-		e.mu.Unlock()
-		if pending != nil {
-			releaseNativePending(pending)
-			if !abandoned {
-				pending.responseCh <- frame
-			}
-		}
-		failNativePending(drained, errNativeConnectionUnavailable)
-	}
-}
-
-func (e *NativeExecutor) handleGoAway(conn net.Conn) {
-	// Serialize the transition with request writes: every request is either
-	// fully written before draining starts, or rejected without writing.
-	e.writeMu.Lock()
-	defer e.writeMu.Unlock()
-	e.mu.Lock()
-	if e.conn != conn || e.goAway {
-		e.mu.Unlock()
-		return
-	}
-	e.goAway = true
-	e.goAwayDone = make(chan struct{})
-	done := e.goAwayDone
-	e.stopHeartbeatLocked()
-	var pending map[uint64]*nativePendingRequest
-	if !e.hasLivePendingLocked() {
-		pending = e.takePendingLocked()
-		_ = e.closeConnLocked()
-	}
-	e.mu.Unlock()
-	failNativePending(pending, errNativeConnectionUnavailable)
-	e.scheduleGoAwayDrain(conn, done)
-}
-
-func (e *NativeExecutor) closeConnAndFailPendingIfCurrent(conn net.Conn, err error) bool {
-	e.mu.Lock()
-	if e.conn != conn {
-		e.mu.Unlock()
-		return false
-	}
-	pending := e.takePendingLocked()
-	_ = e.closeConnLocked()
-	e.mu.Unlock()
-	failNativePending(pending, err)
-	return true
-}
-
-func (e *NativeExecutor) closeConnAndFailPending(err error) error {
-	e.mu.Lock()
-	pending := e.takePendingLocked()
-	closeErr := e.closeConnLocked()
-	e.mu.Unlock()
-	failNativePending(pending, err)
-	return closeErr
-}
-
-func (e *NativeExecutor) closeConnAndFailPendingUnlessRetiring(err error) error {
-	e.mu.Lock()
-	if e.retiring || e.isClosed {
-		e.mu.Unlock()
-		return nil
-	}
-	pending := e.takePendingLocked()
-	closeErr := e.closeConnLocked()
-	e.mu.Unlock()
-	failNativePending(pending, err)
-	return closeErr
 }

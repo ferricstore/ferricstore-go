@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 )
 
 type topologyRouteIdentity struct {
@@ -109,6 +108,7 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 			return
 		}
 		snapshot := waveSnapshot
+		singleRouteWave := len(groups) == 1
 		tasks := make([]func(), 0, len(groups))
 		for _, group := range groups {
 			group := group
@@ -124,10 +124,39 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 					return
 				}
 				items, err := adapter.pipelineDetailedOnLane(ctx, group.commands, group.route.LaneID)
-				if err != nil {
-					if isRetryableRouteError(err) {
-						_ = e.RefreshTopology(ctx)
+				routeErr, safeToRetryAll := topologyPipelineRouteDisposition(items)
+				retry := false
+				switch {
+				case err != nil && singleRouteWave:
+					retry = e.refreshAndCanRetrySafeReroute(ctx, err, 0)
+				case err != nil && isRetryableRouteError(err):
+					_ = e.RefreshTopology(ctx)
+				case routeErr != nil && singleRouteWave && safeToRetryAll:
+					retry = e.refreshAndCanRetrySafeReroute(ctx, routeErr, 0)
+				case routeErr != nil:
+					_ = e.RefreshTopology(ctx)
+				}
+				if retry {
+					retrySnapshot, retryErr := e.captureRoutingTopology()
+					if retryErr == nil {
+						var retryGroups map[topologyRouteIdentity]*pipelineGroup
+						retryGroups, retryErr = buildWaveGroups(retrySnapshot)
+						if retryErr == nil && len(retryGroups) != 1 {
+							retryErr = errTopologyStaleRoute
+						}
+						if retryErr == nil {
+							for _, retryGroup := range retryGroups {
+								group = retryGroup
+							}
+							adapter, retryErr = e.adapterForTopologyRoute(group.route, retrySnapshot)
+						}
+						if retryErr == nil {
+							items, retryErr = adapter.pipelineDetailedOnLane(ctx, group.commands, group.route.LaneID)
+						}
 					}
+					err = retryErr
+				}
+				if err != nil {
 					setGroupError(err)
 					return
 				}
@@ -222,35 +251,6 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 	}
 	flushRoutedWave()
 	return results, nil
-}
-
-func runBoundedTopologyTasks(limit int, tasks []func()) {
-	if len(tasks) == 0 {
-		return
-	}
-	if len(tasks) == 1 {
-		tasks[0]()
-		return
-	}
-	if limit <= 0 || limit > len(tasks) {
-		limit = len(tasks)
-	}
-	jobs := make(chan func(), limit)
-	var workers sync.WaitGroup
-	workers.Add(limit)
-	for range limit {
-		go func() {
-			defer workers.Done()
-			for task := range jobs {
-				task()
-			}
-		}()
-	}
-	for _, task := range tasks {
-		jobs <- task
-	}
-	close(jobs)
-	workers.Wait()
 }
 
 func safeScatterCommand(args []any) (string, []any, bool) {
@@ -394,15 +394,11 @@ func (e *TopologyNativeExecutor) scatterStringCountCommand(
 	}
 	if len(failures) > 0 {
 		if destructive {
-			return nil, &TopologyPartialWriteError{Command: name, Succeeded: total, Failures: failures}
+			return nil, newTopologyPartialWriteError(name, total, failures)
 		}
 		return nil, failures[0]
 	}
 	return total, nil
-}
-
-func (e *TopologyNativeExecutor) scatterCommand(ctx context.Context, name string, keys []any) (any, error) {
-	return e.scatterCommandWithContext(ctx, name, keys, nil, false)
 }
 
 func (e *TopologyNativeExecutor) scatterCommandWithContext(ctx context.Context, name string, keys []any, requestContext any, hasRequestContext bool) (any, error) {
@@ -496,7 +492,7 @@ func (e *TopologyNativeExecutor) scatterCommandWithContext(ctx context.Context, 
 	}
 	if len(failures) > 0 {
 		if destructive {
-			return nil, &TopologyPartialWriteError{Command: name, Succeeded: total, Failures: failures}
+			return nil, newTopologyPartialWriteError(name, total, failures)
 		}
 		return nil, failures[0]
 	}
@@ -516,87 +512,4 @@ func topologyScatterValueSlots(name string, count int) []any {
 func destructiveScatterCommand(name string) bool {
 	policy, ok := topologyCommandPolicies[name]
 	return ok && policy.destructive
-}
-
-// TopologyWriteFailure identifies the route and keys affected by one failed
-// shard operation within a partially completed cross-shard write.
-type TopologyWriteFailure struct {
-	Route RoutingRoute
-	Keys  []string
-	Err   error
-}
-
-func (e *TopologyWriteFailure) Error() string {
-	if e == nil {
-		return ""
-	}
-	endpoint := e.Route.EndpointKey
-	if endpoint == "" {
-		endpoint = endpointKey(e.Route.Endpoint)
-	}
-	return fmt.Sprintf(
-		"topology write to shard %d lane %d endpoint %s failed for %d keys: %v",
-		e.Route.Shard, e.Route.LaneID, endpoint, len(e.Keys), e.Err,
-	)
-}
-
-func (e *TopologyWriteFailure) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.Err
-}
-
-func topologyStringKeyWriteFailure(
-	attributed bool,
-	route RoutingRoute,
-	keys []string,
-	err error,
-) error {
-	if !attributed || err == nil {
-		return err
-	}
-	return &TopologyWriteFailure{
-		Route: route,
-		Keys:  append([]string(nil), keys...),
-		Err:   err,
-	}
-}
-
-func topologyKeyWriteFailure(
-	attributed bool,
-	route RoutingRoute,
-	keys []any,
-	err error,
-) error {
-	if !attributed || err == nil {
-		return err
-	}
-	stringKeys := make([]string, len(keys))
-	for index, key := range keys {
-		stringKeys[index] = asString(key)
-	}
-	return &TopologyWriteFailure{Route: route, Keys: stringKeys, Err: err}
-}
-
-// TopologyPartialWriteError reports the observable result of an explicitly
-// enabled cross-shard destructive command when one or more shards fail.
-type TopologyPartialWriteError struct {
-	Command   string
-	Succeeded int64
-	Failures  []error
-}
-
-func (e *TopologyPartialWriteError) Error() string {
-	if e == nil {
-		return ""
-	}
-	return fmt.Sprintf("cross-shard %s partially completed: %d successful mutations, %d shard failures", e.Command, e.Succeeded, len(e.Failures))
-}
-
-func (e *TopologyPartialWriteError) Unwrap() []error {
-	if e == nil {
-		return nil
-	}
-	return e.Failures
 }

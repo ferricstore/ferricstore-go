@@ -97,6 +97,40 @@ func TestRateLimitAddRejectsOutOfContractResponseValues(t *testing.T) {
 	}
 }
 
+func TestKeyInfoRejectsOutOfContractValues(t *testing.T) {
+	valid := map[string]any{
+		"type":             "string",
+		"value_size":       int64(5),
+		"ttl_ms":           int64(-1),
+		"hot_cache_status": "hot",
+		"last_write_shard": int64(2),
+	}
+	tests := []struct {
+		name  string
+		field string
+		value any
+	}{
+		{name: "empty type", field: "type", value: ""},
+		{name: "negative value size", field: "value_size", value: int64(-1)},
+		{name: "invalid ttl sentinel", field: "ttl_ms", value: int64(-3)},
+		{name: "unknown cache status", field: "hot_cache_status", value: "warm"},
+		{name: "negative shard", field: "last_write_shard", value: int64(-1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := make(map[string]any, len(valid))
+			for key, value := range valid {
+				response[key] = value
+			}
+			response[test.field] = test.value
+			client := NewClientWithExecutor(&fakeExecutor{value: response})
+			if _, err := client.KeyInfo(context.Background(), "key"); err == nil {
+				t.Fatalf("accepted out-of-contract key_info %s=%v", test.field, test.value)
+			}
+		})
+	}
+}
+
 func TestUnlockAndExtendRejectNonSuccessIntegerResponses(t *testing.T) {
 	tests := []struct {
 		name string

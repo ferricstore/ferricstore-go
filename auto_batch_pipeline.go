@@ -6,10 +6,6 @@ import (
 	"fmt"
 )
 
-func (e *AutoBatchExecutor) submit(ctx context.Context, args []any) (<-chan autoBatchResult, error) {
-	return e.submitWithQueuePolicy(ctx, args, true)
-}
-
 func (e *AutoBatchExecutor) submitWithQueuePolicy(
 	ctx context.Context,
 	args []any,

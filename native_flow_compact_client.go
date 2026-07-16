@@ -19,7 +19,7 @@ func (c *Client) tryCreateManyNativeCompact(ctx context.Context, opt CreateManyO
 	if c.currentLegacySession() != nil {
 		return nil, false, nil
 	}
-	kind := byte(nativeCompactFlowCreateManyRequest)
+	var kind byte
 	switch {
 	case mixed:
 		kind = nativeCompactFlowCreateManyMixedRequest
@@ -42,7 +42,7 @@ func (c *Client) tryCreateManyNativeCompact(ctx context.Context, opt CreateManyO
 	if err != nil {
 		return nil, true, err
 	}
-	records, err := recordsOrNil(value, c.codec)
+	records, err := recordsOrNil(value, c.codec, len(opt.Items))
 	return records, true, err
 }
 
@@ -162,7 +162,7 @@ func (c *Client) tryCompleteManyNativeCompact(ctx context.Context, opt CompleteM
 	if err != nil {
 		return nil, true, err
 	}
-	records, err := recordsOrNil(value, c.codec)
+	records, err := recordsOrNil(value, c.codec, len(opt.Items))
 	return records, true, err
 }
 

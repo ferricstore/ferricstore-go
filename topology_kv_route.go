@@ -194,15 +194,8 @@ func (e *TopologyNativeExecutor) keyValueMGetOnRoute(
 	route RoutingRoute,
 	snapshot topologyRoutingSnapshot,
 ) (any, error) {
-	adapter, err := e.adapterForTopologyRoute(route, snapshot)
+	value, err := e.doNativeCommandWithSafeReroute(ctx, keys[0], newNativeMGetCommand(keys), route, snapshot)
 	if err != nil {
-		return nil, err
-	}
-	value, err := adapter.doNativeCommandOnLane(ctx, newNativeMGetCommand(keys), route.LaneID)
-	if err != nil {
-		if isRetryableRouteError(err) {
-			_ = e.RefreshTopology(ctx)
-		}
 		return nil, err
 	}
 	items, ok := value.([]any)
@@ -219,10 +212,6 @@ func (e *TopologyNativeExecutor) keyValueCountOnRoute(
 	route RoutingRoute,
 	snapshot topologyRoutingSnapshot,
 ) (any, error) {
-	adapter, err := e.adapterForTopologyRoute(route, snapshot)
-	if err != nil {
-		return nil, err
-	}
 	var command nativeCommand
 	switch name {
 	case "DEL":
@@ -232,11 +221,8 @@ func (e *TopologyNativeExecutor) keyValueCountOnRoute(
 	default:
 		return nil, fmt.Errorf("unsupported typed key-count command %s", name)
 	}
-	value, err := adapter.doNativeCommandOnLane(ctx, command, route.LaneID)
+	value, err := e.doNativeCommandWithSafeReroute(ctx, keys[0], command, route, snapshot)
 	if err != nil {
-		if isRetryableRouteError(err) {
-			_ = e.RefreshTopology(ctx)
-		}
 		return nil, err
 	}
 	count, err := responseInt64(value, nil)

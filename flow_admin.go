@@ -1,193 +1,32 @@
 package ferricstore
 
-import (
-	"context"
-	"errors"
-	"reflect"
-)
-
-type ScheduleOptions struct {
-	Target         map[string]any
-	Kind           string
-	AtMS           *int64
-	DelayMS        *int64
-	StartAtMS      *int64
-	EveryMS        *int64
-	Cron           string
-	Timezone       string
-	OverlapPolicy  string
-	OverlapRetryMS *int64
-	MaxFires       *int64
-	EndAtMS        *int64
-	Overwrite      *bool
-	NowMS          *int64
-	ExtraOptions   map[string]any
-}
-
-type ScheduleListOptions struct {
-	Kind       string
-	State      string
-	Timezone   string
-	TargetType string
-	FromMS     *int64
-	ToMS       *int64
-	Count      *int
-	Rev        *bool
-}
-
-type ScheduleResult struct {
-	ID            string
-	Kind          string
-	Status        string
-	Target        map[string]any
-	Timezone      string
-	Cron          string
-	OverlapPolicy string
-	NextFireAtMS  int64
-	LastFireAtMS  int64
-	Fires         int64
-	MaxFires      int64
-	EndAtMS       int64
-	Raw           map[string]any
-}
-
-func (c *Client) Stats(ctx context.Context, flowType string, opt ReadOptions) (map[string]any, error) {
-	args := []any{"FLOW.STATS", flowType}
-	appendReadOptions(&args, opt)
-	return mapResult(c.typedReply(ctx, args...))
-}
-
-func (c *Client) CountByState(ctx context.Context, flowType, state string, opt ReadOptions) (int64, error) {
-	opt.State = state
-	opt.Count = nil
-
-	stats, err := c.Stats(ctx, flowType, opt)
-	if err != nil {
-		return 0, err
-	}
-	return statsCount(stats)
-}
-
-func (c *Client) Attributes(ctx context.Context, flowType string, opt ReadOptions) ([]map[string]any, error) {
-	args := []any{"FLOW.ATTRIBUTES", flowType}
-	appendReadOptions(&args, opt)
-	return mapList(c.typedReply(ctx, args...))
-}
-
-func (c *Client) AttributeValues(ctx context.Context, flowType, attribute string, opt ReadOptions) ([]map[string]any, error) {
-	args := []any{"FLOW.ATTRIBUTE_VALUES", flowType, attribute}
-	appendReadOptions(&args, opt)
-	return mapList(c.typedReply(ctx, args...))
-}
-
-func (c *Client) ScheduleCreate(ctx context.Context, id string, opt ScheduleOptions) (ScheduleResult, error) {
-	args := []any{"FLOW.SCHEDULE.CREATE", id}
-	appendOpt(&args, "KIND", opt.Kind)
-	appendInt64Ptr(&args, "AT_MS", opt.AtMS)
-	appendInt64Ptr(&args, "DELAY_MS", opt.DelayMS)
-	appendInt64Ptr(&args, "START_AT_MS", opt.StartAtMS)
-	appendInt64Ptr(&args, "EVERY_MS", opt.EveryMS)
-	appendOpt(&args, "CRON", opt.Cron)
-	appendOpt(&args, "TIMEZONE", opt.Timezone)
-	if opt.Target != nil {
-		appendOpt(&args, "TARGET", opt.Target)
-	}
-	appendOpt(&args, "OVERLAP_POLICY", opt.OverlapPolicy)
-	appendInt64Ptr(&args, "OVERLAP_RETRY_MS", opt.OverlapRetryMS)
-	appendInt64Ptr(&args, "MAX_FIRES", opt.MaxFires)
-	appendInt64Ptr(&args, "END_AT_MS", opt.EndAtMS)
-	appendBoolPtr(&args, "OVERWRITE", opt.Overwrite)
-	appendInt64Ptr(&args, "NOW", opt.NowMS)
-	for key, value := range opt.ExtraOptions {
-		args = append(args, key, value)
-	}
-	return scheduleResult(c.typedReply(ctx, args...))
-}
-
-func (c *Client) ScheduleGet(ctx context.Context, id string, nowMS *int64) (*ScheduleResult, error) {
-	args := []any{"FLOW.SCHEDULE.GET", id}
-	appendInt64Ptr(&args, "NOW", nowMS)
-	value, err := c.typedReply(ctx, args...)
-	if err != nil || value == nil {
-		return nil, err
-	}
-	result, err := scheduleResult(value, nil)
-	return &result, err
-}
-
-func (c *Client) ScheduleFire(ctx context.Context, id string, nowMS *int64) (ScheduleResult, error) {
-	return c.scheduleStatus(ctx, "FLOW.SCHEDULE.FIRE", id, nowMS)
-}
-
-func (c *Client) SchedulePause(ctx context.Context, id string, nowMS *int64) (ScheduleResult, error) {
-	return c.scheduleStatus(ctx, "FLOW.SCHEDULE.PAUSE", id, nowMS)
-}
-
-func (c *Client) ScheduleResume(ctx context.Context, id string, nowMS *int64) (ScheduleResult, error) {
-	return c.scheduleStatus(ctx, "FLOW.SCHEDULE.RESUME", id, nowMS)
-}
-
-func (c *Client) ScheduleDelete(ctx context.Context, id string, nowMS *int64) (ScheduleResult, error) {
-	return c.scheduleStatus(ctx, "FLOW.SCHEDULE.DELETE", id, nowMS)
-}
-
-func (c *Client) scheduleStatus(ctx context.Context, command, id string, nowMS *int64) (ScheduleResult, error) {
-	args := []any{command, id}
-	appendInt64Ptr(&args, "NOW", nowMS)
-	value, err := c.typedReply(ctx, args...)
-	if err != nil {
-		return ScheduleResult{}, err
-	}
-	if isOK(value) {
-		return ScheduleResult{ID: id, Status: "deleted", Raw: map[string]any{"id": id, "status": "deleted"}}, nil
-	}
-	return scheduleResult(value, nil)
-}
-
-func (c *Client) ScheduleFireDue(ctx context.Context, nowMS *int64, worker string, blockMS *int64, limit *int) (ScheduleResult, error) {
-	args := []any{"FLOW.SCHEDULE.FIRE_DUE"}
-	appendInt64Ptr(&args, "NOW", nowMS)
-	appendOpt(&args, "WORKER", worker)
-	appendInt64Ptr(&args, "BLOCK", blockMS)
-	appendIntPtr(&args, "LIMIT", limit)
-	return scheduleResult(c.typedReply(ctx, args...))
-}
-
-func (c *Client) ScheduleList(ctx context.Context, opt ScheduleListOptions) ([]ScheduleResult, error) {
-	args := []any{"FLOW.SCHEDULE.LIST"}
-	appendOpt(&args, "KIND", opt.Kind)
-	appendOpt(&args, "STATE", opt.State)
-	appendOpt(&args, "TIMEZONE", opt.Timezone)
-	appendOpt(&args, "TARGET_TYPE", opt.TargetType)
-	appendInt64Ptr(&args, "FROM_MS", opt.FromMS)
-	appendInt64Ptr(&args, "TO_MS", opt.ToMS)
-	appendIntPtr(&args, "COUNT", opt.Count)
-	appendBoolPtr(&args, "REV", opt.Rev)
-	maps, err := mapList(c.typedReply(ctx, args...))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]ScheduleResult, 0, len(maps))
-	for _, item := range maps {
-		result, err := scheduleResultFromMap(item)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, result)
-	}
-	return out, nil
-}
+import "context"
 
 type EffectResult struct {
 	ID              string
+	FlowID          string
+	PartitionKey    string
+	FlowType        string
+	State           string
 	EffectKey       string
 	EffectType      string
 	Status          string
+	Decision        string
+	Scope           string
 	ExternalID      string
 	Error           string
 	Reason          string
 	OperationDigest string
 	IdempotencyKey  string
+	PolicyHash      string
+	PolicyVersion   string
+	LatencyMS       int64
+	CreatedAtMS     int64
+	UpdatedAtMS     int64
+	ReservedAtMS    int64
+	ConfirmedAtMS   int64
+	FailedAtMS      int64
+	CompensatedAtMS int64
 	Raw             map[string]any
 }
 
@@ -213,6 +52,9 @@ type EffectStatusOptions struct {
 }
 
 func (c *Client) EffectReserve(ctx context.Context, id, effectKey, effectType string, opt EffectReserveOptions) (EffectResult, error) {
+	if err := validateEffectReserve(id, effectKey, effectType, opt); err != nil {
+		return EffectResult{}, err
+	}
 	args := []any{"FLOW.EFFECT.RESERVE", id, "EFFECT_KEY", effectKey, "EFFECT_TYPE", effectType}
 	appendOpt(&args, "PARTITION", opt.PartitionKey)
 	appendOpt(&args, "LEASE_TOKEN", opt.LeaseToken)
@@ -237,6 +79,9 @@ func (c *Client) EffectCompensate(ctx context.Context, id, effectKey string, opt
 }
 
 func (c *Client) EffectGet(ctx context.Context, id, effectKey, partitionKey string) (*EffectResult, error) {
+	if err := validateEffectGet(id, effectKey); err != nil {
+		return nil, err
+	}
 	args := []any{"FLOW.EFFECT.GET", id, "EFFECT_KEY", effectKey}
 	appendOpt(&args, "PARTITION", partitionKey)
 	value, err := c.typedReply(ctx, args...)
@@ -248,6 +93,9 @@ func (c *Client) EffectGet(ctx context.Context, id, effectKey, partitionKey stri
 }
 
 func (c *Client) effectStatus(ctx context.Context, command, id, effectKey string, opt EffectStatusOptions) (EffectResult, error) {
+	if err := validateEffectStatus(id, effectKey, opt); err != nil {
+		return EffectResult{}, err
+	}
 	args := []any{command, id, "EFFECT_KEY", effectKey}
 	appendOpt(&args, "PARTITION", opt.PartitionKey)
 	appendOpt(&args, "LEASE_TOKEN", opt.LeaseToken)
@@ -261,17 +109,21 @@ func (c *Client) effectStatus(ctx context.Context, command, id, effectKey string
 }
 
 type ApprovalResult struct {
-	ID            string
-	FlowID        string
-	Scope         string
-	Status        string
-	Reason        string
-	RequestedBy   string
-	Approver      string
-	Assignees     []string
-	PolicyHash    string
-	PolicyVersion string
-	Raw           map[string]any
+	ID             string
+	FlowID         string
+	Scope          string
+	Status         string
+	Reason         string
+	RequestedBy    string
+	Approver       string
+	DecisionReason string
+	Assignees      []string
+	PolicyHash     string
+	PolicyVersion  string
+	RequestedAtMS  int64
+	DecidedAtMS    int64
+	ExpiresAtMS    int64
+	Raw            map[string]any
 }
 
 type ApprovalRequestOptions struct {
@@ -296,6 +148,9 @@ type ApprovalListOptions struct {
 }
 
 func (c *Client) ApprovalRequest(ctx context.Context, id string, opt ApprovalRequestOptions) (ApprovalResult, error) {
+	if err := validateApprovalRequest(id, opt); err != nil {
+		return ApprovalResult{}, err
+	}
 	args := []any{"FLOW.APPROVAL.REQUEST", id}
 	appendOpt(&args, "FLOW_ID", opt.FlowID)
 	appendOpt(&args, "SCOPE", opt.Scope)
@@ -321,6 +176,9 @@ func (c *Client) ApprovalReject(ctx context.Context, id, approver, reason string
 }
 
 func (c *Client) approvalStatus(ctx context.Context, command, id, approver, reason string, nowMS *int64) (ApprovalResult, error) {
+	if err := validateApprovalDecision(id, approver, nowMS); err != nil {
+		return ApprovalResult{}, err
+	}
 	args := []any{command, id, "APPROVER", approver}
 	appendOpt(&args, "REASON", reason)
 	appendInt64Ptr(&args, "NOW", nowMS)
@@ -328,6 +186,9 @@ func (c *Client) approvalStatus(ctx context.Context, command, id, approver, reas
 }
 
 func (c *Client) ApprovalGet(ctx context.Context, id string) (*ApprovalResult, error) {
+	if err := validateRequiredText("id", id); err != nil {
+		return nil, err
+	}
 	value, err := c.typedReply(ctx, "FLOW.APPROVAL.GET", id)
 	if err != nil || value == nil {
 		return nil, err
@@ -337,8 +198,11 @@ func (c *Client) ApprovalGet(ctx context.Context, id string) (*ApprovalResult, e
 }
 
 func (c *Client) ApprovalList(ctx context.Context, opt ApprovalListOptions) ([]ApprovalResult, error) {
+	if err := validateApprovalList(opt); err != nil {
+		return nil, err
+	}
 	args := []any{"FLOW.APPROVAL.LIST"}
-	appendOpt(&args, "STATUS", opt.Status)
+	appendOpt(&args, "STATUS", canonicalAdminEnum(opt.Status))
 	appendOpt(&args, "SCOPE", opt.Scope)
 	appendOpt(&args, "PARTITION", opt.PartitionKey)
 	appendOpt(&args, "FLOW_ID", opt.FlowID)
@@ -363,15 +227,19 @@ type GovernanceOverview struct {
 	Approvals []ApprovalResult
 	Budgets   []BudgetResult
 	Limits    []LimitResult
+	Circuits  []CircuitBreakerStatus
 	Effects   []EffectResult
 	Raw       map[string]any
 }
 
 func (c *Client) GovernanceOverview(ctx context.Context, opt ApprovalListOptions) (GovernanceOverview, error) {
+	if err := validateApprovalList(opt); err != nil {
+		return GovernanceOverview{}, err
+	}
 	args := []any{"FLOW.GOVERNANCE.OVERVIEW"}
 	appendOpt(&args, "SCOPE", opt.Scope)
 	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	appendOpt(&args, "STATUS", opt.Status)
+	appendOpt(&args, "STATUS", canonicalAdminEnum(opt.Status))
 	appendOpt(&args, "FLOW_ID", opt.FlowID)
 	appendIntPtr(&args, "LIMIT", opt.Limit)
 	m, err := mapResult(c.typedReply(ctx, args...))
@@ -382,250 +250,93 @@ func (c *Client) GovernanceOverview(ctx context.Context, opt ApprovalListOptions
 }
 
 type CircuitBreakerStatus struct {
-	Scope        string
-	Status       string
-	RetryAfterMS int64
-	Raw          map[string]any
+	Scope                    string
+	Status                   string
+	FailureThreshold         int64
+	OpenMS                   int64
+	OpenedAtMS               int64
+	Failures                 int64
+	FailureCount             int64
+	WindowMS                 int64
+	MinCalls                 int64
+	FailureRatePct           int64
+	LatencyThresholdMS       int64
+	ErrorClasses             []string
+	HalfOpenMaxProbes        int64
+	HalfOpenSuccessThreshold int64
+	HalfOpenInFlight         int64
+	HalfOpenSuccesses        int64
+	HalfOpenStartedAtMS      int64
+	LastFailureMS            int64
+	LastSuccessMS            int64
+	UpdatedAtMS              int64
+	Events                   []map[string]any
+	EventCount               int64
+	RetryAfterMS             int64
+	Raw                      map[string]any
+}
+
+type CircuitOpenOptions struct {
+	OpenMS                   *int64
+	FailureThreshold         *int64
+	WindowMS                 *int64
+	MinCalls                 *int64
+	FailureRatePct           *int64
+	LatencyThresholdMS       *int64
+	ErrorClasses             []string
+	HalfOpenMaxProbes        *int64
+	HalfOpenSuccessThreshold *int64
+	NowMS                    *int64
+	DeadlineMS               *int64
 }
 
 func (c *Client) CircuitOpen(ctx context.Context, scope string, openMS, failureThreshold, nowMS *int64) (CircuitBreakerStatus, error) {
+	return c.CircuitOpenWithOptions(ctx, scope, CircuitOpenOptions{
+		OpenMS: openMS, FailureThreshold: failureThreshold, NowMS: nowMS,
+	})
+}
+
+// CircuitOpenWithOptions opens or reconfigures a circuit using the complete
+// rule contract exposed by FerricStore.
+func (c *Client) CircuitOpenWithOptions(ctx context.Context, scope string, opt CircuitOpenOptions) (CircuitBreakerStatus, error) {
+	errorClasses, err := validateCircuitOpenOptions(scope, opt)
+	if err != nil {
+		return CircuitBreakerStatus{}, err
+	}
 	args := []any{"FLOW.CIRCUIT.OPEN", scope}
-	appendInt64Ptr(&args, "OPEN_MS", openMS)
-	appendInt64Ptr(&args, "FAILURE_THRESHOLD", failureThreshold)
-	appendInt64Ptr(&args, "NOW", nowMS)
+	appendInt64Ptr(&args, "OPEN_MS", opt.OpenMS)
+	appendInt64Ptr(&args, "FAILURE_THRESHOLD", opt.FailureThreshold)
+	appendInt64Ptr(&args, "WINDOW_MS", opt.WindowMS)
+	appendInt64Ptr(&args, "MIN_CALLS", opt.MinCalls)
+	appendInt64Ptr(&args, "FAILURE_RATE_PCT", opt.FailureRatePct)
+	appendInt64Ptr(&args, "LATENCY_THRESHOLD_MS", opt.LatencyThresholdMS)
+	if opt.ErrorClasses != nil {
+		args = append(args, "ERROR_CLASSES", errorClasses)
+	}
+	appendInt64Ptr(&args, "HALF_OPEN_MAX_PROBES", opt.HalfOpenMaxProbes)
+	appendInt64Ptr(&args, "HALF_OPEN_SUCCESS_THRESHOLD", opt.HalfOpenSuccessThreshold)
+	appendInt64Ptr(&args, "NOW", opt.NowMS)
+	appendInt64Ptr(&args, "DEADLINE_MS", opt.DeadlineMS)
 	return circuitResult(c.typedReply(ctx, args...))
 }
 
 func (c *Client) CircuitClose(ctx context.Context, scope string, nowMS *int64) (CircuitBreakerStatus, error) {
+	if err := validateCircuitOperation(scope, nil, nil, nowMS); err != nil {
+		return CircuitBreakerStatus{}, err
+	}
 	args := []any{"FLOW.CIRCUIT.CLOSE", scope}
 	appendInt64Ptr(&args, "NOW", nowMS)
 	return circuitResult(c.typedReply(ctx, args...))
 }
 
 func (c *Client) CircuitGet(ctx context.Context, scope string) (*CircuitBreakerStatus, error) {
+	if err := validateCircuitOperation(scope, nil, nil, nil); err != nil {
+		return nil, err
+	}
 	value, err := c.typedReply(ctx, "FLOW.CIRCUIT.GET", scope)
 	if err != nil || value == nil {
 		return nil, err
 	}
 	result, err := circuitResult(value, nil)
 	return &result, err
-}
-
-type BudgetResult struct {
-	Scope         string
-	Status        string
-	Limit         int64
-	Used          int64
-	Remaining     int64
-	ReservationID string
-	Raw           map[string]any
-}
-
-type LimitLeaseState struct {
-	ShardID        int64
-	Epoch          int64
-	ExpiresAtMS    int64
-	Available      int64
-	InUse          int64
-	PendingReclaim int64
-	DrainRate      float64
-	LastSpendAtMS  int64
-	Raw            map[string]any
-}
-
-type LimitResult struct {
-	Scope  string
-	Limit  int64
-	Free   int64
-	Epoch  int64
-	Leases map[int64]LimitLeaseState
-	Lease  *LimitLeaseState
-	Raw    map[string]any
-}
-
-func (c *Client) BudgetReserve(ctx context.Context, scope string, amount int64, limit, windowMS *int64, reservationID string, nowMS *int64) (BudgetResult, error) {
-	args := []any{"FLOW.BUDGET.RESERVE", scope, "AMOUNT", amount}
-	appendInt64Ptr(&args, "LIMIT", limit)
-	appendInt64Ptr(&args, "WINDOW_MS", windowMS)
-	appendOpt(&args, "RESERVATION_ID", reservationID)
-	appendInt64Ptr(&args, "NOW", nowMS)
-	return budgetResult(c.typedReply(ctx, args...))
-}
-
-func (c *Client) BudgetCommit(ctx context.Context, scope, reservationID string, actualAmount int64, usage map[string]any, nowMS *int64) (BudgetResult, error) {
-	args := []any{"FLOW.BUDGET.COMMIT", scope, "RESERVATION_ID", reservationID, "ACTUAL_AMOUNT", actualAmount}
-	if usage != nil {
-		args = append(args, "USAGE", usage)
-	}
-	appendInt64Ptr(&args, "NOW", nowMS)
-	return budgetResult(c.typedReply(ctx, args...))
-}
-
-func (c *Client) BudgetRelease(ctx context.Context, scope, reservationID string, nowMS *int64) (BudgetResult, error) {
-	args := []any{"FLOW.BUDGET.RELEASE", scope, "RESERVATION_ID", reservationID}
-	appendInt64Ptr(&args, "NOW", nowMS)
-	return budgetResult(c.typedReply(ctx, args...))
-}
-
-func (c *Client) BudgetGet(ctx context.Context, scope string) (*BudgetResult, error) {
-	value, err := c.typedReply(ctx, "FLOW.BUDGET.GET", scope)
-	if err != nil || value == nil {
-		return nil, err
-	}
-	result, err := budgetResult(value, nil)
-	return &result, err
-}
-
-func (c *Client) BudgetList(ctx context.Context, scope, partitionKey string, limit *int) ([]BudgetResult, error) {
-	args := []any{"FLOW.BUDGET.LIST"}
-	appendOpt(&args, "SCOPE", scope)
-	appendOpt(&args, "PARTITION", partitionKey)
-	appendIntPtr(&args, "LIMIT", limit)
-	maps, err := mapList(c.typedReply(ctx, args...))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]BudgetResult, 0, len(maps))
-	for _, item := range maps {
-		result, err := budgetResultFromMap(item)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, result)
-	}
-	return out, nil
-}
-
-func (c *Client) LimitLease(ctx context.Context, scope string, shardID, amount, ttlMS int64, limit, nowMS *int64) (LimitResult, error) {
-	args := []any{"FLOW.LIMIT.LEASE", scope, "SHARD_ID", shardID, "AMOUNT", amount, "TTL_MS", ttlMS}
-	appendInt64Ptr(&args, "LIMIT", limit)
-	appendInt64Ptr(&args, "NOW", nowMS)
-	return limitResult(c.typedReply(ctx, args...))
-}
-
-func (c *Client) LimitSpend(ctx context.Context, scope string, shardID, amount int64, nowMS *int64) (LimitResult, error) {
-	args := []any{"FLOW.LIMIT.SPEND", scope, "SHARD_ID", shardID, "AMOUNT", amount}
-	appendInt64Ptr(&args, "NOW", nowMS)
-	return limitResult(c.typedReply(ctx, args...))
-}
-
-func (c *Client) LimitRelease(ctx context.Context, scope string, shardID, amount int64) (LimitResult, error) {
-	return limitResult(c.typedReply(ctx, "FLOW.LIMIT.RELEASE", scope, "SHARD_ID", shardID, "AMOUNT", amount))
-}
-
-func (c *Client) LimitGet(ctx context.Context, scope string, nowMS *int64) (*LimitResult, error) {
-	args := []any{"FLOW.LIMIT.GET", scope}
-	appendInt64Ptr(&args, "NOW", nowMS)
-	value, err := c.typedReply(ctx, args...)
-	if err != nil || value == nil {
-		return nil, err
-	}
-	result, err := limitResult(value, nil)
-	return &result, err
-}
-
-func (c *Client) LimitList(ctx context.Context, scope, partitionKey string, limit *int, nowMS *int64) ([]LimitResult, error) {
-	args := []any{"FLOW.LIMIT.LIST"}
-	appendOpt(&args, "SCOPE", scope)
-	appendOpt(&args, "PARTITION", partitionKey)
-	appendIntPtr(&args, "LIMIT", limit)
-	appendInt64Ptr(&args, "NOW", nowMS)
-	maps, err := mapList(c.typedReply(ctx, args...))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]LimitResult, 0, len(maps))
-	for _, item := range maps {
-		result, err := limitResultFromMap(item)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, result)
-	}
-	return out, nil
-}
-
-func (c *Client) GovernanceLedger(ctx context.Context, id string, opt ReadOptions) ([]map[string]any, error) {
-	args := []any{"FLOW.GOVERNANCE.LEDGER", id}
-	appendReadOptions(&args, opt)
-	return mapList(c.typedReply(ctx, args...))
-}
-
-func appendAttributes(args *[]any, attributes, attributesMerge map[string]any, attributesDelete []string) {
-	for name, value := range attributes {
-		*args = append(*args, "ATTRIBUTE", name, value)
-	}
-	for name, value := range attributesMerge {
-		*args = append(*args, "ATTRIBUTE_MERGE", name, value)
-	}
-	for _, name := range attributesDelete {
-		*args = append(*args, "ATTRIBUTE_DELETE", name)
-	}
-}
-
-func appendStateMeta(args *[]any, stateMeta map[string]any) {
-	for name, value := range stateMeta {
-		*args = append(*args, "STATE_META", name, value)
-	}
-}
-
-func appendSearchStateMeta(args *[]any, stateMeta map[string]map[string]any) {
-	for state, meta := range stateMeta {
-		for name, value := range meta {
-			*args = append(*args, "STATE_META", state, name, value)
-		}
-	}
-}
-
-func sharedCreateManyAttributes(items []CreateItem, attributes map[string]any) (map[string]any, error) {
-	var first map[string]any
-	for _, item := range items {
-		if len(item.Attributes) == 0 {
-			continue
-		}
-		if first == nil {
-			first = item.Attributes
-			continue
-		}
-		if !reflect.DeepEqual(first, item.Attributes) {
-			return nil, errors.New("create_many supports shared attributes only; use CreateManyOptions.Attributes or separate Create calls for per-item attributes")
-		}
-	}
-	if first == nil {
-		return attributes, nil
-	}
-	if attributes != nil && !reflect.DeepEqual(attributes, first) {
-		return nil, errors.New("create_many item attributes must match shared attributes when both are provided")
-	}
-	return first, nil
-}
-
-func sharedCreateManyStateMeta(items []CreateItem, stateMeta map[string]any) (map[string]any, error) {
-	var first map[string]any
-	for _, item := range items {
-		if len(item.StateMeta) == 0 {
-			continue
-		}
-		if first == nil {
-			first = item.StateMeta
-			continue
-		}
-		if !reflect.DeepEqual(first, item.StateMeta) {
-			return nil, errors.New("create_many supports shared state_meta only; use CreateManyOptions.StateMeta or separate Create calls for per-item state_meta")
-		}
-	}
-	if first == nil {
-		return stateMeta, nil
-	}
-	if stateMeta != nil && !reflect.DeepEqual(stateMeta, first) {
-		return nil, errors.New("create_many item state_meta must match shared state_meta when both are provided")
-	}
-	return first, nil
-}
-
-func boolDefault(value *bool, fallback bool) bool {
-	if value == nil {
-		return fallback
-	}
-	return *value
 }

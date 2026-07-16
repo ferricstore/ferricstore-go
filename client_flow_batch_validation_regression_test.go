@@ -2,6 +2,7 @@ package ferricstore
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -62,6 +63,10 @@ func TestFlowManyRejectsItemsOutsideBatchPartition(t *testing.T) {
 
 func TestRunStepsManyRejectsInvalidOptionsBeforeCodecOrTransport(t *testing.T) {
 	zero := int64(0)
+	oversized := make([]RunStepsItem, maxFlowBatchItems+1)
+	for index := range oversized {
+		oversized[index].ID = fmt.Sprintf("flow-%d", index)
+	}
 	tests := []struct {
 		name string
 		opt  RunStepsManyOptions
@@ -111,6 +116,19 @@ func TestRunStepsManyRejectsInvalidOptionsBeforeCodecOrTransport(t *testing.T) {
 				Items: []RunStepsItem{{ID: "flow-1"}}, Payload: "value",
 			},
 		},
+		{
+			name: "duplicate id",
+			opt: RunStepsManyOptions{
+				Type: "order", States: []string{"ready"}, Worker: "worker",
+				Items: []RunStepsItem{{ID: "flow-1"}, {ID: "flow-1"}}, Payload: "value",
+			},
+		},
+		{
+			name: "batch above server maximum",
+			opt: RunStepsManyOptions{
+				Type: "order", States: []string{"ready"}, Worker: "worker", Items: oversized, Payload: "value",
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -126,6 +144,58 @@ func TestRunStepsManyRejectsInvalidOptionsBeforeCodecOrTransport(t *testing.T) {
 			}
 			if len(exec.calls) != 0 {
 				t.Fatalf("invalid options reached transport: %#v", exec.calls)
+			}
+		})
+	}
+}
+
+func TestFlowManyMutationsRejectPartialAcknowledgementLists(t *testing.T) {
+	claimed := []ClaimedItem{
+		{ID: "one", LeaseToken: "lease-one", FencingToken: 1},
+		{ID: "two", LeaseToken: "lease-two", FencingToken: 2},
+	}
+	fenced := []FencedItem{
+		{ID: "one", LeaseToken: "lease-one", FencingToken: 1},
+		{ID: "two", LeaseToken: "lease-two", FencingToken: 2},
+	}
+	tests := []struct {
+		name string
+		call func(*Client) error
+	}{
+		{name: "create", call: func(client *Client) error {
+			_, err := client.CreateMany(context.Background(), CreateManyOptions{
+				Type: "order", Items: []CreateItem{{ID: "one"}, {ID: "two"}},
+			})
+			return err
+		}},
+		{name: "complete", call: func(client *Client) error {
+			_, err := client.CompleteMany(context.Background(), CompleteManyOptions{PartitionKey: "tenant", Items: claimed})
+			return err
+		}},
+		{name: "transition", call: func(client *Client) error {
+			_, err := client.TransitionMany(context.Background(), TransitionManyOptions{
+				PartitionKey: "tenant", FromState: "queued", ToState: "ready", Items: fenced,
+			})
+			return err
+		}},
+		{name: "retry", call: func(client *Client) error {
+			_, err := client.RetryMany(context.Background(), RetryManyOptions{PartitionKey: "tenant", Items: claimed})
+			return err
+		}},
+		{name: "fail", call: func(client *Client) error {
+			_, err := client.FailMany(context.Background(), FailManyOptions{PartitionKey: "tenant", Items: claimed})
+			return err
+		}},
+		{name: "cancel", call: func(client *Client) error {
+			_, err := client.CancelMany(context.Background(), CancelManyOptions{PartitionKey: "tenant", Items: fenced})
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewClientWithExecutor(&fakeExecutor{value: []any{[]byte("OK")}})
+			if err := test.call(client); err == nil {
+				t.Fatal("partial one-item response was accepted for a two-item mutation")
 			}
 		})
 	}

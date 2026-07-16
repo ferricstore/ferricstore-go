@@ -1,6 +1,7 @@
 package ferricstore
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math"
@@ -11,6 +12,11 @@ import (
 // ErrNil reports a valid protocol null where a scalar result was requested.
 // Callers can use errors.Is to distinguish absence from a legitimate zero.
 var ErrNil = errors.New("ferricstore: nil response")
+
+var (
+	errExpectedIntegerResponse = errors.New("expected integer response")
+	errExpectedBooleanResponse = errors.New("expected boolean response")
+)
 
 func responseInt64(value any, err error) (int64, error) {
 	if err != nil {
@@ -49,9 +55,11 @@ func responseInt64(value any, err error) (int64, error) {
 			return n, nil
 		}
 	case []byte:
-		return responseInt64(string(v), nil)
+		if n, ok := parseResponseIntBytes(v); ok {
+			return n, nil
+		}
 	}
-	return 0, fmt.Errorf("expected integer response, got %T (%v)", value, value)
+	return 0, errExpectedIntegerResponse
 }
 
 func boundedCountResponse(command string, maximum int, value any, err error) (int64, error) {
@@ -123,7 +131,11 @@ func responseFloat64Policy(value any, err error, allowNonFinite bool) (float64, 
 		}
 		result = parsed
 	case []byte:
-		return responseFloat64Policy(string(v), nil, allowNonFinite)
+		parsed, parseErr := parseResponseFloat(string(v))
+		if parseErr != nil {
+			return 0, fmt.Errorf("expected float response, got %q", v)
+		}
+		result = parsed
 	default:
 		return 0, fmt.Errorf("expected float response, got %T", value)
 	}
@@ -190,9 +202,23 @@ func responseBool(value any, err error) (bool, error) {
 			return false, nil
 		}
 	case []byte:
-		return responseBool(string(v), nil)
+		text := bytes.TrimSpace(v)
+		if len(text) == 1 {
+			if text[0] == '1' {
+				return true, nil
+			}
+			if text[0] == '0' {
+				return false, nil
+			}
+		}
+		if bytes.EqualFold(text, []byte("true")) {
+			return true, nil
+		}
+		if bytes.EqualFold(text, []byte("false")) {
+			return false, nil
+		}
 	}
-	return false, fmt.Errorf("expected boolean response, got %T (%v)", value, value)
+	return false, errExpectedBooleanResponse
 }
 
 func responseString(value any, err error) (string, error) {
@@ -241,56 +267,16 @@ func responseOK(value any, err error) (bool, error) {
 	return true, nil
 }
 
-func recordsFromNative(value any, codec Codec) ([]FlowRecord, error) {
-	if value == nil {
-		return nil, nil
-	}
-	items, ok := value.([]any)
-	if !ok {
-		return nil, fmt.Errorf("expected native array, got %T", value)
-	}
-	records := make([]FlowRecord, 0, len(items))
-	for _, item := range items {
-		record, err := recordFromNative(item, codec)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	return records, nil
-}
-
-func recordsOrNil(value any, codec Codec) ([]FlowRecord, error) {
-	if value == nil || isOK(value) {
-		return nil, nil
-	}
-	return recordsFromNative(value, codec)
-}
-
-func recordFromNative(value any, codec Codec) (FlowRecord, error) {
-	mapping, err := nativeMap(value)
-	if err != nil {
-		return FlowRecord{}, err
-	}
-	return recordFromMap(mapping, codec)
-}
-
-func recordOrNil(value any, codec Codec) (*FlowRecord, error) {
-	if value == nil || isOK(value) {
-		return nil, nil
-	}
-	record, err := recordFromNative(value, codec)
-	if err != nil {
-		return nil, err
-	}
-	return &record, nil
-}
-
 func claimedItemsFromNative(value any, codec Codec) ([]ClaimedItem, error) {
 	if value == nil {
 		return nil, nil
 	}
 	if claimed, ok := value.([]ClaimedItem); ok {
+		for _, item := range claimed {
+			if err := validateClaimedItemResponse(item); err != nil {
+				return nil, err
+			}
+		}
 		return claimed, nil
 	}
 	items, ok := value.([]any)
@@ -310,17 +296,29 @@ func claimedItemsFromNative(value any, codec Codec) ([]ClaimedItem, error) {
 
 func claimedItemFromNative(value any, codec Codec) (ClaimedItem, error) {
 	if list, ok := value.([]any); ok {
-		if len(list) < 4 {
-			return ClaimedItem{}, fmt.Errorf("expected claimed item with at least 4 fields")
+		if len(list) < 4 || len(list) > 6 {
+			return ClaimedItem{}, fmt.Errorf("expected claimed item with 4 to 6 fields, got %d", len(list))
+		}
+		id, err := responseString(list[0], nil)
+		if err != nil {
+			return ClaimedItem{}, fmt.Errorf("decode claimed item id: %w", err)
+		}
+		partitionKey, err := optionalResponseStringValue(list[1], "claimed item partition_key")
+		if err != nil {
+			return ClaimedItem{}, err
+		}
+		leaseToken, err := responseString(list[2], nil)
+		if err != nil {
+			return ClaimedItem{}, fmt.Errorf("decode claimed item lease_token: %w", err)
 		}
 		fencingToken, err := responseInt64(list[3], nil)
 		if err != nil {
 			return ClaimedItem{}, fmt.Errorf("decode claimed item fencing_token: %w", err)
 		}
 		item := ClaimedItem{
-			ID:           asString(list[0]),
-			PartitionKey: asString(list[1]),
-			LeaseToken:   asString(list[2]),
+			ID:           id,
+			PartitionKey: partitionKey,
+			LeaseToken:   leaseToken,
 			FencingToken: fencingToken,
 			State:        "running",
 		}
@@ -328,7 +326,11 @@ func claimedItemFromNative(value any, codec Codec) (ClaimedItem, error) {
 			if attrs, mapErr := nativeMap(list[4]); mapErr == nil {
 				item.Attributes = attrs
 			} else {
-				item.RunState = asString(list[4])
+				runState, err := optionalResponseStringValue(list[4], "claimed item run_state")
+				if err != nil {
+					return ClaimedItem{}, err
+				}
+				item.RunState = runState
 			}
 		}
 		if len(list) > 5 {
@@ -338,15 +340,41 @@ func claimedItemFromNative(value any, codec Codec) (ClaimedItem, error) {
 			}
 			item.Attributes = attrs
 		}
+		if err := validateClaimedItemResponse(item); err != nil {
+			return ClaimedItem{}, err
+		}
 		return item, nil
 	}
 	m, err := nativeMap(value)
 	if err != nil {
 		return ClaimedItem{}, err
 	}
-	state := asString(m["state"])
+	state, err := optionalResponseStringField(m, "state", "claimed item")
+	if err != nil {
+		return ClaimedItem{}, err
+	}
 	if state == "" {
 		state = "running"
+	}
+	id, err := requiredResponseStringField(m, "id", "claimed item")
+	if err != nil {
+		return ClaimedItem{}, err
+	}
+	leaseToken, err := requiredResponseStringField(m, "lease_token", "claimed item")
+	if err != nil {
+		return ClaimedItem{}, err
+	}
+	partitionKey, err := optionalResponseStringField(m, "partition_key", "claimed item")
+	if err != nil {
+		return ClaimedItem{}, err
+	}
+	flowType, err := optionalResponseStringField(m, "type", "claimed item")
+	if err != nil {
+		return ClaimedItem{}, err
+	}
+	runState, err := optionalResponseStringField(m, "run_state", "claimed item")
+	if err != nil {
+		return ClaimedItem{}, err
 	}
 	fencingToken, err := responseInt64(m["fencing_token"], nil)
 	if err != nil {
@@ -360,83 +388,34 @@ func claimedItemFromNative(value any, codec Codec) (ClaimedItem, error) {
 	if err != nil {
 		return ClaimedItem{}, fmt.Errorf("decode claimed item payload: %w", err)
 	}
-	return ClaimedItem{
-		ID:           asString(m["id"]),
-		LeaseToken:   asString(m["lease_token"]),
+	item := ClaimedItem{
+		ID:           id,
+		LeaseToken:   leaseToken,
 		FencingToken: fencingToken,
-		PartitionKey: asString(m["partition_key"]),
-		Type:         asString(m["type"]),
+		PartitionKey: partitionKey,
+		Type:         flowType,
 		State:        state,
-		RunState:     asString(m["run_state"]),
+		RunState:     runState,
 		Payload:      payload,
 		Attributes:   attributes,
-	}, nil
+	}
+	if err := validateClaimedItemResponse(item); err != nil {
+		return ClaimedItem{}, err
+	}
+	return item, nil
 }
 
-func recordFromMap(m map[string]any, codec Codec) (FlowRecord, error) {
-	payload, err := decodeValue(codec, m["payload"])
-	if err != nil {
-		return FlowRecord{}, fmt.Errorf("decode flow payload: %w", err)
+func validateClaimedItemResponse(item ClaimedItem) error {
+	if item.ID == "" {
+		return errors.New("decode claimed item id: field must be a non-empty string")
 	}
-	values, err := decodeMap(codec, m["values"])
-	if err != nil {
-		return FlowRecord{}, err
+	if item.LeaseToken == "" {
+		return errors.New("decode claimed item lease_token: field must be a non-empty string")
 	}
-	fencingToken, err := optionalResponseInt64(m, "fencing_token")
-	if err != nil {
-		return FlowRecord{}, err
+	if item.FencingToken < 0 {
+		return errors.New("decode claimed item fencing_token: value must be non-negative")
 	}
-	version, err := optionalResponseInt64(m, "version")
-	if err != nil {
-		return FlowRecord{}, err
-	}
-	attributes, err := optionalNativeMap(m["attributes"], "flow attributes")
-	if err != nil {
-		return FlowRecord{}, err
-	}
-	stateMeta, err := optionalNativeMap(m["state_meta"], "flow state_meta")
-	if err != nil {
-		return FlowRecord{}, err
-	}
-	valueRefs, err := optionalNativeMap(m["value_refs"], "flow value_refs")
-	if err != nil {
-		return FlowRecord{}, err
-	}
-	valueSizes, err := optionalNativeMap(m["value_sizes"], "flow value_sizes")
-	if err != nil {
-		return FlowRecord{}, err
-	}
-	valueOmitted, err := optionalNativeMap(m["value_omitted"], "flow value_omitted")
-	if err != nil {
-		return FlowRecord{}, err
-	}
-	valueMissing, err := optionalNativeMap(m["value_missing"], "flow value_missing")
-	if err != nil {
-		return FlowRecord{}, err
-	}
-	return FlowRecord{
-		ID:               asString(m["id"]),
-		Type:             asString(m["type"]),
-		State:            asString(m["state"]),
-		PartitionKey:     asString(m["partition_key"]),
-		Payload:          payload,
-		LeaseToken:       asString(m["lease_token"]),
-		FencingToken:     fencingToken,
-		Version:          version,
-		ParentFlowID:     asString(m["parent_flow_id"]),
-		RootFlowID:       asString(m["root_flow_id"]),
-		CorrelationID:    asString(m["correlation_id"]),
-		RunState:         asString(m["run_state"]),
-		Attributes:       attributes,
-		StateMeta:        stateMeta,
-		IndexedStateMeta: asString(m["indexed_state_meta"]),
-		Values:           values,
-		ValueRefs:        valueRefs,
-		ValueSizes:       valueSizes,
-		ValueOmitted:     valueOmitted,
-		ValueMissing:     valueMissing,
-		Raw:              m,
-	}, nil
+	return nil
 }
 
 func decodeMap(codec Codec, value any) (map[string]any, error) {

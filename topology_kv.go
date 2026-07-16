@@ -46,19 +46,11 @@ func (e *TopologyNativeExecutor) keyValueMSet(ctx context.Context, keys []string
 	if err != nil {
 		return nil, err
 	}
-	adapter, err := e.adapterForTopologyRoute(route, snapshot)
-	if err != nil {
-		return nil, err
-	}
 	command, err := newNativeMSetCommand(keys, values)
 	if err != nil {
 		return nil, err
 	}
-	value, err := adapter.doNativeCommandOnLane(ctx, command, route.LaneID)
-	if err != nil && isRetryableRouteError(err) {
-		_ = e.RefreshTopology(ctx)
-	}
-	return value, err
+	return e.doNativeCommandWithSafeReroute(ctx, keys[0], command, route, snapshot)
 }
 
 func (e *TopologyNativeExecutor) keyValueMSetNX(ctx context.Context, keys []string, values []any) (any, error) {
@@ -81,19 +73,11 @@ func (e *TopologyNativeExecutor) keyValueMSetNX(ctx context.Context, keys []stri
 	if err != nil {
 		return nil, err
 	}
-	adapter, err := e.adapterForTopologyRoute(route, snapshot)
-	if err != nil {
-		return nil, err
-	}
 	command, err := newNativeMSetNXCommand(keys, values)
 	if err != nil {
 		return nil, err
 	}
-	value, err := adapter.doNativeCommandOnLane(ctx, command, route.LaneID)
-	if err != nil && isRetryableRouteError(err) {
-		_ = e.RefreshTopology(ctx)
-	}
-	return value, err
+	return e.doNativeCommandWithSafeReroute(ctx, keys[0], command, route, snapshot)
 }
 
 func (e *TopologyNativeExecutor) keyValueDel(ctx context.Context, keys []string) (any, error) {

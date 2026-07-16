@@ -38,7 +38,11 @@ func TestGenericScatterRefreshesTopologyAfterRetryableRouteError(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		if err := writeNativeTestResponse(writer, request, 1, "leader moved"); err != nil {
+		if err := writeNativeTestResponse(writer, request, nativeStatusReroute, map[string]any{
+			"code":          "reroute",
+			"message":       "stale epoch",
+			"safe_to_retry": false,
+		}); err != nil {
 			serverErr <- err
 			return
 		}

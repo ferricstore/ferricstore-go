@@ -19,7 +19,17 @@ func (c *Client) RandomKey(ctx context.Context) (string, error) {
 	return responseString(value, err)
 }
 
-func (c *Client) Scan(ctx context.Context, cursor any, match string, count *int) (any, error) {
+func (c *Client) Scan(ctx context.Context, cursor int64, match string, count *int) (any, error) {
+	return c.scanCursor(ctx, cursor, match, count)
+}
+
+// ScanCursor continues SCAN using an opaque cursor returned by FerricStore.
+// It accepts integer cursors as well as server cursor strings and byte slices.
+func (c *Client) ScanCursor(ctx context.Context, cursor any, match string, count *int) (any, error) {
+	return c.scanCursor(ctx, cursor, match, count)
+}
+
+func (c *Client) scanCursor(ctx context.Context, cursor any, match string, count *int) (any, error) {
 	normalizedCursor, err := normalizeScanCursor(cursor, false)
 	if err != nil {
 		return nil, err
@@ -32,7 +42,8 @@ func (c *Client) Scan(ctx context.Context, cursor any, match string, count *int)
 		args = append(args, "MATCH", match)
 	}
 	appendScanCount(&args, count)
-	return c.typedReply(ctx, args...)
+	value, err := c.typedReply(ctx, args...)
+	return decodeKeyScan(value, err)
 }
 
 func (c *Client) DBSize(ctx context.Context) (int64, error) {
@@ -141,7 +152,7 @@ func (c *Client) CommandInfo(ctx context.Context, names ...string) (any, error) 
 
 func (c *Client) CommandCount(ctx context.Context) (int64, error) {
 	value, err := c.typedReply(ctx, "COMMAND", "COUNT")
-	return responseInt64(value, err)
+	return nonNegativeInt64Response("COMMAND COUNT", value, err)
 }
 
 func (c *Client) CommandList(ctx context.Context) ([]string, error) {
@@ -188,7 +199,7 @@ func (c *Client) ClientInfo(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return kvResponse(value)
+	return clientInfoResponse(value)
 }
 
 func (c *Client) ACL(ctx context.Context, subcommand string, args ...any) (any, error) {
@@ -208,7 +219,7 @@ func (c *Client) ACLSetUser(ctx context.Context, username string, rules ...strin
 
 func (c *Client) ACLDelUser(ctx context.Context, username string) (int64, error) {
 	value, err := c.ACL(ctx, "DELUSER", username)
-	return responseInt64(value, err)
+	return boundedCountResponse("ACL DELUSER", 1, value, err)
 }
 
 func (c *Client) ACLGetUser(ctx context.Context, username string) (map[string]any, error) {
@@ -242,46 +253,54 @@ func (c *Client) Capabilities(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return nativeMap(normalizeAdminResponse(value))
+	return normalizedAdminMap(value)
 }
 
 func (c *Client) EnsureNamespace(ctx context.Context, prefix string, attrs map[string]any) (any, error) {
 	args := []any{"FERRICSTORE.NAMESPACE", "ENSURE", prefix}
-	args = append(args, managementPairArgs(attrs)...)
+	pairs, err := managementPairArgs(attrs)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, pairs...)
 	value, err := c.typedReply(ctx, args...)
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) GetNamespace(ctx context.Context, prefix string) (any, error) {
 	value, err := c.typedReply(ctx, "FERRICSTORE.NAMESPACE", "GET", prefix)
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) ListNamespaces(ctx context.Context) (any, error) {
 	value, err := c.typedReply(ctx, "FERRICSTORE.NAMESPACE", "LIST")
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) DeleteNamespace(ctx context.Context, prefix string) (any, error) {
 	value, err := c.typedReply(ctx, "FERRICSTORE.NAMESPACE", "DELETE", prefix)
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) SetQuota(ctx context.Context, namespace string, quotaSpec map[string]any) (any, error) {
 	args := []any{"FERRICSTORE.QUOTA", "SET", namespace}
-	args = append(args, managementPairArgs(quotaSpec)...)
+	pairs, err := managementPairArgs(quotaSpec)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, pairs...)
 	value, err := c.typedReply(ctx, args...)
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) GetQuota(ctx context.Context, namespace string) (any, error) {
 	value, err := c.typedReply(ctx, "FERRICSTORE.QUOTA", "GET", namespace)
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) QuotaUsage(ctx context.Context, namespace string) (any, error) {
 	value, err := c.typedReply(ctx, "FERRICSTORE.QUOTA", "USAGE", namespace)
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) ClusterInfo(ctx context.Context) (map[string]any, error) {
@@ -289,7 +308,7 @@ func (c *Client) ClusterInfo(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return nativeMap(normalizeAdminResponse(value))
+	return normalizedAdminMap(value)
 }
 
 func (c *Client) NamespaceUsage(ctx context.Context, prefix string) (map[string]any, error) {
@@ -297,12 +316,16 @@ func (c *Client) NamespaceUsage(ctx context.Context, prefix string) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	return nativeMap(normalizeAdminResponse(value))
+	return normalizedAdminMap(value)
 }
 
 func (c *Client) FlowQuery(ctx context.Context, attrs map[string]any) ([]any, error) {
 	args := []any{"FERRICSTORE.TELEMETRY", "FLOW_QUERY"}
-	args = append(args, managementPairArgs(attrs)...)
+	pairs, err := managementPairArgs(attrs)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, pairs...)
 	value, err := c.typedReply(ctx, args...)
 	if err != nil {
 		return nil, err
@@ -312,7 +335,11 @@ func (c *Client) FlowQuery(ctx context.Context, attrs map[string]any) ([]any, er
 
 func (c *Client) FlowHistory(ctx context.Context, id string, attrs map[string]any) ([]any, error) {
 	args := []any{"FERRICSTORE.TELEMETRY", "FLOW_HISTORY", id}
-	args = append(args, managementPairArgs(attrs)...)
+	pairs, err := managementPairArgs(attrs)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, pairs...)
 	value, err := c.typedReply(ctx, args...)
 	if err != nil {
 		return nil, err
@@ -326,12 +353,12 @@ func (c *Client) InvocationDefinitionPut(ctx context.Context, definition any, op
 		return nil, err
 	}
 	value, err := c.typedReply(ctx, commandWithRequestContext("INVOCATION.DEFINITION.PUT", []any{definitionArg}, opt.RequestContext)...)
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) InvocationDefinitionGet(ctx context.Context, name string, opt RequestContextOptions) (any, error) {
 	value, err := c.typedReply(ctx, commandWithRequestContext("INVOCATION.DEFINITION.GET", []any{name}, opt.RequestContext)...)
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) InvocationDefinitionList(ctx context.Context, opt RequestContextOptions) ([]any, error) {
@@ -355,12 +382,12 @@ func (c *Client) InvocationCreate(ctx context.Context, name string, attrs map[st
 		return nil, err
 	}
 	value, err := c.typedReply(ctx, commandWithRequestContext("INVOCATION.CREATE", []any{name, envelopeArg}, opt.RequestContext)...)
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) InvocationGet(ctx context.Context, id string, opt RequestContextOptions) (any, error) {
 	value, err := c.typedReply(ctx, commandWithRequestContext("INVOCATION.GET", []any{id}, opt.RequestContext)...)
-	return normalizeAdminResponse(value), err
+	return normalizeAdminResult(value, err)
 }
 
 func (c *Client) InvocationPartitionList(ctx context.Context, name string, opt InvocationPartitionListOptions) ([]any, error) {
@@ -373,24 +400,34 @@ func (c *Client) InvocationPartitionList(ctx context.Context, name string, opt I
 	return adminArrayResponse(value)
 }
 
-func managementPairArgs(pairs map[string]any) []any {
+func managementPairArgs(pairs map[string]any) ([]any, error) {
 	if len(pairs) == 0 {
-		return nil
+		return nil, nil
 	}
-	keys := make([]string, 0, len(pairs))
+	values := make(map[string]any, len(pairs))
 	for key, value := range pairs {
-		if value != nil {
-			keys = append(keys, key)
+		if value == nil {
+			continue
 		}
+		key = strings.ToUpper(strings.TrimSpace(key))
+		if key == "" {
+			return nil, errors.New("management option name must be non-empty")
+		}
+		if _, exists := values[key]; exists {
+			return nil, fmt.Errorf("management option %q is duplicated after normalization", key)
+		}
+		values[key] = value
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return strings.ToUpper(keys[i]) < strings.ToUpper(keys[j])
-	})
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 	args := make([]any, 0, len(keys)*2)
 	for _, key := range keys {
-		args = append(args, strings.ToUpper(key), pairs[key])
+		args = append(args, key, values[key])
 	}
-	return args
+	return args, nil
 }
 
 func commandWithRequestContext(command string, args []any, requestContext *RequestContext) []any {
@@ -414,200 +451,4 @@ func jsonCommandArg(value any) (string, error) {
 		return "", err
 	}
 	return string(encoded), nil
-}
-
-func normalizeAdminResponse(value any) any {
-	switch v := value.(type) {
-	case []byte:
-		return string(v)
-	case []any:
-		out := make([]any, len(v))
-		for index, item := range v {
-			out[index] = normalizeAdminResponse(item)
-		}
-		return out
-	case map[string]any:
-		out := make(map[string]any, len(v))
-		for key, item := range v {
-			out[key] = normalizeAdminResponse(item)
-		}
-		return out
-	case map[interface{}]interface{}:
-		out := make(map[string]any, len(v))
-		for key, item := range v {
-			out[asString(key)] = normalizeAdminResponse(item)
-		}
-		return out
-	default:
-		return value
-	}
-}
-
-func adminArrayResponse(value any) ([]any, error) {
-	value = normalizeAdminResponse(value)
-	if value == nil {
-		return nil, nil
-	}
-	items, ok := value.([]any)
-	if !ok {
-		return nil, fmt.Errorf("expected admin array response, got %T", value)
-	}
-	return append([]any(nil), items...), nil
-}
-
-func (c *Client) SlowLogGet(ctx context.Context, count *int) (any, error) {
-	args := []any{"SLOWLOG", "GET"}
-	if count != nil {
-		args = append(args, *count)
-	}
-	return c.typedReply(ctx, args...)
-}
-
-func (c *Client) SlowLogLen(ctx context.Context) (int64, error) {
-	value, err := c.typedReply(ctx, "SLOWLOG", "LEN")
-	return responseInt64(value, err)
-}
-
-func (c *Client) SlowLogReset(ctx context.Context) error {
-	return c.typedStatus(ctx, "SLOWLOG", "RESET")
-}
-
-func (c *Client) Select(ctx context.Context, db int) error {
-	return c.typedStatus(ctx, "SELECT", db)
-}
-
-func (c *Client) Wait(ctx context.Context, replicas, timeoutMS int64) (int64, error) {
-	value, err := c.typedReply(ctx, "WAIT", replicas, timeoutMS)
-	return responseInt64(value, err)
-}
-
-func (c *Client) WaitAOF(ctx context.Context, local, replicas, timeoutMS int64) (any, error) {
-	return c.typedReply(ctx, "WAITAOF", local, replicas, timeoutMS)
-}
-
-func (c *Client) Object(ctx context.Context, args ...any) (any, error) {
-	command := append([]any{"OBJECT"}, args...)
-	return c.typedReply(ctx, command...)
-}
-
-func (c *Client) ObjectRefCount(ctx context.Context, key string) (int64, error) {
-	value, err := c.typedReply(ctx, "OBJECT", "REFCOUNT", key)
-	return responseInt64(value, err)
-}
-
-func (c *Client) ObjectHelp(ctx context.Context) (any, error) {
-	return c.typedReply(ctx, "OBJECT", "HELP")
-}
-
-func (c *Client) Publish(ctx context.Context, channel, message string) (int64, error) {
-	value, err := c.typedReply(ctx, "PUBLISH", channel, message)
-	return responseInt64(value, err)
-}
-
-func (c *Client) Subscribe(ctx context.Context, channels ...string) (any, error) {
-	args := []any{"SUBSCRIBE"}
-	for _, channel := range channels {
-		args = append(args, channel)
-	}
-	return c.typedReply(ctx, args...)
-}
-
-func (c *Client) Unsubscribe(ctx context.Context, channels ...string) (any, error) {
-	args := []any{"UNSUBSCRIBE"}
-	for _, channel := range channels {
-		args = append(args, channel)
-	}
-	return c.typedReply(ctx, args...)
-}
-
-func (c *Client) PSubscribe(ctx context.Context, patterns ...string) (any, error) {
-	args := []any{"PSUBSCRIBE"}
-	for _, pattern := range patterns {
-		args = append(args, pattern)
-	}
-	return c.typedReply(ctx, args...)
-}
-
-func (c *Client) PUnsubscribe(ctx context.Context, patterns ...string) (any, error) {
-	args := []any{"PUNSUBSCRIBE"}
-	for _, pattern := range patterns {
-		args = append(args, pattern)
-	}
-	return c.typedReply(ctx, args...)
-}
-
-func (c *Client) PubSubChannels(ctx context.Context, pattern string) ([]string, error) {
-	args := []any{"PUBSUB", "CHANNELS"}
-	if pattern != "" {
-		args = append(args, pattern)
-	}
-	value, err := c.typedReply(ctx, args...)
-	return stringArray(value, err)
-}
-
-func (c *Client) PubSubNumSub(ctx context.Context, channels ...string) (map[string]int64, error) {
-	args := []any{"PUBSUB", "NUMSUB"}
-	for _, channel := range channels {
-		args = append(args, channel)
-	}
-	value, err := c.typedReply(ctx, args...)
-	if err != nil {
-		return nil, err
-	}
-	items, ok := value.([]any)
-	if !ok {
-		return nil, fmt.Errorf("expected PUBSUB NUMSUB response array, got %T", value)
-	}
-	if len(items)%2 != 0 {
-		return nil, fmt.Errorf("expected PUBSUB NUMSUB channel/count pairs, got %d items", len(items))
-	}
-	out := make(map[string]int64, len(items)/2)
-	for i := 0; i < len(items); i += 2 {
-		if items[i] == nil {
-			return nil, fmt.Errorf("invalid PUBSUB NUMSUB channel at pair %d: response is nil", i/2)
-		}
-		channel, err := responseString(items[i], nil)
-		if err != nil {
-			return nil, fmt.Errorf("invalid PUBSUB NUMSUB channel at pair %d: %w", i/2, err)
-		}
-		count, err := responseInt64(items[i+1], nil)
-		if err != nil {
-			return nil, fmt.Errorf("invalid PUBSUB NUMSUB count for %q: %w", channel, err)
-		}
-		out[channel] = count
-	}
-	return out, nil
-}
-
-func (c *Client) PubSubNumPat(ctx context.Context) (int64, error) {
-	value, err := c.typedReply(ctx, "PUBSUB", "NUMPAT")
-	return responseInt64(value, err)
-}
-
-func (c *Client) Save(ctx context.Context) error {
-	return c.typedStatus(ctx, "SAVE")
-}
-
-func (c *Client) BgSave(ctx context.Context) error {
-	return c.typedExpectedStatus(ctx, "Background saving started", "BGSAVE")
-}
-
-func (c *Client) LastSave(ctx context.Context) (int64, error) {
-	value, err := c.typedReply(ctx, "LASTSAVE")
-	return responseInt64(value, err)
-}
-
-func (c *Client) Memory(ctx context.Context, args ...any) (any, error) {
-	command := append([]any{"MEMORY"}, args...)
-	return c.typedReply(ctx, command...)
-}
-
-func (c *Client) Module(ctx context.Context, args ...any) (any, error) {
-	command := append([]any{"MODULE"}, args...)
-	return c.typedReply(ctx, command...)
-}
-
-func (c *Client) FerricStoreDoctor(ctx context.Context, args ...any) (any, error) {
-	command := append([]any{"FERRICSTORE.DOCTOR"}, args...)
-	return c.typedReply(ctx, command...)
 }

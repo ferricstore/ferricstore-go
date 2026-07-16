@@ -2,36 +2,64 @@ package ferricstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 )
 
-func (p *PubSub) requestWithReplayRetryLocked(ctx context.Context, request func() (any, error)) (any, uint64, error) {
-	if err := p.reconnectAndReplayLocked(ctx); err != nil {
-		return nil, 0, err
+type pubSubConnectionStamp struct {
+	exec       *NativeExecutor
+	generation uint64
+}
+
+func (p *PubSub) connectionStamp() pubSubConnectionStamp {
+	exec := p.nativeExecutor()
+	if exec == nil {
+		return pubSubConnectionStamp{}
 	}
-	retries := p.exec.opts.ReconnectMaxRetries
+	return pubSubConnectionStamp{exec: exec, generation: exec.currentConnectionGeneration()}
+}
+
+func (p *PubSub) connectionStampCurrent(stamp pubSubConnectionStamp) bool {
+	current := p.connectionStamp()
+	return current.exec == stamp.exec && current.generation == stamp.generation
+}
+
+func (p *PubSub) requestWithReplayRetryLocked(
+	ctx context.Context,
+	request func(*NativeExecutor) (any, error),
+) (any, pubSubConnectionStamp, error) {
+	if err := p.reconnectAndReplayLocked(ctx); err != nil {
+		return nil, pubSubConnectionStamp{}, err
+	}
+	exec := p.nativeExecutor()
+	if exec == nil {
+		return nil, pubSubConnectionStamp{}, errors.New("pubsub is closed")
+	}
+	retries := exec.opts.ReconnectMaxRetries
 	for {
-		generation := p.exec.currentConnectionGeneration()
-		value, err := request()
+		exec = p.nativeExecutor()
+		stamp := pubSubConnectionStamp{exec: exec, generation: exec.currentConnectionGeneration()}
+		value, err := request(exec)
 		if err == nil {
-			return value, generation, nil
+			return value, stamp, nil
 		}
 		if retries <= 0 || !isNativeReconnectableTransportError(err) || ctx != nil && ctx.Err() != nil {
-			return nil, generation, err
+			return nil, stamp, err
 		}
 		retries--
 		if err := p.reconnectAndReplayLocked(ctx); err != nil {
-			return nil, generation, err
+			return nil, stamp, err
 		}
 	}
 }
 
-func (p *PubSub) requireReplayFromGeneration(generation uint64) {
+func (p *PubSub) requireReplayFromStamp(stamp pubSubConnectionStamp) {
 	p.mu.Lock()
-	p.lastGeneration = generation
+	p.lastExecutor = stamp.exec
+	p.lastGeneration = stamp.generation
 	p.mu.Unlock()
 }
 
@@ -79,7 +107,9 @@ func (p *PubSub) trackPubSubCommand(args []any) {
 			p.channels = nil
 		}
 	}
-	p.lastGeneration = p.exec.currentConnectionGeneration()
+	stamp := p.connectionStamp()
+	p.lastExecutor = stamp.exec
+	p.lastGeneration = stamp.generation
 }
 
 func (p *PubSub) trackEventSubscription(opcode uint16, payload map[string]any) {
@@ -89,7 +119,9 @@ func (p *PubSub) trackEventSubscription(opcode uint16, payload map[string]any) {
 		tracked := cloneNativeMapValue(payload)
 		events := normalizedNativeEventNames(payload["events"])
 		if len(events) == 0 {
-			p.lastGeneration = p.exec.currentConnectionGeneration()
+			stamp := p.connectionStamp()
+			p.lastExecutor = stamp.exec
+			p.lastGeneration = stamp.generation
 			return
 		}
 		tracked["events"] = eventArgs(events)
@@ -98,7 +130,9 @@ func (p *PubSub) trackEventSubscription(opcode uint16, payload map[string]any) {
 		}
 		for _, replay := range p.eventReplays {
 			if replay.opcode == opcode && reflect.DeepEqual(replay.payload, tracked) {
-				p.lastGeneration = p.exec.currentConnectionGeneration()
+				stamp := p.connectionStamp()
+				p.lastExecutor = stamp.exec
+				p.lastGeneration = stamp.generation
 				return
 			}
 		}
@@ -106,12 +140,16 @@ func (p *PubSub) trackEventSubscription(opcode uint16, payload map[string]any) {
 	} else {
 		unsubscribed := normalizedNativeEventNames(payload["events"])
 		if len(unsubscribed) == 0 {
-			p.lastGeneration = p.exec.currentConnectionGeneration()
+			stamp := p.connectionStamp()
+			p.lastExecutor = stamp.exec
+			p.lastGeneration = stamp.generation
 			return
 		}
 		p.eventReplays = filterEventReplays(p.eventReplays, unsubscribed)
 	}
-	p.lastGeneration = p.exec.currentConnectionGeneration()
+	stamp := p.connectionStamp()
+	p.lastExecutor = stamp.exec
+	p.lastGeneration = stamp.generation
 }
 
 func filterEventReplays(replays []pubSubEventReplay, removed []string) []pubSubEventReplay {
@@ -142,14 +180,19 @@ func (p *PubSub) reconnectAndReplay(ctx context.Context) error {
 }
 
 func (p *PubSub) reconnectAndReplayLocked(ctx context.Context) error {
-	retries := max(0, p.exec.opts.ReconnectMaxRetries)
+	exec, err := p.ensureCurrentExecutor(ctx)
+	if err != nil {
+		return err
+	}
+	retries := max(0, exec.opts.ReconnectMaxRetries)
 	for attempt := 0; ; attempt++ {
-		if err := p.exec.ensureConnected(ctx); err != nil {
+		exec, err = p.ensureCurrentExecutor(ctx)
+		if err != nil {
 			return err
 		}
-		generation := p.exec.currentConnectionGeneration()
+		stamp := pubSubConnectionStamp{exec: exec, generation: exec.currentConnectionGeneration()}
 		p.mu.Lock()
-		if generation == p.lastGeneration {
+		if stamp.exec == p.lastExecutor && stamp.generation == p.lastGeneration {
 			p.mu.Unlock()
 			return nil
 		}
@@ -158,14 +201,15 @@ func (p *PubSub) reconnectAndReplayLocked(ctx context.Context) error {
 		replays := append([]pubSubEventReplay(nil), p.eventReplays...)
 		p.mu.Unlock()
 
-		if err := p.replayTrackedState(ctx, channels, patterns, replays); err != nil {
+		if err := p.replayTrackedState(ctx, exec, channels, patterns, replays); err != nil {
 			return err
 		}
-		if p.exec.currentConnectionGeneration() == generation {
+		if p.connectionStampCurrent(stamp) {
 			p.mu.Lock()
-			p.lastGeneration = generation
+			p.lastExecutor = stamp.exec
+			p.lastGeneration = stamp.generation
 			p.mu.Unlock()
-			if p.exec.currentConnectionGeneration() == generation {
+			if p.connectionStampCurrent(stamp) {
 				return nil
 			}
 		}
@@ -175,14 +219,41 @@ func (p *PubSub) reconnectAndReplayLocked(ctx context.Context) error {
 	}
 }
 
-func (p *PubSub) replayTrackedState(ctx context.Context, channels, patterns []string, replays []pubSubEventReplay) error {
+func (p *PubSub) ensureCurrentExecutor(ctx context.Context) (*NativeExecutor, error) {
+	exec := p.nativeExecutor()
+	if exec == nil {
+		return nil, errors.New("pubsub is closed")
+	}
+	if err := exec.ensureConnected(ctx); err == nil {
+		return exec, nil
+	} else if p.selectExecutor == nil || !isNativeReconnectableTransportError(err) {
+		return nil, err
+	}
+	replacement, err := p.selectExecutor.pubSubControlAdapter(ctx, exec)
+	if err != nil {
+		return nil, err
+	}
+	if replacement == nil {
+		return nil, errors.New("topology pubsub selected a nil native executor")
+	}
+	replacement.enableEventDelivery()
+	p.currentExec.Store(replacement)
+	return replacement, nil
+}
+
+func (p *PubSub) replayTrackedState(
+	ctx context.Context,
+	exec *NativeExecutor,
+	channels, patterns []string,
+	replays []pubSubEventReplay,
+) error {
 	if len(channels) > 0 {
 		args := make([]any, 1, len(channels)+1)
 		args[0] = "SUBSCRIBE"
 		for _, channel := range channels {
 			args = append(args, channel)
 		}
-		if _, err := p.exec.command(ctx, args...); err != nil {
+		if _, err := exec.command(ctx, args...); err != nil {
 			return err
 		}
 	}
@@ -192,12 +263,12 @@ func (p *PubSub) replayTrackedState(ctx context.Context, channels, patterns []st
 		for _, pattern := range patterns {
 			args = append(args, pattern)
 		}
-		if _, err := p.exec.command(ctx, args...); err != nil {
+		if _, err := exec.command(ctx, args...); err != nil {
 			return err
 		}
 	}
 	for _, replay := range replays {
-		if _, err := p.exec.request(ctx, replay.opcode, 0, replay.payload, 0); err != nil {
+		if _, err := exec.request(ctx, replay.opcode, 0, replay.payload, 0); err != nil {
 			return err
 		}
 	}
@@ -205,10 +276,11 @@ func (p *PubSub) replayTrackedState(ctx context.Context, channels, patterns []st
 }
 
 func (p *PubSub) replayAfterExternalReconnect(ctx context.Context) error {
-	generation := p.exec.currentConnectionGeneration()
+	stamp := p.connectionStamp()
 	p.mu.Lock()
 	tracked := len(p.channels) > 0 || len(p.patterns) > 0 || len(p.eventReplays) > 0
-	changed := tracked && p.lastGeneration != 0 && generation != 0 && generation != p.lastGeneration
+	changed := tracked && p.lastGeneration != 0 && stamp.generation != 0 &&
+		(stamp.exec != p.lastExecutor || stamp.generation != p.lastGeneration)
 	p.mu.Unlock()
 	if !changed {
 		return nil

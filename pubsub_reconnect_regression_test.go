@@ -114,7 +114,7 @@ func readExpectedNativeSubscription(reader *bufio.Reader, want string) (nativeFr
 }
 
 func TestEventReplayPreservesPartiallyUnsubscribedEvents(t *testing.T) {
-	p := &PubSub{exec: &NativeExecutor{}}
+	p := newPubSub(&NativeExecutor{}, false)
 	p.trackEventSubscription(nativeOpSubscribeEvents, map[string]any{
 		"events": []any{"FLOW_WAKE", "TOPOLOGY_CHANGED"},
 	})
@@ -132,7 +132,7 @@ func TestEventReplayPreservesPartiallyUnsubscribedEvents(t *testing.T) {
 }
 
 func TestEventReplayDeduplicatesIdenticalSubscriptions(t *testing.T) {
-	p := &PubSub{exec: &NativeExecutor{}}
+	p := newPubSub(&NativeExecutor{}, false)
 	payload := map[string]any{
 		"events": []any{"FLOW_WAKE"},
 		"flow_wake": map[string]any{
@@ -148,7 +148,7 @@ func TestEventReplayDeduplicatesIdenticalSubscriptions(t *testing.T) {
 }
 
 func TestEventReplayMatchesServerNormalizedEventNames(t *testing.T) {
-	p := &PubSub{exec: &NativeExecutor{}}
+	p := newPubSub(&NativeExecutor{}, false)
 	p.trackEventSubscription(nativeOpSubscribeEvents, map[string]any{
 		"events": []any{"flow_wake"},
 	})
@@ -162,7 +162,7 @@ func TestEventReplayMatchesServerNormalizedEventNames(t *testing.T) {
 }
 
 func TestEventReplayEmptyUnsubscribeMatchesServerNoop(t *testing.T) {
-	p := &PubSub{exec: &NativeExecutor{}}
+	p := newPubSub(&NativeExecutor{}, false)
 	p.trackEventSubscription(nativeOpSubscribeEvents, map[string]any{
 		"events": []any{"FLOW_WAKE", "TOPOLOGY_CHANGED"},
 	})
