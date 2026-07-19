@@ -48,17 +48,25 @@ type nativeResponseAssembler struct {
 	chunks         map[nativeResponseChunkKey]*nativeResponseChunkState
 	bufferedBytes  int
 	bufferedFrames int
+	responseCodecs nativeResponseCodecs
 }
 
-func newNativeResponseAssembler(maxBytes, maxFrames int) *nativeResponseAssembler {
-	return &nativeResponseAssembler{
+func newNativeResponseAssembler(maxBytes, maxFrames int, codecs ...nativeResponseCodecs) *nativeResponseAssembler {
+	assembler := &nativeResponseAssembler{
 		maxBytes:  maxBytes,
 		maxFrames: maxFrames,
 		chunks:    make(map[nativeResponseChunkKey]*nativeResponseChunkState),
 	}
+	if len(codecs) > 0 {
+		assembler.responseCodecs = codecs[0]
+	}
+	return assembler
 }
 
 func (a *nativeResponseAssembler) add(frame nativeFrame) (*nativeResponse, error) {
+	if err := validateNativeResponseFlags(frame.flags, true); err != nil {
+		return nil, err
+	}
 	if a.maxBytes <= 0 || len(frame.body) > a.maxBytes {
 		return nil, errors.New("ferricstore native response body is too large")
 	}
@@ -75,7 +83,7 @@ func (a *nativeResponseAssembler) add(frame nativeFrame) (*nativeResponse, error
 		if a.bufferedFrames >= a.maxFrames {
 			return nil, fmt.Errorf("ferricstore native buffered chunk responses exceed %d frames", a.maxFrames)
 		}
-		response, err := decodeNativeResponseFrame(frame, frame.body, frame.flags)
+		response, err := decodeNativeResponseFrameWithCodecs(frame, frame.body, frame.flags, a.responseCodecs)
 		if err != nil {
 			return nil, err
 		}
@@ -86,6 +94,8 @@ func (a *nativeResponseAssembler) add(frame nativeFrame) (*nativeResponse, error
 		first.body = nil
 		state = &nativeResponseChunkState{first: first}
 		a.chunks[key] = state
+	} else if state.first.flags&nativeStableChunkFlags != frame.flags&nativeStableChunkFlags {
+		return nil, errors.New("ferricstore native response flags changed between chunks")
 	}
 	state.first.flags |= frame.flags
 	if len(frame.body) > a.maxBytes-state.bytes {
@@ -132,7 +142,7 @@ func (a *nativeResponseAssembler) add(frame nativeFrame) (*nativeResponse, error
 		}
 	}
 	flags := (state.first.flags | frame.flags) &^ nativeFlagMoreChunks
-	response, err := decodeNativeResponseFrame(state.first, body, flags)
+	response, err := decodeNativeResponseFrameWithCodecs(state.first, body, flags, a.responseCodecs)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +202,10 @@ func nativeBoundedItemCount(kind string, raw uint32, remainingBytes, minBytesPer
 	return int(raw), nil
 }
 
-func readNativeFrame(reader io.Reader) (nativeFrame, error) {
+func readNativeFrameWithLimit(reader io.Reader, maxBodyBytes int) (nativeFrame, error) {
+	if maxBodyBytes <= 0 || maxBodyBytes > nativeMaxFrameBytes {
+		maxBodyBytes = nativeMaxFrameBytes
+	}
 	header := make([]byte, nativeHeaderLen)
 	if _, err := io.ReadFull(reader, header); err != nil {
 		return nativeFrame{}, err
@@ -204,8 +217,8 @@ func readNativeFrame(reader io.Reader) (nativeFrame, error) {
 		return nativeFrame{}, fmt.Errorf("ferricstore native response has unsupported version 0x%x", header[4])
 	}
 	bodyLen := binary.BigEndian.Uint32(header[20:24])
-	if bodyLen > nativeMaxFrameBytes {
-		return nativeFrame{}, errors.New("ferricstore native response frame is too large")
+	if uint64(bodyLen) > uint64(maxBodyBytes) {
+		return nativeFrame{}, fmt.Errorf("ferricstore native response frame exceeds negotiated %d-byte limit", maxBodyBytes)
 	}
 	body := make([]byte, int(bodyLen))
 	if _, err := io.ReadFull(reader, body); err != nil {

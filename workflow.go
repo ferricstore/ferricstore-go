@@ -35,11 +35,12 @@ type CompleteResult struct {
 func (CompleteResult) kind() string { return "complete" }
 
 type RetryResult struct {
-	Error     any
-	Payload   any
-	RunAtMS   int64
-	StateMeta map[string]any
-	NamedValues
+	Error            any
+	Payload          any
+	RunAtMS          int64
+	StateMeta        map[string]any
+	AttributesMerge  map[string]any
+	AttributesDelete []string
 }
 
 func (RetryResult) kind() string { return "retry" }
@@ -299,7 +300,7 @@ func (w *WorkflowWorker) RunOnce(ctx context.Context) (WorkflowWorkerResult, err
 			}
 		}
 		run := func(job FlowRecord) {
-			if err := w.apply(ctx, job, stateName, handler); err != nil {
+			if err := w.apply(ctx, job, stateName, handler, opts.ErrorPolicy); err != nil {
 				recordErr(err)
 				return
 			}
@@ -315,17 +316,23 @@ func (w *WorkflowWorker) RunOnce(ctx context.Context) (WorkflowWorkerResult, err
 	return result, nil
 }
 
-func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName string, handler WorkflowHandler) error {
+func (w *WorkflowWorker) apply(
+	ctx context.Context,
+	job FlowRecord,
+	stateName string,
+	handler WorkflowHandler,
+	errorPolicy ErrorPolicy,
+) error {
 	outcome, err := invokeWorkflowHandler(
 		handler,
 		ctx,
 		WorkflowContext{Client: w.workflow.client, Job: job, StateName: stateName},
 	)
 	if err != nil {
-		if w.Options.ErrorPolicy == ErrorPolicyReturn {
+		if errorPolicy == ErrorPolicyReturn {
 			return err
 		}
-		if w.Options.ErrorPolicy == ErrorPolicyFail {
+		if errorPolicy == ErrorPolicyFail {
 			_, failErr := w.workflow.client.Fail(ctx, FailOptions{
 				ID:           job.ID,
 				LeaseToken:   job.LeaseToken,
@@ -380,15 +387,16 @@ func (w *WorkflowWorker) apply(ctx context.Context, job FlowRecord, stateName st
 		})
 	case RetryResult:
 		_, err = w.workflow.client.Retry(ctx, RetryOptions{
-			ID:           job.ID,
-			LeaseToken:   job.LeaseToken,
-			FencingToken: job.FencingToken,
-			PartitionKey: job.PartitionKey,
-			Error:        value.Error,
-			Payload:      value.Payload,
-			RunAtMS:      value.RunAtMS,
-			StateMeta:    value.StateMeta,
-			NamedValues:  value.NamedValues,
+			ID:               job.ID,
+			LeaseToken:       job.LeaseToken,
+			FencingToken:     job.FencingToken,
+			PartitionKey:     job.PartitionKey,
+			Error:            value.Error,
+			Payload:          value.Payload,
+			RunAtMS:          value.RunAtMS,
+			StateMeta:        value.StateMeta,
+			AttributesMerge:  value.AttributesMerge,
+			AttributesDelete: value.AttributesDelete,
 		})
 	case FailResult:
 		_, err = w.workflow.client.Fail(ctx, FailOptions{

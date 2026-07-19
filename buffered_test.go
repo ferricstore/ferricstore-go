@@ -174,7 +174,10 @@ func TestBufferedFlowWithoutReturnRecordQueuesSafely(t *testing.T) {
 		call func() (*FlowRecord, error)
 	}{
 		{name: "Transition", call: func() (*FlowRecord, error) {
-			return client.Transition(ctx, TransitionOptions{ID: "job-1", FromState: "queued", ToState: "ready", NowMS: 3})
+			return client.Transition(ctx, TransitionOptions{
+				ID: "job-1", FromState: "queued", ToState: "ready",
+				LeaseToken: "lease-1", FencingToken: 1, NowMS: 3,
+			})
 		}},
 		{name: "Retry", call: func() (*FlowRecord, error) {
 			return client.Retry(ctx, RetryOptions{ID: "job-1", LeaseToken: "lease-1", FencingToken: 1, NowMS: 4})

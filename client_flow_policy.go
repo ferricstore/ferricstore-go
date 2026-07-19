@@ -17,11 +17,14 @@ func (c *Client) InstallRetryPolicy(ctx context.Context, flowType string, retry 
 }
 
 func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptions) (any, error) {
+	opt = canonicalizePolicyMetadataKeys(opt)
 	if err := validatePolicyOptions(flowType, opt); err != nil {
 		return nil, err
 	}
-	opt = canonicalizePolicyMetadataKeys(opt)
 	args := []any{"FLOW.POLICY.SET", flowType}
+	if err := appendFlowMaxActiveMS(&args, opt.MaxActiveMS); err != nil {
+		return nil, err
+	}
 	if opt.IndexedAttributes != nil {
 		appendOpt(&args, "INDEXED_ATTRIBUTES", opt.IndexedAttributes)
 	}
@@ -62,9 +65,15 @@ func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptio
 
 func canonicalizePolicyMetadataKeys(opt PolicyOptions) PolicyOptions {
 	if opt.IndexedAttributes != nil {
-		normalized := make([]string, len(opt.IndexedAttributes))
-		for index, name := range opt.IndexedAttributes {
-			normalized[index] = canonicalFlowMetadataKey(name)
+		normalized := make([]string, 0, len(opt.IndexedAttributes))
+		seen := make(map[string]struct{}, len(opt.IndexedAttributes))
+		for _, name := range opt.IndexedAttributes {
+			name = canonicalFlowMetadataKey(name)
+			if _, duplicate := seen[name]; duplicate {
+				continue
+			}
+			seen[name] = struct{}{}
+			normalized = append(normalized, name)
 		}
 		opt.IndexedAttributes = normalized
 	}
@@ -73,7 +82,7 @@ func canonicalizePolicyMetadataKeys(opt PolicyOptions) PolicyOptions {
 }
 
 func validateAppliedPolicy(value any, opt PolicyOptions) error {
-	if opt.Retry == nil && len(opt.States) == 0 && len(opt.StatePolicies) == 0 && opt.IndexedAttributes == nil && opt.IndexedStateMeta == "" && !opt.IndexedStateMetaSet {
+	if opt.MaxActiveMS == nil && opt.Retry == nil && len(opt.States) == 0 && len(opt.StatePolicies) == 0 && opt.IndexedAttributes == nil && opt.IndexedStateMeta == "" && !opt.IndexedStateMetaSet {
 		return nil
 	}
 	normalized, normalizeErr := normalizeAdminResponse(value)
@@ -91,16 +100,32 @@ func validateAppliedPolicy(value any, opt PolicyOptions) error {
 		return fmt.Errorf("FLOW.POLICY.SET expected a policy map or OK acknowledgement: %w", err)
 	}
 	if opt.IndexedAttributes != nil {
-		actual := stringList(policy["indexed_attributes"])
+		raw, exists := policy["indexed_attributes"]
+		if !exists {
+			return errors.New("FLOW.POLICY.SET response omitted indexed attributes")
+		}
+		actual := stringList(raw)
 		if !slices.Equal(actual, opt.IndexedAttributes) {
 			return fmt.Errorf("FLOW.POLICY.SET response omitted indexed attributes: got %v, want %v", actual, opt.IndexedAttributes)
 		}
 	}
-	if (opt.IndexedStateMeta != "" || opt.IndexedStateMetaSet) && asString(policy["indexed_state_meta"]) != opt.IndexedStateMeta {
-		return fmt.Errorf("FLOW.POLICY.SET response omitted indexed state metadata %q", opt.IndexedStateMeta)
+	if opt.IndexedStateMeta != "" || opt.IndexedStateMetaSet {
+		raw, exists := policy["indexed_state_meta"]
+		if !exists || asString(raw) != opt.IndexedStateMeta {
+			return fmt.Errorf("FLOW.POLICY.SET response omitted indexed state metadata %q", opt.IndexedStateMeta)
+		}
 	}
 	if opt.Retry != nil {
 		if err := validateAppliedRetryPolicy(policy["retry"], *opt.Retry, "type"); err != nil {
+			return err
+		}
+	}
+	if opt.MaxActiveMS != nil {
+		actual, exists := policy["max_active_ms"]
+		if !exists {
+			return errors.New("FLOW.POLICY.SET response omitted max_active_ms")
+		}
+		if err := validateAppliedMaxActiveMS(actual, opt.MaxActiveMS); err != nil {
 			return err
 		}
 	}
@@ -146,6 +171,24 @@ func validateAppliedPolicy(value any, opt PolicyOptions) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func validateAppliedMaxActiveMS(actual, expected any) error {
+	canonical, err := canonicalFlowMaxActiveMS(expected)
+	if err != nil {
+		return err
+	}
+	if canonical == FlowMaxActiveInfinity {
+		if actual == nil || strings.EqualFold(asString(actual), FlowMaxActiveInfinity) {
+			return nil
+		}
+		return fmt.Errorf("FLOW.POLICY.SET response omitted max_active_ms infinity")
+	}
+	value, err := responseInt64(actual, nil)
+	if err != nil || value != canonical.(int64) {
+		return fmt.Errorf("FLOW.POLICY.SET response omitted max_active_ms %d", canonical)
 	}
 	return nil
 }
@@ -203,7 +246,7 @@ func validateAppliedPolicyInteger(values map[string]any, field string, expected 
 }
 
 func (c *Client) PolicyGet(ctx context.Context, flowType, state string) (map[string]any, error) {
-	if err := validateRequiredText("flow type", flowType); err != nil {
+	if err := validatePublicFlowType("flow type", flowType); err != nil {
 		return nil, err
 	}
 	args := []any{"FLOW.POLICY.GET", flowType}

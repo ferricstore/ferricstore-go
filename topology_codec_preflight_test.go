@@ -33,34 +33,7 @@ func (c *topologyFailingCodec) callCount() int {
 	return c.calls
 }
 
-func TestTopologyMSetPreflightsCustomCodecBeforeShardWrites(t *testing.T) {
-	listenerA, framesA, _ := startRoutedNativeEndpoint(t, func(nativeFrame, int) any { return []byte("OK") })
-	listenerB, framesB, _ := startRoutedNativeEndpoint(t, func(nativeFrame, int) any { return []byte("OK") })
-	exec, keyA, keyB := topologyExecutorForTwoEndpoints(
-		t, listenerA, listenerB,
-		WithTopologyCrossShardWritePolicy(CrossShardWritePerShard),
-	)
-	t.Cleanup(func() { _ = exec.Close() })
-	want := errors.New("codec failed")
-	codec := &topologyFailingCodec{err: want}
-	client := NewClientWithExecutor(exec, WithCodec(codec))
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	err := client.KV().MSet(ctx, map[string]any{keyA: "a", keyB: "b"})
-	if !errors.Is(err, want) {
-		t.Fatalf("MSET error = %v; want %v", err, want)
-	}
-	for endpoint, frames := range map[string]<-chan nativeFrame{"a": framesA, "b": framesB} {
-		select {
-		case frame := <-frames:
-			t.Fatalf("codec failure occurred after endpoint %s write: %#v", endpoint, frame)
-		default:
-		}
-	}
-}
-
-func TestAutoBatchCoalescedMSetPreflightsCodecBeforeShardWrites(t *testing.T) {
+func TestAutoBatchCoalescedMSetRejectsCrossSlotBeforeCodecOrWrites(t *testing.T) {
 	response := func(frame nativeFrame, _ int) any {
 		if frame.opcode == nativeOpPipeline {
 			return []any{[]any{"ok", []any{[]byte("value")}}}
@@ -77,8 +50,7 @@ func TestAutoBatchCoalescedMSetPreflightsCodecBeforeShardWrites(t *testing.T) {
 		WithTopologyCrossShardWritePolicy(CrossShardWritePerShard),
 	)
 	t.Cleanup(func() { _ = exec.Close() })
-	want := errors.New("codec failed")
-	codec := &topologyFailingCodec{err: want}
+	codec := &topologyFailingCodec{err: errors.New("codec must not run")}
 	auto := &AutoBatchExecutor{client: NewClientWithExecutor(exec, WithCodec(codec))}
 	deferred := func(value string) nativeDeferredCodecValue {
 		return nativeDeferredCodecValue{codec: codec, value: value}
@@ -92,17 +64,11 @@ func TestAutoBatchCoalescedMSetPreflightsCodecBeforeShardWrites(t *testing.T) {
 	}
 
 	results, err := auto.executeAutoBatchRequests(context.Background(), requests)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "hash slot") {
+		t.Fatalf("coalesced batch error = %v; want hash-slot rejection", err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("coalesced results = %d; want 2", len(results))
-	}
-	if !errors.Is(results[0].err, want) {
-		t.Fatalf("MSET error = %v; want %v", results[0].err, want)
-	}
-	if results[1].err != nil {
-		t.Fatalf("coalesced MGET error = %v", results[1].err)
+	if results != nil {
+		t.Fatalf("coalesced results = %#v; want nil after preflight rejection", results)
 	}
 	for endpoint, frames := range map[string]<-chan nativeFrame{"a": framesA, "b": framesB} {
 		for {
@@ -116,6 +82,9 @@ func TestAutoBatchCoalescedMSetPreflightsCodecBeforeShardWrites(t *testing.T) {
 			}
 		}
 	drained:
+	}
+	if calls := codec.callCount(); calls != 0 {
+		t.Fatalf("codec calls for rejected MSET = %d; want 0", calls)
 	}
 }
 
@@ -141,8 +110,8 @@ func TestTopologyRejectedMSetDoesNotInvokeCodec(t *testing.T) {
 			}
 
 			err := client.KV().MSet(context.Background(), map[string]any{keyA: "a", keyB: "b"})
-			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "opt in") {
-				t.Fatalf("rejected MSET error = %v; want cross-slot policy error", err)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "hash slot") {
+				t.Fatalf("rejected MSET error = %v; want hash-slot error", err)
 			}
 			if calls := codec.callCount(); calls != 0 {
 				t.Fatalf("codec calls for rejected MSET = %d; want 0", calls)

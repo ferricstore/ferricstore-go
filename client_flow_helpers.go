@@ -143,6 +143,12 @@ func anyChildValues(items []ChildSpec) bool {
 }
 
 func mergeValues(base, item map[string]any) map[string]any {
+	if len(base) == 0 {
+		return item
+	}
+	if len(item) == 0 {
+		return base
+	}
 	merged := map[string]any{}
 	for key, value := range base {
 		merged[key] = value
@@ -154,6 +160,12 @@ func mergeValues(base, item map[string]any) map[string]any {
 }
 
 func mergeRefs(base, item map[string]string) map[string]string {
+	if len(base) == 0 {
+		return item
+	}
+	if len(item) == 0 {
+		return base
+	}
 	merged := map[string]string{}
 	for key, value := range base {
 		merged[key] = value

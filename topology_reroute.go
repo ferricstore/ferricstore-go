@@ -3,11 +3,10 @@ package ferricstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
-	"strings"
+	"time"
 )
-
-const nativeStatusReroute = 5
 
 // topologyRouteErrorDisposition reports whether an error makes the current
 // topology suspect and whether the server explicitly permits replaying the
@@ -20,60 +19,11 @@ func topologyRouteErrorDisposition(err error) (refresh, safeToRetry bool) {
 	if errors.Is(err, net.ErrClosed) || errors.Is(err, errNativeConnectionUnavailable) {
 		return true, false
 	}
-	nativeErr, ok := topologyNativeError(err)
-	if !ok || !nativeErrorIsReroute(nativeErr) {
+	disposition := nativeServerRetryDisposition(err)
+	if !disposition.reroute {
 		return false, false
 	}
-	safe, _ := nativeErrorField(nativeErr.Value, "safe_to_retry").(bool)
-	return true, safe
-}
-
-func topologyNativeError(err error) (NativeError, bool) {
-	var value NativeError
-	if errors.As(err, &value) {
-		return value, true
-	}
-	var pointer *NativeError
-	if errors.As(err, &pointer) && pointer != nil {
-		return *pointer, true
-	}
-	return NativeError{}, false
-}
-
-func nativeErrorIsReroute(err NativeError) bool {
-	if err.Status == nativeStatusReroute || strings.EqualFold(err.Kind, "reroute") {
-		return true
-	}
-	code := nativeErrorField(err.Value, "code")
-	switch value := code.(type) {
-	case string:
-		return strings.EqualFold(value, "reroute")
-	case []byte:
-		return strings.EqualFold(string(value), "reroute")
-	default:
-		return false
-	}
-}
-
-func nativeErrorField(value any, name string) any {
-	switch mapping := value.(type) {
-	case map[string]any:
-		return mapping[name]
-	case map[interface{}]interface{}:
-		for key, field := range mapping {
-			switch typed := key.(type) {
-			case string:
-				if typed == name {
-					return field
-				}
-			case []byte:
-				if string(typed) == name {
-					return field
-				}
-			}
-		}
-	}
-	return nil
+	return true, disposition.retryable
 }
 
 func isRetryableRouteError(err error) bool {
@@ -81,15 +31,23 @@ func isRetryableRouteError(err error) bool {
 	return refresh
 }
 
-func (e *TopologyNativeExecutor) refreshAndCanRetrySafeReroute(ctx context.Context, err error, attempt int) bool {
+func (e *TopologyNativeExecutor) refreshAndCanRetrySafeReroute(ctx context.Context, err error, attempt int) (bool, error) {
 	refresh, safeToRetry := topologyRouteErrorDisposition(err)
 	if !refresh || attempt != 0 {
-		return false
+		return false, nil
+	}
+	if disposition := nativeServerRetryDisposition(err); safeToRetry {
+		if waitErr := waitNativeRetry(ctx, disposition.retryAfter); waitErr != nil {
+			return false, waitErr
+		}
 	}
 	if refreshErr := e.RefreshTopology(ctx); refreshErr != nil {
-		return false
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		return false, nil
 	}
-	return safeToRetry
+	return safeToRetry, nil
 }
 
 func (e *TopologyNativeExecutor) doNativeCommandWithSafeReroute(
@@ -99,16 +57,31 @@ func (e *TopologyNativeExecutor) doNativeCommandWithSafeReroute(
 	route RoutingRoute,
 	snapshot topologyRoutingSnapshot,
 ) (any, error) {
+	var operationCtx context.Context
+	var cancel context.CancelFunc
 	for rerouteAttempt := 0; ; rerouteAttempt++ {
 		adapter, err := e.adapterForTopologyRoute(route, snapshot)
 		if err != nil {
 			return nil, err
 		}
-		value, err := adapter.doNativeCommandOnLane(ctx, command, route.LaneID)
-		if err == nil || !e.refreshAndCanRetrySafeReroute(ctx, err, rerouteAttempt) {
+		if operationCtx == nil {
+			operationCtx, cancel = nativeContextWithBudget(ctx, adapter.opts.Timeout, command.budget)
+			if cancel != nil {
+				defer cancel()
+			}
+		}
+		value, err := adapter.doNativeCommandOnLane(operationCtx, command, route.LaneID)
+		if err == nil {
 			return value, err
 		}
-		route, snapshot, err = e.routeWithRefreshSnapshot(ctx, key)
+		retry, retryErr := e.refreshAndCanRetrySafeReroute(operationCtx, err, rerouteAttempt)
+		if retryErr != nil {
+			return nil, fmt.Errorf("%s retry backoff: %w", command.name, retryErr)
+		}
+		if !retry {
+			return value, err
+		}
+		route, snapshot, err = e.routeWithRefreshSnapshot(operationCtx, key)
 		if err != nil {
 			return nil, err
 		}
@@ -117,10 +90,15 @@ func (e *TopologyNativeExecutor) doNativeCommandWithSafeReroute(
 
 func topologyPipelineRouteDisposition(items []pipelineItemResult) (routeErr error, safeToRetryAll bool) {
 	safeToRetryAll = len(items) > 0
+	var retryAfter time.Duration
 	for _, item := range items {
 		refresh, safeToRetry := topologyRouteErrorDisposition(item.err)
-		if refresh && routeErr == nil {
-			routeErr = item.err
+		if refresh {
+			delay := nativeServerRetryDisposition(item.err).retryAfter
+			if routeErr == nil || delay > retryAfter {
+				routeErr = item.err
+				retryAfter = delay
+			}
 		}
 		if !refresh || !safeToRetry {
 			safeToRetryAll = false

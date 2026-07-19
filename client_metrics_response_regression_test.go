@@ -23,6 +23,19 @@ func TestFerricStoreMetricsParsesLabeledPrometheusSamples(t *testing.T) {
 	}
 }
 
+func TestFerricStoreMetricsAcceptsCommentOnlyPrometheusExposition(t *testing.T) {
+	response := "# HELP ferric_reads_total Reads\n" +
+		"# TYPE ferric_reads_total counter\n" +
+		"# EOF\n"
+	got, err := NewClientWithExecutor(&fakeExecutor{value: response}).FerricStoreMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("FERRICSTORE.METRICS: %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Fatalf("metrics = %#v, want non-nil empty map", got)
+	}
+}
+
 func TestFerricStoreMetricsRejectsMalformedSamples(t *testing.T) {
 	for _, response := range []any{
 		"metric_without_value\n",

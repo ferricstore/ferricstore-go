@@ -126,15 +126,40 @@ func recordFromMap(m map[string]any, codec Codec) (FlowRecord, error) {
 	if err != nil {
 		return FlowRecord{}, err
 	}
-	if fencingToken < 0 {
-		return FlowRecord{}, fmt.Errorf("decode flow fencing_token: value must be non-negative")
+	if fencingToken < 0 || fencingToken > maxFlowExactIntegerV080 {
+		return FlowRecord{}, fmt.Errorf(
+			"decode flow fencing_token: value must be between 0 and %d",
+			maxFlowExactIntegerV080,
+		)
 	}
 	version, err := optionalResponseInt64(m, "version")
 	if err != nil {
 		return FlowRecord{}, err
 	}
-	if version < 0 {
-		return FlowRecord{}, fmt.Errorf("decode flow version: value must be non-negative")
+	if version < 0 || version > maxFlowExactIntegerV080 {
+		return FlowRecord{}, fmt.Errorf(
+			"decode flow version: value must be between 0 and %d",
+			maxFlowExactIntegerV080,
+		)
+	}
+	maxActiveMS, err := optionalResponseInt64(m, "max_active_ms")
+	if err != nil {
+		return FlowRecord{}, err
+	}
+	if value, present := m["max_active_ms"]; present && value != nil &&
+		(maxActiveMS <= 0 || maxActiveMS > maxFlowActiveMS) {
+		return FlowRecord{}, fmt.Errorf(
+			"decode flow max_active_ms: value must be between 1 and %d",
+			maxFlowActiveMS,
+		)
+	}
+	flowError, err := decodeFlowRecordError(codec, m["error"])
+	if err != nil {
+		return FlowRecord{}, fmt.Errorf("decode flow error: %w", err)
+	}
+	failureReason, err := flowFailureReason(flowError)
+	if err != nil {
+		return FlowRecord{}, err
 	}
 	attributes, err := optionalNativeMap(m["attributes"], "flow attributes")
 	if err != nil {
@@ -166,6 +191,9 @@ func recordFromMap(m map[string]any, codec Codec) (FlowRecord, error) {
 		State:            state,
 		PartitionKey:     partitionKey,
 		Payload:          payload,
+		Error:            flowError,
+		FailureReason:    failureReason,
+		MaxActiveMS:      maxActiveMS,
 		LeaseToken:       leaseToken,
 		FencingToken:     fencingToken,
 		Version:          version,
@@ -183,6 +211,24 @@ func recordFromMap(m map[string]any, codec Codec) (FlowRecord, error) {
 		ValueMissing:     valueMissing,
 		Raw:              m,
 	}, nil
+}
+
+func decodeFlowRecordError(codec Codec, value any) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if mapping, err := nativeMap(value); err == nil {
+		return mapping, nil
+	}
+	return decodeValue(codec, value)
+}
+
+func flowFailureReason(value any) (string, error) {
+	mapping, err := nativeMap(value)
+	if err != nil {
+		return "", nil
+	}
+	return optionalResponseStringValue(mapping["reason"], "flow failure reason")
 }
 
 func optionalResponseStringField(mapping map[string]any, key, context string) (string, error) {

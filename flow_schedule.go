@@ -1,6 +1,9 @@
 package ferricstore
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 type ScheduleOptions struct {
 	Target         map[string]any
@@ -17,7 +20,7 @@ type ScheduleOptions struct {
 	EndAtMS        *int64
 	Overwrite      *bool
 	NowMS          *int64
-	ExtraOptions   map[string]any
+	DeadlineMS     *int64
 }
 
 type ScheduleListOptions struct {
@@ -29,6 +32,14 @@ type ScheduleListOptions struct {
 	ToMS       *int64
 	Count      *int
 	Rev        *bool
+	DeadlineMS *int64
+}
+
+// ScheduleStatusOptions controls a schedule state mutation. DeadlineMS is a
+// native request deadline; NowMS is the logical Flow mutation timestamp.
+type ScheduleStatusOptions struct {
+	NowMS      *int64
+	DeadlineMS *int64
 }
 
 type ScheduleResult struct {
@@ -108,7 +119,7 @@ func (c *Client) ScheduleCreate(ctx context.Context, id string, opt ScheduleOpti
 	if err := validateScheduleCreate(id, opt); err != nil {
 		return ScheduleResult{}, err
 	}
-	extraArgs, err := scheduleExtraOptionArgs(opt.ExtraOptions)
+	target, err := c.encodeScheduleTarget(opt.Target)
 	if err != nil {
 		return ScheduleResult{}, err
 	}
@@ -120,8 +131,8 @@ func (c *Client) ScheduleCreate(ctx context.Context, id string, opt ScheduleOpti
 	appendInt64Ptr(&args, "EVERY_MS", opt.EveryMS)
 	appendOpt(&args, "CRON", opt.Cron)
 	appendOpt(&args, "TIMEZONE", opt.Timezone)
-	if opt.Target != nil {
-		appendOpt(&args, "TARGET", opt.Target)
+	if target != nil {
+		appendOpt(&args, "TARGET", target)
 	}
 	appendOpt(&args, "OVERLAP_POLICY", canonicalAdminEnum(opt.OverlapPolicy))
 	appendInt64Ptr(&args, "OVERLAP_RETRY_MS", opt.OverlapRetryMS)
@@ -129,21 +140,22 @@ func (c *Client) ScheduleCreate(ctx context.Context, id string, opt ScheduleOpti
 	appendInt64Ptr(&args, "END_AT_MS", opt.EndAtMS)
 	appendBoolPtr(&args, "OVERWRITE", opt.Overwrite)
 	appendInt64Ptr(&args, "NOW", opt.NowMS)
-	args = append(args, extraArgs...)
-	return scheduleResult(c.typedReply(ctx, args...))
+	appendInt64Ptr(&args, "DEADLINE_MS", opt.DeadlineMS)
+	value, err := c.typedReply(ctx, args...)
+	return scheduleResultWithCodec(value, err, c.codec)
 }
 
-func (c *Client) ScheduleGet(ctx context.Context, id string, nowMS *int64) (*ScheduleResult, error) {
-	if err := validateScheduleOperation(id, nowMS); err != nil {
+func (c *Client) ScheduleGet(ctx context.Context, id string, deadlineMS *int64) (*ScheduleResult, error) {
+	if err := validateScheduleGet(id, deadlineMS); err != nil {
 		return nil, err
 	}
 	args := []any{"FLOW.SCHEDULE.GET", id}
-	appendInt64Ptr(&args, "NOW", nowMS)
+	appendInt64Ptr(&args, "DEADLINE_MS", deadlineMS)
 	value, err := c.typedReply(ctx, args...)
 	if err != nil || value == nil {
 		return nil, err
 	}
-	result, err := scheduleResult(value, nil)
+	result, err := scheduleResultWithCodec(value, nil, c.codec)
 	return &result, err
 }
 
@@ -173,27 +185,41 @@ func (c *Client) ScheduleFireWithOptions(ctx context.Context, id string, opt Sch
 	appendInt64Ptr(&args, "NOW", opt.NowMS)
 	appendInt64Ptr(&args, "FIRE_AT_MS", opt.FireAtMS)
 	appendInt64Ptr(&args, "DEADLINE_MS", opt.DeadlineMS)
-	return scheduleFireResult(c.typedReply(ctx, args...))
+	value, err := c.typedReply(ctx, args...)
+	return scheduleFireResultWithCodec(value, err, c.codec)
 }
 
 func (c *Client) SchedulePause(ctx context.Context, id string, nowMS *int64) (ScheduleResult, error) {
-	return c.scheduleStatus(ctx, "FLOW.SCHEDULE.PAUSE", id, nowMS)
+	return c.SchedulePauseWithOptions(ctx, id, ScheduleStatusOptions{NowMS: nowMS})
 }
 
 func (c *Client) ScheduleResume(ctx context.Context, id string, nowMS *int64) (ScheduleResult, error) {
-	return c.scheduleStatus(ctx, "FLOW.SCHEDULE.RESUME", id, nowMS)
+	return c.ScheduleResumeWithOptions(ctx, id, ScheduleStatusOptions{NowMS: nowMS})
 }
 
 func (c *Client) ScheduleDelete(ctx context.Context, id string, nowMS *int64) (ScheduleResult, error) {
-	return c.scheduleStatus(ctx, "FLOW.SCHEDULE.DELETE", id, nowMS)
+	return c.ScheduleDeleteWithOptions(ctx, id, ScheduleStatusOptions{NowMS: nowMS})
 }
 
-func (c *Client) scheduleStatus(ctx context.Context, command, id string, nowMS *int64) (ScheduleResult, error) {
-	if err := validateScheduleOperation(id, nowMS); err != nil {
+func (c *Client) SchedulePauseWithOptions(ctx context.Context, id string, opt ScheduleStatusOptions) (ScheduleResult, error) {
+	return c.scheduleStatus(ctx, "FLOW.SCHEDULE.PAUSE", id, opt)
+}
+
+func (c *Client) ScheduleResumeWithOptions(ctx context.Context, id string, opt ScheduleStatusOptions) (ScheduleResult, error) {
+	return c.scheduleStatus(ctx, "FLOW.SCHEDULE.RESUME", id, opt)
+}
+
+func (c *Client) ScheduleDeleteWithOptions(ctx context.Context, id string, opt ScheduleStatusOptions) (ScheduleResult, error) {
+	return c.scheduleStatus(ctx, "FLOW.SCHEDULE.DELETE", id, opt)
+}
+
+func (c *Client) scheduleStatus(ctx context.Context, command, id string, opt ScheduleStatusOptions) (ScheduleResult, error) {
+	if err := validateScheduleStatus(id, opt); err != nil {
 		return ScheduleResult{}, err
 	}
 	args := []any{command, id}
-	appendInt64Ptr(&args, "NOW", nowMS)
+	appendInt64Ptr(&args, "NOW", opt.NowMS)
+	appendInt64Ptr(&args, "DEADLINE_MS", opt.DeadlineMS)
 	value, err := c.typedReply(ctx, args...)
 	if err != nil {
 		return ScheduleResult{}, err
@@ -201,7 +227,7 @@ func (c *Client) scheduleStatus(ctx context.Context, command, id string, nowMS *
 	if isOK(value) {
 		return ScheduleResult{ID: id, Status: "deleted", Raw: map[string]any{"id": id, "status": "deleted"}}, nil
 	}
-	return scheduleResult(value, nil)
+	return scheduleResultWithCodec(value, nil, c.codec)
 }
 
 func (c *Client) ScheduleFireDue(ctx context.Context, nowMS *int64, worker string, blockMS *int64, limit *int) (ScheduleResult, error) {
@@ -232,7 +258,21 @@ func (c *Client) ScheduleFireDueWithOptions(ctx context.Context, opt ScheduleFir
 	appendInt64Ptr(&args, "BLOCK", opt.BlockMS)
 	appendIntPtr(&args, "LIMIT", opt.Limit)
 	appendInt64Ptr(&args, "DEADLINE_MS", opt.DeadlineMS)
-	return scheduleFireDueResult(c.typedReply(ctx, args...))
+	result, err := scheduleFireDueResult(c.typedReply(ctx, args...))
+	if err != nil {
+		return ScheduleFireDueResult{}, err
+	}
+	limit := effectiveFlowResponseLimit(
+		opt.Limit, defaultFlowResponseLimitV080, 0,
+	)
+	if result.Claimed > int64(limit) {
+		return ScheduleFireDueResult{}, fmt.Errorf(
+			"FLOW.SCHEDULE.FIRE_DUE claimed %d schedules, limit is %d",
+			result.Claimed,
+			limit,
+		)
+	}
+	return result, nil
 }
 
 func (c *Client) ScheduleList(ctx context.Context, opt ScheduleListOptions) ([]ScheduleResult, error) {
@@ -248,13 +288,24 @@ func (c *Client) ScheduleList(ctx context.Context, opt ScheduleListOptions) ([]S
 	appendInt64Ptr(&args, "TO_MS", opt.ToMS)
 	appendIntPtr(&args, "COUNT", opt.Count)
 	appendBoolPtr(&args, "REV", opt.Rev)
-	maps, err := mapList(c.typedReply(ctx, args...))
+	appendInt64Ptr(&args, "DEADLINE_MS", opt.DeadlineMS)
+	value, err := c.typedReply(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateDefaultedFlowResponseLimit(
+		"FLOW.SCHEDULE.LIST", value, opt.Count,
+		defaultFlowResponseLimitV080, maxClampedFlowListItemsV080,
+	); err != nil {
+		return nil, err
+	}
+	maps, err := mapList(value, nil)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]ScheduleResult, 0, len(maps))
 	for _, item := range maps {
-		result, err := scheduleResultFromMap(item)
+		result, err := scheduleResultFromMapWithCodec(item, c.codec)
 		if err != nil {
 			return nil, err
 		}

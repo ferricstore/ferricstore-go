@@ -42,12 +42,9 @@ func TestCountMinSketchMergeBuildsCommand(t *testing.T) {
 func TestTopKReserveWithOptionsBuildsCommand(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("OK")}
 	client := NewClientWithExecutor(exec)
-	decay := 0.9
-
 	ok, err := client.TopK().ReserveWithOptions(context.Background(), "tk", 3, TopKReserveOptions{
 		Width: Int64(20),
 		Depth: Int64(7),
-		Decay: &decay,
 	})
 
 	if err != nil {
@@ -56,7 +53,7 @@ func TestTopKReserveWithOptionsBuildsCommand(t *testing.T) {
 	if !ok {
 		t.Fatal("expected reserve ok")
 	}
-	assertCall(t, exec, []any{"TOPK.RESERVE", "tk", int64(3), int64(20), int64(7), "0.9"})
+	assertCall(t, exec, []any{"TOPK.RESERVE", "tk", int64(3), int64(20), int64(7)})
 }
 
 func TestTDigestQuantileParsesFloats(t *testing.T) {

@@ -19,6 +19,9 @@ func validateScheduleCreate(id string, opt ScheduleOptions) error {
 	if err := validateScheduleTarget(opt.Target, recurring); err != nil {
 		return err
 	}
+	if err := validateOptionalNonNegativeInt64("deadline_ms", opt.DeadlineMS); err != nil {
+		return err
+	}
 	for _, field := range []struct {
 		name  string
 		value *int64
@@ -29,7 +32,7 @@ func validateScheduleCreate(id string, opt ScheduleOptions) error {
 		{name: "end_at_ms", value: opt.EndAtMS},
 		{name: "now_ms", value: opt.NowMS},
 	} {
-		if err := validateOptionalNonNegativeInt64(field.name, field.value); err != nil {
+		if err := validateOptionalFlowExactNonNegative(field.name, field.value); err != nil {
 			return err
 		}
 	}
@@ -41,7 +44,7 @@ func validateScheduleCreate(id string, opt ScheduleOptions) error {
 		{name: "overlap_retry_ms", value: opt.OverlapRetryMS},
 		{name: "max_fires", value: opt.MaxFires},
 	} {
-		if err := validateOptionalPositiveInt64(field.name, field.value); err != nil {
+		if err := validateOptionalFlowExactPositive(field.name, field.value); err != nil {
 			return err
 		}
 	}
@@ -51,8 +54,8 @@ func validateScheduleCreate(id string, opt ScheduleOptions) error {
 		if opt.DelayMS == nil {
 			return errors.New("delay_ms is required for delay schedules")
 		}
-		if opt.NowMS != nil && *opt.NowMS > math.MaxInt64-*opt.DelayMS {
-			return errors.New("now_ms plus delay_ms overflows int64")
+		if opt.NowMS != nil && *opt.NowMS > maxFlowExactIntegerV080-*opt.DelayMS {
+			return fmt.Errorf("now_ms plus delay_ms exceeds maximum %d", maxFlowExactIntegerV080)
 		}
 	case "interval":
 		if opt.EveryMS == nil {
@@ -89,11 +92,6 @@ func validateScheduleCreate(id string, opt ScheduleOptions) error {
 			return errors.New("end_at_ms is only supported for recurring schedules")
 		}
 	}
-	for key := range opt.ExtraOptions {
-		if strings.TrimSpace(key) == "" {
-			return errors.New("schedule extra option name must be non-empty")
-		}
-	}
 	return nil
 }
 
@@ -123,8 +121,16 @@ func validateScheduleTarget(target map[string]any, recurring bool) error {
 	if target == nil {
 		return errors.New("target must be a mapping with a non-empty type")
 	}
+	for key := range target {
+		if !validScheduleTargetField(key) {
+			return fmt.Errorf("target contains unsupported field %q", key)
+		}
+	}
 	if err := validateRequiredAnyText("target type", target["type"]); err != nil {
 		return err
+	}
+	if asString(target["type"]) == reservedScheduleFlowTypeV080 {
+		return errors.New("target type is reserved for internal use")
 	}
 	for _, key := range []string{"state", "id", "id_prefix", "partition_key", "correlation_id", "parent_flow_id", "root_flow_id"} {
 		value, exists := target[key]
@@ -134,6 +140,16 @@ func validateScheduleTarget(target map[string]any, recurring bool) error {
 		if err := validateRequiredAnyText("target "+key, value); err != nil {
 			return err
 		}
+		switch key {
+		case "parent_flow_id", "root_flow_id":
+			if err := validateOptionalPublicFlowIDReference("target "+key, asString(value)); err != nil {
+				return err
+			}
+		case "correlation_id":
+			if err := validateFlowReference("target "+key, asString(value)); err != nil {
+				return err
+			}
+		}
 	}
 	if recurring {
 		if value, exists := target["id"]; exists && value != nil {
@@ -141,7 +157,11 @@ func validateScheduleTarget(target map[string]any, recurring bool) error {
 		}
 	}
 	if value, exists := target["run_at_ms"]; exists && value != nil {
-		if err := validateNonNegativeAnyInt64("target run_at_ms", value); err != nil {
+		parsed, err := responseInt64(value, nil)
+		if err != nil {
+			return errors.New("target run_at_ms must be a non-negative integer")
+		}
+		if err := validateFlowExactNonNegative("target run_at_ms", parsed); err != nil {
 			return err
 		}
 	}
@@ -149,6 +169,56 @@ func validateScheduleTarget(target map[string]any, recurring bool) error {
 		priority, err := responseInt64(value, nil)
 		if err != nil || priority < 0 || priority > 2 {
 			return errors.New("target priority must be between 0 and 2")
+		}
+	}
+	for _, key := range []string{"payload_ref"} {
+		value, exists := target[key]
+		if exists && value != nil {
+			if err := validateRequiredAnyText("target "+key, value); err != nil {
+				return err
+			}
+		}
+	}
+	for _, key := range []string{"id", "id_prefix"} {
+		value, exists := target[key]
+		if exists && value != nil && strings.HasPrefix(asString(value), reservedScheduleFlowIDPrefixV080) {
+			return fmt.Errorf("target %s is reserved for internal use", key)
+		}
+	}
+	if err := validateScheduleTargetNamedValues(target); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validScheduleTargetField(key string) bool {
+	switch key {
+	case "type", "state", "id", "id_prefix", "partition_key", "correlation_id",
+		"parent_flow_id", "root_flow_id", "run_at_ms", "priority", "payload",
+		"payload_ref", "values", "value_refs":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateScheduleTargetNamedValues(target map[string]any) error {
+	if value, exists := target["values"]; exists && value != nil {
+		values, ok := value.(map[string]any)
+		if !ok {
+			return errors.New("target values must be a string-keyed mapping")
+		}
+		if err := validateNamedValues(NamedValues{Values: values}); err != nil {
+			return err
+		}
+	}
+	if value, exists := target["value_refs"]; exists && value != nil {
+		refs, ok := value.(map[string]string)
+		if !ok {
+			return errors.New("target value_refs must be a string mapping")
+		}
+		if err := validateNamedValues(NamedValues{ValueRefs: refs}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -195,15 +265,25 @@ func canonicalAdminEnum(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func validateScheduleOperation(id string, nowMS *int64) error {
+func validateScheduleGet(id string, deadlineMS *int64) error {
 	if err := validateRequiredText("id", id); err != nil {
 		return err
 	}
-	return validateOptionalNonNegativeInt64("now_ms", nowMS)
+	return validateOptionalNonNegativeInt64("deadline_ms", deadlineMS)
+}
+
+func validateScheduleStatus(id string, opt ScheduleStatusOptions) error {
+	if err := validateRequiredText("id", id); err != nil {
+		return err
+	}
+	if err := validateOptionalFlowExactNonNegative("now_ms", opt.NowMS); err != nil {
+		return err
+	}
+	return validateOptionalNonNegativeInt64("deadline_ms", opt.DeadlineMS)
 }
 
 func validateScheduleFireDueOptions(opt ScheduleFireDueOptions) error {
-	if err := validateOptionalNonNegativeInt64("now_ms", opt.NowMS); err != nil {
+	if err := validateOptionalFlowExactNonNegative("now_ms", opt.NowMS); err != nil {
 		return err
 	}
 	if opt.Worker != "" {
@@ -211,10 +291,21 @@ func validateScheduleFireDueOptions(opt ScheduleFireDueOptions) error {
 			return err
 		}
 	}
-	if err := validateOptionalPositiveInt64("lease_ms", opt.LeaseMS); err != nil {
+	leaseMS := int64(30_000)
+	if opt.LeaseMS != nil {
+		leaseMS = *opt.LeaseMS
+	}
+	now := nowMS()
+	if opt.NowMS != nil {
+		now = *opt.NowMS
+	}
+	if err := validateFlowExactPositive("lease_ms", leaseMS); err != nil {
 		return err
 	}
-	if err := validateOptionalNonNegativeInt64("block_ms", opt.BlockMS); err != nil {
+	if now > maxFlowExactIntegerV080-leaseMS {
+		return errors.New("now_ms + lease_ms exceeds the exact integer range")
+	}
+	if err := validateOptionalBlockingTimeoutMS("FLOW.SCHEDULE.FIRE_DUE", opt.BlockMS); err != nil {
 		return err
 	}
 	if err := validateOptionalPositiveInt("limit", opt.Limit); err != nil {
@@ -227,10 +318,10 @@ func validateScheduleFireOptions(id string, opt ScheduleFireOptions) error {
 	if err := validateRequiredText("id", id); err != nil {
 		return err
 	}
-	if err := validateOptionalNonNegativeInt64("now_ms", opt.NowMS); err != nil {
+	if err := validateOptionalFlowExactNonNegative("now_ms", opt.NowMS); err != nil {
 		return err
 	}
-	if err := validateOptionalNonNegativeInt64("fire_at_ms", opt.FireAtMS); err != nil {
+	if err := validateOptionalFlowExactNonNegative("fire_at_ms", opt.FireAtMS); err != nil {
 		return err
 	}
 	return validateOptionalNonNegativeInt64("deadline_ms", opt.DeadlineMS)
@@ -249,11 +340,14 @@ func validateScheduleList(opt ScheduleListOptions) error {
 		{name: "from_ms", value: opt.FromMS},
 		{name: "to_ms", value: opt.ToMS},
 	} {
-		if err := validateOptionalNonNegativeInt64(field.name, field.value); err != nil {
+		if err := validateOptionalFlowExactNonNegative(field.name, field.value); err != nil {
 			return err
 		}
 	}
-	return validateOptionalPositiveInt("count", opt.Count)
+	if err := validateOptionalPositiveInt("count", opt.Count); err != nil {
+		return err
+	}
+	return validateOptionalNonNegativeInt64("deadline_ms", opt.DeadlineMS)
 }
 
 func validateFlowReadOptions(opt ReadOptions) error {
@@ -279,14 +373,6 @@ func validateRequiredAnyText(name string, value any) error {
 	default:
 		return fmt.Errorf("%s must be a non-empty string", name)
 	}
-}
-
-func validateNonNegativeAnyInt64(name string, value any) error {
-	parsed, err := responseInt64(value, nil)
-	if err != nil || parsed < 0 {
-		return fmt.Errorf("%s must be a non-negative integer", name)
-	}
-	return nil
 }
 
 func validateOptionalNonNegativeInt64(name string, value *int64) error {

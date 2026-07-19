@@ -25,13 +25,11 @@ func TestFlowValuePutBuildsCommand(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("ref-1")}
 	client := NewClientWithExecutor(exec)
 	override := true
-	ttl := int64(60000)
 
 	_, err := client.PutValue(context.Background(), "summary", []byte("payload"), ValuePutOptions{
 		PartitionKey: "tenant:1",
 		OwnerFlowID:  "flow-1",
 		Override:     &override,
-		TTLMS:        &ttl,
 		NowMS:        100,
 	})
 
@@ -41,7 +39,7 @@ func TestFlowValuePutBuildsCommand(t *testing.T) {
 	want := []any{
 		"FLOW.VALUE.PUT", []byte("payload"), "NOW", int64(100),
 		"PARTITION", "tenant:1", "OWNER_FLOW_ID", "flow-1",
-		"NAME", "summary", "OVERRIDE", "true", "TTL", int64(60000),
+		"NAME", "summary", "OVERRIDE", "true",
 	}
 	if !reflect.DeepEqual(exec.calls[0], want) {
 		t.Fatalf("unexpected call\n got: %#v\nwant: %#v", exec.calls[0], want)

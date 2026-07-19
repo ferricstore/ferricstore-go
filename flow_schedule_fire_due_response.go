@@ -25,7 +25,7 @@ func scheduleFireDueResult(value any, err error) (ScheduleFireDueResult, error) 
 	if err != nil {
 		return ScheduleFireDueResult{}, err
 	}
-	failures, err := scheduleFireDueErrors(m)
+	failures, err := scheduleFireDueErrors(m, claimed)
 	if err != nil {
 		return ScheduleFireDueResult{}, err
 	}
@@ -58,13 +58,16 @@ func requiredScheduleCount(m map[string]any, field string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("FLOW.SCHEDULE.FIRE_DUE response has invalid %s: %w", field, err)
 	}
-	if count < 0 {
-		return 0, fmt.Errorf("FLOW.SCHEDULE.FIRE_DUE response has negative %s", field)
+	if count < 0 || count > nativeMaxContainerItems {
+		return 0, fmt.Errorf(
+			"FLOW.SCHEDULE.FIRE_DUE response %s %d is outside valid range 0..%d",
+			field, count, nativeMaxContainerItems,
+		)
 	}
 	return count, nil
 }
 
-func scheduleFireDueErrors(m map[string]any) ([]ScheduleFireDueError, error) {
+func scheduleFireDueErrors(m map[string]any, claimed int64) ([]ScheduleFireDueError, error) {
 	raw, present := m["errors"]
 	if !present || raw == nil {
 		return nil, errors.New("FLOW.SCHEDULE.FIRE_DUE response is missing errors")
@@ -72,6 +75,12 @@ func scheduleFireDueErrors(m map[string]any) ([]ScheduleFireDueError, error) {
 	items, ok := raw.([]any)
 	if !ok {
 		return nil, fmt.Errorf("FLOW.SCHEDULE.FIRE_DUE errors returned %T, expected array", raw)
+	}
+	if int64(len(items)) > claimed {
+		return nil, fmt.Errorf(
+			"FLOW.SCHEDULE.FIRE_DUE returned %d errors for %d claimed schedules",
+			len(items), claimed,
+		)
 	}
 	out := make([]ScheduleFireDueError, len(items))
 	for index, item := range items {

@@ -12,7 +12,7 @@ func buildFlowCreateManyExtendedNative(args []any) (nativeCommand, bool, error) 
 		return nativeCommand{}, true, errors.New("FLOW.CREATE_MANY requires partition and items")
 	}
 	marker, token, ok := flowItemMarker(args[1:])
-	if !ok || token != "ITEMS_EXT" {
+	if !ok || (token != "ITEMS_EXT" && token != "ITEMS_MAPS") {
 		return nativeCommand{}, false, nil
 	}
 	payload := map[string]any{}
@@ -24,7 +24,12 @@ func buildFlowCreateManyExtendedNative(args []any) (nativeCommand, bool, error) 
 		return nativeCommand{}, false, nil
 	}
 	itemArgs := args[1+marker+1:]
-	items, err := parseFlowCreateManyExtendedItems(itemArgs, strings.EqualFold(asString(args[0]), "MIXED"))
+	var items []any
+	if token == "ITEMS_MAPS" {
+		items, err = parseFlowMappedItems("FLOW.CREATE_MANY", itemArgs)
+	} else {
+		items, err = parseFlowCreateManyExtendedItems(itemArgs, strings.EqualFold(asString(args[0]), "MIXED"))
+	}
 	if err != nil {
 		return nativeCommand{}, true, err
 	}
@@ -58,9 +63,12 @@ func buildFlowSpawnChildrenNative(args []any) (nativeCommand, bool, error) {
 	}
 	itemArgs := args[1+marker+1:]
 	var children []any
-	if token == "ITEMS_EXT" {
+	switch token {
+	case "ITEMS_MAPS":
+		children, err = parseFlowMappedItems("FLOW.SPAWN_CHILDREN", itemArgs)
+	case "ITEMS_EXT":
 		children, err = parseFlowSpawnExtendedItems(itemArgs)
-	} else {
+	default:
 		children, err = parseFlowSpawnItems(itemArgs)
 	}
 	if err != nil {
@@ -77,7 +85,7 @@ func buildFlowSpawnChildrenNative(args []any) (nativeCommand, bool, error) {
 func flowItemMarker(args []any) (int, string, bool) {
 	for index := 0; index < len(args); {
 		token := strings.ToUpper(asString(args[index]))
-		if token == "ITEMS" || token == "ITEMS_EXT" {
+		if token == "ITEMS" || token == "ITEMS_EXT" || token == "ITEMS_MAPS" {
 			return index, token, true
 		}
 		width := 2
@@ -91,6 +99,25 @@ func flowItemMarker(args []any) (int, string, bool) {
 		index += width
 	}
 	return 0, "", false
+}
+
+func parseFlowMappedItems(command string, args []any) ([]any, error) {
+	count, values, err := flowExtendedItemCount(command, args)
+	if err != nil {
+		return nil, err
+	}
+	if len(values) != count {
+		return nil, fmt.Errorf("%s ITEMS_MAPS count does not match items", command)
+	}
+	items := make([]any, 0, count)
+	for _, value := range values {
+		mapping, err := nativeMap(value)
+		if err != nil || asString(mapping["id"]) == "" {
+			return nil, fmt.Errorf("%s ITEMS_MAPS requires item maps with id", command)
+		}
+		items = append(items, mapping)
+	}
+	return items, nil
 }
 
 func parseFlowCreateManyExtendedItems(args []any, mixed bool) ([]any, error) {

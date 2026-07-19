@@ -6,6 +6,10 @@ import (
 )
 
 func scheduleResult(value any, err error) (ScheduleResult, error) {
+	return scheduleResultWithCodec(value, err, RawCodec{})
+}
+
+func scheduleResultWithCodec(value any, err error, codec Codec) (ScheduleResult, error) {
 	if err != nil {
 		return ScheduleResult{}, err
 	}
@@ -13,10 +17,10 @@ func scheduleResult(value any, err error) (ScheduleResult, error) {
 	if err != nil {
 		return ScheduleResult{}, err
 	}
-	return scheduleResultFromMap(m)
+	return scheduleResultFromMapWithCodec(m, codec)
 }
 
-func scheduleResultFromMap(m map[string]any) (ScheduleResult, error) {
+func scheduleResultFromMapWithCodec(m map[string]any, codec Codec) (ScheduleResult, error) {
 	id, err := requiredScheduleText(m, "id")
 	if err != nil {
 		return ScheduleResult{}, err
@@ -40,7 +44,7 @@ func scheduleResultFromMap(m map[string]any) (ScheduleResult, error) {
 			return ScheduleResult{}, err
 		}
 	}
-	target, err := optionalNativeMap(m["target"], "schedule target")
+	target, err := decodeScheduleTarget(codec, m["target"])
 	if err != nil {
 		return ScheduleResult{}, err
 	}
@@ -90,6 +94,28 @@ func scheduleResultFromMap(m map[string]any) (ScheduleResult, error) {
 		LastSkipReason:       texts[8],
 		Raw:                  m,
 	}, nil
+}
+
+func decodeScheduleTarget(codec Codec, value any) (map[string]any, error) {
+	target, err := optionalNativeMap(value, "schedule target")
+	if err != nil {
+		return nil, err
+	}
+	if raw, present := target["payload"]; present && raw != nil {
+		decoded, err := decodeValue(codec, raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode schedule target payload: %w", err)
+		}
+		target["payload"] = decoded
+	}
+	if raw, present := target["values"]; present && raw != nil {
+		decoded, err := decodeMap(codec, raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode schedule target values: %w", err)
+		}
+		target["values"] = decoded
+	}
+	return target, nil
 }
 
 func requiredScheduleText(m map[string]any, field string) (string, error) {
@@ -187,6 +213,13 @@ func presentScheduleInt(m map[string]any, field string) (int64, bool, error) {
 	}
 	if parsed < 0 {
 		return 0, false, fmt.Errorf("schedule response %s must be non-negative", field)
+	}
+	if parsed > maxFlowExactIntegerV080 {
+		return 0, false, fmt.Errorf(
+			"schedule response %s exceeds FerricStore 0.8 exact integer maximum %d",
+			field,
+			maxFlowExactIntegerV080,
+		)
 	}
 	return parsed, true, nil
 }

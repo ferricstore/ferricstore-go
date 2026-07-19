@@ -17,6 +17,9 @@ func (c *Client) CommandForKey(ctx context.Context, key any, args ...any) (any, 
 	if !isRouteKey(key) {
 		return nil, fmt.Errorf("unsupported explicit routing key type %T", key)
 	}
+	if reservedInternalKey(key) {
+		return nil, errReservedInternalKey
+	}
 	routed, ok := c.exec.(explicitRoutingExecutor)
 	if !ok {
 		return c.Command(ctx, args...)

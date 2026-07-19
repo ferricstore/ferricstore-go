@@ -2,6 +2,8 @@ package ferricstore
 
 import "fmt"
 
+const maxRandomReplacementCount = 10_000
+
 type sortedSetScoreOrder uint8
 
 const (
@@ -15,6 +17,13 @@ func countMagnitude(count int) uint64 {
 		return uint64(-(count + 1)) + 1
 	}
 	return uint64(count)
+}
+
+func validateRandomReplacementCount(command string, count *int) error {
+	if count != nil && *count < -maxRandomReplacementCount {
+		return fmt.Errorf("%s replacement count must not exceed %d", command, maxRandomReplacementCount)
+	}
+	return nil
 }
 
 func decodeArrayWithLimit(codec Codec, value any, err error, maximum uint64, command string) ([]any, error) {

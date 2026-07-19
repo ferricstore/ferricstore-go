@@ -43,6 +43,7 @@ func TestTopologyRetriesExplicitlySafeStructuredRerouteOnce(t *testing.T) {
 		if err := writeNativeTestResponse(writer, first, 5, map[string]any{
 			"code":          "reroute",
 			"message":       "stale epoch",
+			"retryable":     true,
 			"safe_to_retry": true,
 		}); err != nil {
 			serverErr <- err
@@ -100,6 +101,115 @@ func TestTopologyRetriesExplicitlySafeStructuredRerouteOnce(t *testing.T) {
 	}
 }
 
+func TestTopologyRerouteBackoffReturnsCallerContextError(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	endpoint := topologyEndpointFromListener(t, listener)
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		reader, writer := bufio.NewReader(conn), bufio.NewWriter(conn)
+		if err := serveNativeStartup(reader, writer); err != nil {
+			serverErr <- err
+			return
+		}
+		request, err := readNativeRequestFrame(reader)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		serverErr <- writeNativeTestResponse(writer, request, nativeStatusReroute, map[string]any{
+			"code": "reroute", "retryable": true, "safe_to_retry": true,
+			"retry_after_ms": int64(500),
+		})
+	}()
+
+	exec, err := NewTopologyNativeExecutor(
+		[]string{"ferric://" + listener.Addr().String()},
+		WithTopologyEndpointPolicy(EndpointPolicyAny),
+		WithTopologyNativeOptions(WithNativeTimeout(time.Second), WithNativeHeartbeat(0, 0), WithNativeReconnect(0)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Close() })
+	if err := exec.installTopology(topologyForEndpoint(endpoint, 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = exec.Do(ctx, "GET", "key")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("reroute backoff error = %v; want context deadline", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTopologyRerouteBackoffHonorsNativeTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	endpoint := topologyEndpointFromListener(t, listener)
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		reader, writer := bufio.NewReader(conn), bufio.NewWriter(conn)
+		if err := serveNativeStartup(reader, writer); err != nil {
+			serverErr <- err
+			return
+		}
+		request, err := readNativeRequestFrame(reader)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		serverErr <- writeNativeTestResponse(writer, request, nativeStatusReroute, map[string]any{
+			"code": "reroute", "retryable": true, "safe_to_retry": true,
+			"retry_after_ms": int64(100),
+		})
+		time.Sleep(200 * time.Millisecond)
+	}()
+
+	exec, err := NewTopologyNativeExecutor(
+		[]string{"ferric://" + listener.Addr().String()},
+		WithTopologyEndpointPolicy(EndpointPolicyAny),
+		WithTopologyNativeOptions(WithNativeTimeout(20*time.Millisecond), WithNativeHeartbeat(0, 0), WithNativeReconnect(0)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Close() })
+	if err := exec.installTopology(topologyForEndpoint(endpoint, 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = exec.Do(context.Background(), "GET", "key")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("reroute backoff error = %v; want native timeout deadline", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTopologyRouteErrorClassificationUsesDispositionNotMessage(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -110,7 +220,7 @@ func TestTopologyRouteErrorClassificationUsesDispositionNotMessage(t *testing.T)
 		{
 			name: "status reroute",
 			err: NativeError{Status: 5, Value: map[string]any{
-				"message": "stale epoch", "safe_to_retry": true,
+				"message": "stale epoch", "retryable": true, "safe_to_retry": true,
 			}},
 			refresh:     true,
 			safeToRetry: true,
@@ -118,7 +228,7 @@ func TestTopologyRouteErrorClassificationUsesDispositionNotMessage(t *testing.T)
 		{
 			name: "code reroute",
 			err: NativeError{Status: 1, Value: map[string]any{
-				"code": "reroute", "safe_to_retry": false,
+				"code": "reroute", "retryable": true, "safe_to_retry": false,
 			}},
 			refresh: true,
 		},
@@ -169,6 +279,7 @@ func TestTopologyTypedKVRetriesExplicitlySafeReroute(t *testing.T) {
 		if err := writeNativeTestResponse(writer, first, nativeStatusReroute, map[string]any{
 			"code":          "reroute",
 			"message":       "stale epoch",
+			"retryable":     true,
 			"safe_to_retry": true,
 		}); err != nil {
 			serverErr <- err
@@ -256,6 +367,7 @@ func TestTopologySingleRoutePipelineRetriesExplicitlySafeReroute(t *testing.T) {
 		if err := writeNativeTestResponse(writer, first, nativeStatusReroute, map[string]any{
 			"code":          "reroute",
 			"message":       "stale epoch",
+			"retryable":     true,
 			"safe_to_retry": true,
 		}); err != nil {
 			serverErr <- err
@@ -340,7 +452,9 @@ func TestTopologySafeRerouteIsRetriedAtMostOnce(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		reroute := map[string]any{"code": "reroute", "message": "stale epoch", "safe_to_retry": true}
+		reroute := map[string]any{
+			"code": "reroute", "message": "stale epoch", "retryable": true, "safe_to_retry": true,
+		}
 		if err := writeNativeTestResponse(writer, first, nativeStatusReroute, reroute); err != nil {
 			serverErr <- err
 			return

@@ -20,9 +20,8 @@ func TestFlowReadCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 		name string
 		call func(*Client) error
 	}{
-		{name: "get empty id", call: func(c *Client) error { _, err := c.Get(ctx, "", "", nil, nil); return err }},
-		{name: "get empty value name", call: func(c *Client) error { _, err := c.Get(ctx, "id", "", []string{""}, nil); return err }},
-		{name: "get negative value maximum", call: func(c *Client) error { _, err := c.Get(ctx, "id", "", nil, Int64(-1)); return err }},
+		{name: "get empty id", call: func(c *Client) error { _, err := c.Get(ctx, "", "", nil); return err }},
+		{name: "get empty value name", call: func(c *Client) error { _, err := c.Get(ctx, "id", "", []string{""}); return err }},
 		{name: "list empty type", call: func(c *Client) error { _, err := c.List(ctx, "", ReadOptions{}); return err }},
 		{name: "list zero count", call: func(c *Client) error { _, err := c.List(ctx, "type", ReadOptions{Count: Int(0)}); return err }},
 		{name: "list negative time", call: func(c *Client) error { _, err := c.List(ctx, "type", ReadOptions{FromMS: Int64(-1)}); return err }},
@@ -102,5 +101,28 @@ func TestFlowReadCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 				t.Fatalf("invalid Flow read reached transport: %#v", exec.calls)
 			}
 		})
+	}
+}
+
+func TestV080FlowNamedValueReadsUseOnlySupportedWireOptions(t *testing.T) {
+	exec := &fakeExecutor{values: []any{nil, []any{}}}
+	client := NewClientWithExecutor(exec)
+	if _, err := client.Get(context.Background(), "flow", "partition", []string{"result"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ClaimDue(context.Background(), ClaimDueOptions{
+		Type: "type", Worker: "worker", Values: []string{"result"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(exec.calls) != 2 {
+		t.Fatalf("wire calls = %d, want 2", len(exec.calls))
+	}
+	for _, call := range exec.calls {
+		for _, arg := range call {
+			if arg == "VALUE_MAX_BYTES" {
+				t.Fatalf("v0.8-unsupported VALUE_MAX_BYTES reached wire: %#v", call)
+			}
+		}
 	}
 }

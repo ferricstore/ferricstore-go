@@ -79,7 +79,7 @@ func (c *Client) EffectCompensate(ctx context.Context, id, effectKey string, opt
 }
 
 func (c *Client) EffectGet(ctx context.Context, id, effectKey, partitionKey string) (*EffectResult, error) {
-	if err := validateEffectGet(id, effectKey); err != nil {
+	if err := validateEffectGet(id, effectKey, partitionKey); err != nil {
 		return nil, err
 	}
 	args := []any{"FLOW.EFFECT.GET", id, "EFFECT_KEY", effectKey}
@@ -176,7 +176,7 @@ func (c *Client) ApprovalReject(ctx context.Context, id, approver, reason string
 }
 
 func (c *Client) approvalStatus(ctx context.Context, command, id, approver, reason string, nowMS *int64) (ApprovalResult, error) {
-	if err := validateApprovalDecision(id, approver, nowMS); err != nil {
+	if err := validateApprovalDecision(id, approver, reason, nowMS); err != nil {
 		return ApprovalResult{}, err
 	}
 	args := []any{command, id, "APPROVER", approver}
@@ -186,7 +186,7 @@ func (c *Client) approvalStatus(ctx context.Context, command, id, approver, reas
 }
 
 func (c *Client) ApprovalGet(ctx context.Context, id string) (*ApprovalResult, error) {
-	if err := validateRequiredText("id", id); err != nil {
+	if err := validateGovernanceRequiredText("id", id, maxGovernanceDimensionBytesV080); err != nil {
 		return nil, err
 	}
 	value, err := c.typedReply(ctx, "FLOW.APPROVAL.GET", id)
@@ -203,11 +203,15 @@ func (c *Client) ApprovalList(ctx context.Context, opt ApprovalListOptions) ([]A
 	}
 	args := []any{"FLOW.APPROVAL.LIST"}
 	appendOpt(&args, "STATUS", canonicalAdminEnum(opt.Status))
-	appendOpt(&args, "SCOPE", opt.Scope)
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
+	appendGovernanceScopeFilter(&args, opt.Scope, opt.PartitionKey)
 	appendOpt(&args, "FLOW_ID", opt.FlowID)
 	appendIntPtr(&args, "LIMIT", opt.Limit)
-	maps, err := mapList(c.typedReply(ctx, args...))
+	value, err := c.typedReply(ctx, args...)
+	maps, err := mapListWithLimit(
+		"FLOW.APPROVAL.LIST", opt.Limit,
+		defaultFlowResponseLimitV080, maxClampedFlowListItemsV080,
+		value, err,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -237,14 +241,24 @@ func (c *Client) GovernanceOverview(ctx context.Context, opt ApprovalListOptions
 		return GovernanceOverview{}, err
 	}
 	args := []any{"FLOW.GOVERNANCE.OVERVIEW"}
-	appendOpt(&args, "SCOPE", opt.Scope)
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
+	appendGovernanceScopeFilter(&args, opt.Scope, opt.PartitionKey)
 	appendOpt(&args, "STATUS", canonicalAdminEnum(opt.Status))
 	appendOpt(&args, "FLOW_ID", opt.FlowID)
 	appendIntPtr(&args, "LIMIT", opt.Limit)
 	m, err := mapResult(c.typedReply(ctx, args...))
 	if err != nil {
 		return GovernanceOverview{}, err
+	}
+	for _, collection := range []string{"approvals", "budgets", "limits", "circuits", "effects"} {
+		if err := validateDefaultedFlowResponseLimit(
+			"FLOW.GOVERNANCE.OVERVIEW "+collection,
+			m[collection],
+			opt.Limit,
+			defaultFlowResponseLimitV080,
+			maxClampedFlowListItemsV080,
+		); err != nil {
+			return GovernanceOverview{}, err
+		}
 	}
 	return governanceOverviewFromMap(m)
 }

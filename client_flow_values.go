@@ -23,6 +23,9 @@ func (c *Client) ValuePut(ctx context.Context, value any, opt ValuePutOptions) (
 }
 
 func (c *Client) PutValue(ctx context.Context, name string, value any, opt ValuePutOptions) (any, error) {
+	if err := validateFlowMutationText("flow value name", name); err != nil {
+		return nil, err
+	}
 	opt.Name = name
 	return c.ValuePut(ctx, value, opt)
 }

@@ -226,7 +226,7 @@ func blockingCommandBudget(args []any) nativeRequestBudget {
 		if len(values) > 0 {
 			value, unit = values[len(values)-1], time.Millisecond
 		}
-	case "FLOW.CLAIM_DUE":
+	case "FLOW.CLAIM_DUE", "FLOW.SCHEDULE.FIRE_DUE":
 		for i := 0; i+1 < len(values); i++ {
 			if strings.EqualFold(asString(values[i]), "BLOCK") {
 				value, unit = values[i+1], time.Millisecond
@@ -376,32 +376,51 @@ func buildBasicNativeCommand(name string, args []any) (nativeCommand, bool, erro
 		if len(args) > 1 {
 			return nativeCommand{}, false, nil
 		}
-		return nativeCommand{name: name, opcode: nativeOpGet, laneID: 1, payload: map[string]any{"key": args[0]}}, true, nil
-	case "SET":
-		if len(args) < 2 {
-			return nativeCommand{}, true, errors.New("SET requires key and value")
-		}
-		if len(args) > 2 {
+		if !nativeBinaryCandidate(args[0]) {
 			return nativeCommand{}, false, nil
 		}
-		return nativeCommand{name: name, opcode: nativeOpSet, laneID: 1, payload: map[string]any{"key": args[0], "value": args[1]}}, true, nil
+		return nativeCommand{name: name, opcode: nativeOpGet, laneID: 1, payload: map[string]any{"key": args[0]}}, true, nil
+	case "SET":
+		if len(args) >= 1 && !nativeBinaryCandidate(args[0]) {
+			return nativeCommand{}, false, nil
+		}
+		command, err := buildNativeSETCommand(args)
+		return command, true, err
 	case "DEL":
 		if len(args) == 0 {
 			return nativeCommand{}, true, errors.New("DEL requires at least one key")
+		}
+		for _, key := range args {
+			if !nativeBinaryCandidate(key) {
+				return nativeCommand{}, false, nil
+			}
 		}
 		return nativeCommand{name: name, opcode: nativeOpDel, laneID: 1, payload: map[string]any{"keys": append([]any(nil), args...)}}, true, nil
 	case "MGET":
 		if len(args) == 0 {
 			return nativeCommand{}, true, errors.New("MGET requires at least one key")
 		}
+		for _, key := range args {
+			if !nativeBinaryCandidate(key) {
+				return nativeCommand{}, false, nil
+			}
+		}
 		return nativeCommand{name: name, opcode: nativeOpMGet, laneID: 1, payload: nativeMGetPayload{args: args}}, true, nil
 	case "MSET":
 		if len(args) == 0 || len(args)%2 != 0 {
 			return nativeCommand{}, true, errors.New("MSET requires key/value pairs")
 		}
+		for index := 0; index < len(args); index += 2 {
+			if !nativeBinaryCandidate(args[index]) {
+				return nativeCommand{}, false, nil
+			}
+		}
 		return nativeCommand{name: name, opcode: nativeOpMSet, laneID: 1, payload: nativeMSetPayload{args: args}}, true, nil
 	default:
-		return nativeCommand{}, false, nil
+		if command, ok, err := buildV080CoreNativeCommand(name, args); ok || err != nil {
+			return command, ok, err
+		}
+		return buildV080AdminNativeCommand(name, args)
 	}
 }
 

@@ -165,6 +165,9 @@ func (s *SortedSetStore) zpop(ctx context.Context, command, key string, count *i
 }
 
 func (s *SortedSetStore) RandMember(ctx context.Context, key string, count *int, withScores bool) (any, error) {
+	if err := validateRandomReplacementCount("ZRANDMEMBER", count); err != nil {
+		return nil, err
+	}
 	if withScores && count == nil {
 		return nil, errors.New("ZRANDMEMBER WITHSCORES requires count")
 	}

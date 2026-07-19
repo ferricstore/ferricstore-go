@@ -34,9 +34,9 @@ func TestIntegrationProbabilisticHelpers(t *testing.T) {
 	_ = must[bool](t)(client.Cuckoo().Del(ctx, cuckoo, "a"))
 	requireMap(t, must[map[string]any](t)(client.Cuckoo().Info(ctx, cuckoo)))
 
-	cmsA := prefix + "cms-a"
-	cmsB := prefix + "cms-b"
-	cmsDst := prefix + "cms-dst"
+	cmsA := prefix + "{cms}:a"
+	cmsB := prefix + "{cms}:b"
+	cmsDst := prefix + "{cms}:dst"
 	requireTrue(t, must[bool](t)(client.CountMinSketch().InitByDim(ctx, cmsA, 20, 4)))
 	requireTrue(t, must[bool](t)(client.CountMinSketch().InitByDim(ctx, cmsB, 20, 4)))
 	requireTrue(t, must[bool](t)(client.CountMinSketch().InitByProb(ctx, prefix+"cms-prob", 0.01, 0.01)))
@@ -47,16 +47,48 @@ func TestIntegrationProbabilisticHelpers(t *testing.T) {
 	requireMap(t, must[map[string]any](t)(client.CountMinSketch().Info(ctx, cmsDst)))
 
 	topk := prefix + "topk"
-	requireTrue(t, must[bool](t)(client.TopK().Reserve(ctx, topk, 3)))
-	requireLen(t, must[[]any](t)(client.TopK().Add(ctx, topk, "a", "b", "a")), 3)
-	requireLen(t, must[[]any](t)(client.TopK().IncrBy(ctx, topk, TopKIncrement{Item: "c", Count: 2})), 1)
-	requireLen(t, must[[]bool](t)(client.TopK().Query(ctx, topk, "a", "z")), 2)
-	requireValue(t, must[any](t)(client.TopK().List(ctx, topk, true)))
-	requireLen(t, must[[]int64](t)(client.TopK().Count(ctx, topk, "a", "z")), 2)
-	requireMap(t, must[map[string]any](t)(client.TopK().Info(ctx, topk)))
+	requireTrue(t, must[bool](t)(client.TopK().ReserveWithOptions(ctx, topk, 3, TopKReserveOptions{
+		Width: Int64(20),
+		Depth: Int64(7),
+	})))
+	for index, evicted := range must[[]any](t)(client.TopK().Add(ctx, topk, "a", "b", "a")) {
+		if evicted != nil {
+			t.Fatalf("TOPK.ADD eviction %d = %#v, want nil while filling the sketch", index, evicted)
+		}
+	}
+	for index, evicted := range must[[]any](t)(client.TopK().IncrBy(ctx, topk, TopKIncrement{Item: "c", Count: 2})) {
+		if evicted != nil {
+			t.Fatalf("TOPK.INCRBY eviction %d = %#v, want nil while filling the sketch", index, evicted)
+		}
+	}
+	query := must[[]bool](t)(client.TopK().Query(ctx, topk, "a", "z"))
+	if !query[0] || query[1] {
+		t.Fatalf("TOPK.QUERY = %#v, want [true false]", query)
+	}
+	items := must[[]any](t)(client.TopK().List(ctx, topk))
+	entries := must[[]TopKEntry](t)(client.TopK().ListWithCount(ctx, topk))
+	if len(items) == 0 || len(entries) != len(items) {
+		t.Fatalf("TOPK list lengths = items:%d entries:%d", len(items), len(entries))
+	}
+	for index, entry := range entries {
+		if _, ok := entry.Item.(string); !ok || entry.Count <= 0 {
+			t.Fatalf("TOPK entry %d = %#v, want decoded string and positive count", index, entry)
+		}
+	}
+	counts := must[[]int64](t)(client.TopK().Count(ctx, topk, "a", "z"))
+	if counts[0] <= 0 || counts[1] != 0 {
+		t.Fatalf("TOPK.COUNT = %#v, want positive count and zero", counts)
+	}
+	info := must[map[string]any](t)(client.TopK().Info(ctx, topk))
+	for field, want := range map[string]int64{"k": 3, "width": 20, "depth": 7} {
+		got, err := responseInt64(info[field], nil)
+		if err != nil || got != want {
+			t.Fatalf("TOPK.INFO %s = %#v, %v; want %d", field, info[field], err, want)
+		}
+	}
 
-	tdigest := prefix + "tdigest"
-	tdigestSrc := prefix + "tdigest-src"
+	tdigest := prefix + "{tdigest}:main"
+	tdigestSrc := prefix + "{tdigest}:src"
 	requireTrue(t, must[bool](t)(client.TDigest().Create(ctx, tdigest, nil)))
 	requireTrue(t, must[bool](t)(client.TDigest().Add(ctx, tdigest, 1, 2, 3, 4)))
 	requireLen(t, must[[]float64](t)(client.TDigest().Quantile(ctx, tdigest, 0.5)), 1)
@@ -71,6 +103,6 @@ func TestIntegrationProbabilisticHelpers(t *testing.T) {
 	requireMap(t, must[map[string]any](t)(client.TDigest().Info(ctx, tdigest)))
 	requireTrue(t, must[bool](t)(client.TDigest().Create(ctx, tdigestSrc, nil)))
 	requireTrue(t, must[bool](t)(client.TDigest().Add(ctx, tdigestSrc, 5, 6)))
-	requireTrue(t, must[bool](t)(client.TDigest().Merge(ctx, prefix+"tdigest-dst", TDigestMergeOptions{Sources: []string{tdigest, tdigestSrc}, Override: true})))
+	requireTrue(t, must[bool](t)(client.TDigest().Merge(ctx, prefix+"{tdigest}:dst", TDigestMergeOptions{Sources: []string{tdigest, tdigestSrc}, Override: true})))
 	requireTrue(t, must[bool](t)(client.TDigest().Reset(ctx, tdigest)))
 }

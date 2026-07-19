@@ -14,6 +14,7 @@ type StartAndClaimOptions struct {
 	NowMS          int64
 	Priority       *int64
 	RetentionTTLMS *int64
+	MaxActiveMS    any
 	Values         map[string]any
 	ValueRefs      map[string]string
 	Attributes     map[string]any
@@ -70,8 +71,9 @@ type SearchOptions struct {
 }
 
 type PolicyOptions struct {
-	Retry  *RetryPolicy
-	States map[string]RetryPolicy
+	MaxActiveMS any
+	Retry       *RetryPolicy
+	States      map[string]RetryPolicy
 	// StatePolicies configures full state policies. Use this for FIFO/PARALLEL mode.
 	StatePolicies map[string]FlowStatePolicy
 	// IndexedAttributes is omitted when nil; a non-nil empty slice clears the index.
@@ -112,17 +114,18 @@ type TransitionOptions struct {
 }
 
 type RetryOptions struct {
-	ID           string
-	LeaseToken   string
-	FencingToken int64
-	PartitionKey string
-	Error        any
-	Payload      any
-	RunAtMS      int64
-	NowMS        int64
-	ReturnRecord bool
-	StateMeta    map[string]any
-	NamedValues
+	ID               string
+	LeaseToken       string
+	FencingToken     int64
+	PartitionKey     string
+	Error            any
+	Payload          any
+	RunAtMS          int64
+	NowMS            int64
+	ReturnRecord     bool
+	StateMeta        map[string]any
+	AttributesMerge  map[string]any
+	AttributesDelete []string
 }
 
 type FailOptions struct {
@@ -158,7 +161,6 @@ type RewindOptions struct {
 	PartitionKey string
 	ExpectState  string
 	RunAtMS      int64
-	ReasonRef    string
 	NowMS        int64
 	ReturnRecord bool
 }
@@ -190,15 +192,16 @@ type TransitionManyOptions struct {
 }
 
 type RetryManyOptions struct {
-	PartitionKey string
-	Items        []ClaimedItem
-	Error        any
-	Payload      any
-	RunAtMS      int64
-	NowMS        int64
-	Independent  *bool
-	StateMeta    map[string]any
-	NamedValues
+	PartitionKey     string
+	Items            []ClaimedItem
+	Error            any
+	Payload          any
+	RunAtMS          int64
+	NowMS            int64
+	Independent      *bool
+	StateMeta        map[string]any
+	AttributesMerge  map[string]any
+	AttributesDelete []string
 }
 
 type FailManyOptions struct {
@@ -233,7 +236,6 @@ type SignalOptions struct {
 	TransitionTo   string
 	RunAtMS        int64
 	NowMS          int64
-	Priority       *int64
 	NamedValues
 }
 
@@ -279,7 +281,7 @@ type HistoryOptions struct {
 }
 
 type SpawnChildrenOptions struct {
-	ParentID       string
+	ID             string
 	Children       []ChildSpec
 	PartitionKey   string
 	LeaseToken     string
@@ -293,6 +295,7 @@ type SpawnChildrenOptions struct {
 	OnChildFailed  string
 	OnParentClosed string
 	NowMS          int64
+	MaxActiveMS    any
 	Values         map[string]any
 	ValueRefs      map[string]string
 }

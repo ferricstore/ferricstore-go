@@ -96,9 +96,6 @@ func (c *Client) RetryMany(ctx context.Context, opt RetryManyOptions) ([]FlowRec
 	}
 	appendOpt(&args, "NOW", valueOrNow(opt.NowMS))
 	appendBoolPtr(&args, "INDEPENDENT", opt.Independent)
-	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
-		return nil, err
-	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	appendStateMeta(&args, opt.StateMeta)
 	appendClaimedItems(&args, opt.PartitionKey, opt.Items)

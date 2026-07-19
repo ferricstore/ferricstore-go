@@ -42,6 +42,30 @@ func TestIntegrationClusterReady(t *testing.T) {
 			t.Fatalf("cluster status does not include %q: %#v", node, status)
 		}
 	}
+	shards := 0
+	for key, raw := range status {
+		if !strings.HasPrefix(key, "shard_") {
+			continue
+		}
+		shard, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("cluster status %s is not a section: %#v", key, raw)
+		}
+		members := strings.Split(strings.ToLower(asString(shard["members"])), ",")
+		memberSet := make(map[string]struct{}, len(members))
+		for _, member := range members {
+			memberSet[strings.TrimSpace(member)] = struct{}{}
+		}
+		for _, node := range nodes {
+			if _, present := memberSet[strings.ToLower(node)]; !present {
+				t.Fatalf("cluster status %s does not include member %q: %#v", key, node, shard)
+			}
+		}
+		shards++
+	}
+	if shards < 3 {
+		t.Fatalf("cluster status exposes only %d shard sections: %#v", shards, status)
+	}
 	topology := newClusterTopology(t, CrossShardWriteReject)
 	defer topology.Close()
 	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)

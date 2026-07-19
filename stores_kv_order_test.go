@@ -37,10 +37,13 @@ func (e *orderedBulkKVExecutor) keyValueMSetNX(_ context.Context, keys []string,
 
 func TestKeyValueMapMutationsEncodeInDeterministicKeyOrder(t *testing.T) {
 	values := map[string]any{
-		"hotel": 8, "alpha": 1, "golf": 7, "bravo": 2,
-		"foxtrot": 6, "charlie": 3, "echo": 5, "delta": 4,
+		"{order}:hotel": 8, "{order}:alpha": 1, "{order}:golf": 7, "{order}:bravo": 2,
+		"{order}:foxtrot": 6, "{order}:charlie": 3, "{order}:echo": 5, "{order}:delta": 4,
 	}
-	want := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"}
+	want := []string{
+		"{order}:alpha", "{order}:bravo", "{order}:charlie", "{order}:delta",
+		"{order}:echo", "{order}:foxtrot", "{order}:golf", "{order}:hotel",
+	}
 	bulk := &orderedBulkKVExecutor{}
 	store := NewClientWithExecutor(bulk, WithCodec(&orderedMapCodec{})).KV()
 

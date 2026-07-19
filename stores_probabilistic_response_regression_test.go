@@ -26,7 +26,7 @@ func TestTopKListRejectsMalformedCounts(t *testing.T) {
 		[]any{[]byte("item"), []byte("not-a-count")},
 	} {
 		store := NewClientWithExecutor(&fakeExecutor{value: response}).TopK()
-		if _, err := store.List(context.Background(), "topk", true); err == nil {
+		if _, err := store.ListWithCount(context.Background(), "topk"); err == nil {
 			t.Fatalf("accepted malformed TOPK.LIST response %#v", response)
 		}
 	}

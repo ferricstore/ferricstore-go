@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-image="${FERRICSTORE_IMAGE:-ghcr.io/ferricstore/ferricstore:0.7.5}"
+image="${FERRICSTORE_IMAGE:-ghcr.io/ferricstore/ferricstore:0.8.0}"
 name="${FERRICSTORE_TEST_CONTAINER:-ferricstore-go-integration-$$}"
 
 cleanup() {
@@ -47,6 +47,7 @@ done
 export FERRICSTORE_ADDR="127.0.0.1:${host_port}"
 if [[ "$ready" != 1 ]]; then
   cat "$ready_log" >&2
-  exit 1
+	exit 1
 fi
+export FERRICSTORE_STRICT_COMMAND_COVERAGE=1
 run_go_test -tags=integration ./...

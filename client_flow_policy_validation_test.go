@@ -21,14 +21,6 @@ func TestFlowPolicyCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 			_, err := c.SetPolicy(ctx, "type", PolicyOptions{IndexedAttributes: []string{"a", "b", "c", "d"}})
 			return err
 		}},
-		{name: "duplicate indexed attribute", call: func(c *Client) error {
-			_, err := c.SetPolicy(ctx, "type", PolicyOptions{IndexedAttributes: []string{"a", "a"}})
-			return err
-		}},
-		{name: "normalized duplicate indexed attribute", call: func(c *Client) error {
-			_, err := c.SetPolicy(ctx, "type", PolicyOptions{IndexedAttributes: []string{"a", " a "}})
-			return err
-		}},
 		{name: "reserved indexed state meta", call: func(c *Client) error {
 			_, err := c.SetPolicy(ctx, "type", PolicyOptions{IndexedStateMeta: "__internal", IndexedStateMetaSet: true})
 			return err
@@ -39,6 +31,14 @@ func TestFlowPolicyCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 		}},
 		{name: "empty full state", call: func(c *Client) error {
 			_, err := c.SetPolicy(ctx, "type", PolicyOptions{StatePolicies: map[string]FlowStatePolicy{"": {Mode: FlowStateModeFIFO}}})
+			return err
+		}},
+		{name: "running retry state", call: func(c *Client) error {
+			_, err := c.SetPolicy(ctx, "type", PolicyOptions{States: map[string]RetryPolicy{"running": {MaxRetries: 1}}})
+			return err
+		}},
+		{name: "running full state", call: func(c *Client) error {
+			_, err := c.SetPolicy(ctx, "type", PolicyOptions{StatePolicies: map[string]FlowStatePolicy{"running": {Mode: FlowStateModeFIFO}}})
 			return err
 		}},
 		{name: "negative retries", call: func(c *Client) error {
@@ -111,6 +111,19 @@ func TestSetPolicyCanonicalizesIndexedMetadataKeys(t *testing.T) {
 	})
 }
 
+func TestV080SetPolicyDeduplicatesIndexedMetadataLikeServer(t *testing.T) {
+	exec := &fakeExecutor{value: map[string]any{"indexed_attributes": []any{"tenant"}}}
+	_, err := NewClientWithExecutor(exec).SetPolicy(context.Background(), "type", PolicyOptions{
+		IndexedAttributes: []string{" tenant ", "tenant", " tenant "},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCall(t, exec, []any{
+		"FLOW.POLICY.SET", "type", "INDEXED_ATTRIBUTES", []string{"tenant"},
+	})
+}
+
 func TestSetPolicyEmitsStateMapsDeterministically(t *testing.T) {
 	ctx := context.Background()
 	opt := PolicyOptions{
@@ -168,5 +181,25 @@ func TestSetPolicyAcceptsOnlyExactAcknowledgementOrVerifiableMap(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "policy map or OK") {
 			t.Fatalf("response %#v error = %v, want policy-map-or-OK rejection", value, err)
 		}
+	}
+}
+
+func TestV080SetPolicyClearsRequireFieldsInStructuredResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		opt  PolicyOptions
+	}{
+		{name: "indexed attributes", opt: PolicyOptions{IndexedAttributes: []string{}}},
+		{name: "indexed state meta", opt: PolicyOptions{IndexedStateMetaSet: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exec := &fakeExecutor{value: map[string]any{"type": "order"}}
+			if _, err := NewClientWithExecutor(exec).SetPolicy(
+				context.Background(), "order", test.opt,
+			); err == nil {
+				t.Fatal("accepted a structured policy response that omitted the cleared field")
+			}
+		})
 	}
 }

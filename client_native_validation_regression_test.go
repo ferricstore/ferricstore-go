@@ -85,6 +85,10 @@ func TestRateLimitAddRejectsOutOfContractResponseValues(t *testing.T) {
 		{name: "remaining above maximum", response: []any{"allowed", int64(1), int64(11), int64(500)}},
 		{name: "negative reset", response: []any{"allowed", int64(1), int64(9), int64(-1)}},
 		{name: "reset above window", response: []any{"allowed", int64(1), int64(9), int64(1001)}},
+		{name: "allowed count below increment", response: []any{"allowed", int64(0), int64(10), int64(500)}},
+		{name: "allowed remaining mismatch", response: []any{"allowed", int64(1), int64(8), int64(500)}},
+		{name: "denied despite available capacity", response: []any{"denied", int64(1), int64(9), int64(500)}},
+		{name: "denied remaining mismatch", response: []any{"denied", int64(10), int64(1), int64(500)}},
 	}
 
 	for _, test := range tests {
@@ -92,6 +96,50 @@ func TestRateLimitAddRejectsOutOfContractResponseValues(t *testing.T) {
 			client := NewClientWithExecutor(&fakeExecutor{value: test.response})
 			if _, err := client.RateLimitAdd(context.Background(), "rate", 1000, 10, 1); err == nil {
 				t.Fatalf("accepted out-of-contract response %#v", test.response)
+			}
+		})
+	}
+}
+
+func TestKeyInfoRejectsContradictoryMissingKeyMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		response map[string]any
+	}{
+		{
+			name: "missing key has value bytes",
+			response: map[string]any{
+				"type": "none", "value_size": int64(1), "ttl_ms": int64(-2),
+				"hot_cache_status": "cold", "last_write_shard": int64(0),
+			},
+		},
+		{
+			name: "missing key has ttl",
+			response: map[string]any{
+				"type": "none", "value_size": int64(0), "ttl_ms": int64(-1),
+				"hot_cache_status": "cold", "last_write_shard": int64(0),
+			},
+		},
+		{
+			name: "missing key is hot",
+			response: map[string]any{
+				"type": "none", "value_size": int64(0), "ttl_ms": int64(-2),
+				"hot_cache_status": "hot", "last_write_shard": int64(0),
+			},
+		},
+		{
+			name: "existing key uses missing ttl sentinel",
+			response: map[string]any{
+				"type": "string", "value_size": int64(0), "ttl_ms": int64(-2),
+				"hot_cache_status": "cold", "last_write_shard": int64(0),
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewClientWithExecutor(&fakeExecutor{value: test.response})
+			if _, err := client.KeyInfo(context.Background(), "key"); err == nil {
+				t.Fatalf("accepted contradictory key_info response %#v", test.response)
 			}
 		})
 	}

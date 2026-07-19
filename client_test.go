@@ -335,27 +335,6 @@ func TestCreateManyBuildsSharedStateMeta(t *testing.T) {
 	}
 }
 
-func TestCreateManyRejectsMixedItemStateMeta(t *testing.T) {
-	exec := &fakeExecutor{value: []byte("OK")}
-	client := NewClientWithExecutor(exec)
-
-	_, err := client.CreateMany(context.Background(), CreateManyOptions{
-		Type:  "order",
-		NowMS: 100,
-		Items: []CreateItem{
-			{ID: "f1", StateMeta: map[string]any{"version": 1}},
-			{ID: "f2", StateMeta: map[string]any{"version": 2}},
-		},
-	})
-
-	if err == nil {
-		t.Fatal("expected mixed state_meta error")
-	}
-	if len(exec.calls) != 0 {
-		t.Fatalf("expected no command, got %d", len(exec.calls))
-	}
-}
-
 func TestStartAndClaimBuildsCommand(t *testing.T) {
 	exec := &fakeExecutor{value: map[string]any{"id": "f1", "type": "order", "state": "running", "run_state": "reserve"}}
 	client := NewClientWithExecutor(exec)

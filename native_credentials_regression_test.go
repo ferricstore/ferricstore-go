@@ -94,8 +94,8 @@ func serveNativeEmptyPasswordAuth(listener net.Listener, result chan<- error) {
 		result <- err
 		return
 	}
-	if startup.opcode != nativeOpStartup {
-		result <- fmt.Errorf("first opcode = %#x, want STARTUP", startup.opcode)
+	if startup.opcode != nativeOpHello {
+		result <- fmt.Errorf("first opcode = %#x, want HELLO", startup.opcode)
 		return
 	}
 	if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {

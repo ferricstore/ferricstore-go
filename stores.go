@@ -26,6 +26,9 @@ type keyValueExistsExecutor interface {
 }
 
 func (s *KeyValueStore) Set(ctx context.Context, key string, value any) error {
+	if err := validatePublicV080StringKey(key); err != nil {
+		return err
+	}
 	encoded, err := s.client.encode(value)
 	if err != nil {
 		return err
@@ -44,6 +47,9 @@ func (s *KeyValueStore) Get(ctx context.Context, key string) (any, error) {
 func (s *KeyValueStore) MGet(ctx context.Context, keys ...string) ([]any, error) {
 	if len(keys) == 0 {
 		return []any{}, nil
+	}
+	if err := validatePublicStringKeys(keys); err != nil {
+		return nil, err
 	}
 	var value any
 	var err error
@@ -88,6 +94,9 @@ func (s *KeyValueStore) Del(ctx context.Context, keys ...string) (int64, error) 
 	if len(keys) == 0 {
 		return 0, nil
 	}
+	if err := validatePublicStringKeys(keys); err != nil {
+		return 0, err
+	}
 	if direct, ok := s.client.exec.(keyValueDelExecutor); ok {
 		value, err := s.commandReplyDirect(ctx, func() (any, error) {
 			return direct.keyValueDel(ctx, keys)
@@ -104,6 +113,9 @@ func (s *KeyValueStore) Del(ctx context.Context, keys ...string) (int64, error) 
 func (s *KeyValueStore) Exists(ctx context.Context, keys ...string) (int64, error) {
 	if len(keys) == 0 {
 		return 0, nil
+	}
+	if err := validatePublicStringKeys(keys); err != nil {
+		return 0, err
 	}
 	if direct, ok := s.client.exec.(keyValueExistsExecutor); ok {
 		value, err := s.commandReplyDirect(ctx, func() (any, error) {

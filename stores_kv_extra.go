@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 )
 
 const maxSetRangeOffset int64 = 536_870_911
@@ -23,6 +24,9 @@ type SetOptions struct {
 
 func (s *KeyValueStore) SetWithOptions(ctx context.Context, key string, value any, opt SetOptions) (any, error) {
 	if err := validateSetOptions(opt); err != nil {
+		return nil, err
+	}
+	if err := validatePublicV080StringKey(key); err != nil {
 		return nil, err
 	}
 	encoded, err := s.client.encode(value)
@@ -51,6 +55,16 @@ func (s *KeyValueStore) SetWithOptions(ctx context.Context, key string, value an
 		return response, err
 	}
 	if !opt.Get {
+		// The dedicated native v1 SET schema returns a boolean for conditional
+		// writes, while COMMAND_EXEC-compatible transports return OK/nil.
+		// Normalize the native false result to the existing nil contract and
+		// preserve true as the successful native acknowledgement.
+		if applied, ok := response.(bool); ok && (opt.NX || opt.XX) {
+			if !applied {
+				return nil, nil
+			}
+			return response, nil
+		}
 		if response == nil && (opt.NX || opt.XX) {
 			return nil, nil
 		}
@@ -77,15 +91,21 @@ func validateSetOptions(opt SetOptions) error {
 	if err := validatePositiveExpiryOptions("SET", opt.EXSeconds, opt.PXMilliseconds, opt.EXATSeconds, opt.PXATMillis); err != nil {
 		return err
 	}
-	return nil
+	return validateExpiryOptionBounds("SET", opt.EXSeconds, opt.PXMilliseconds, opt.EXATSeconds, opt.PXATMillis)
 }
 
 func (s *KeyValueStore) MSet(ctx context.Context, values map[string]any) error {
 	if len(values) == 0 {
 		return nil
 	}
+	keys := mapKeysForCodec(values, s.client.codec)
+	if err := validatePublicV080StringKeys(keys); err != nil {
+		return err
+	}
+	if err := validateSameSlotStringKeys("MSET", keys); err != nil {
+		return err
+	}
 	if bulk, ok := s.client.exec.(keyValueBulkExecutor); ok {
-		keys := mapKeysForCodec(values, s.client.codec)
 		encodedValues := make([]any, 0, len(values))
 		for _, key := range keys {
 			encoded, err := s.client.encode(values[key])
@@ -105,9 +125,10 @@ func (s *KeyValueStore) MSet(ctx context.Context, values map[string]any) error {
 			return args
 		})
 	}
+	sort.Strings(keys)
 	args := make([]any, 1, 1+2*len(values))
 	args[0] = "MSET"
-	for _, key := range sortedKeys(values) {
+	for _, key := range keys {
 		encoded, err := s.client.encode(values[key])
 		if err != nil {
 			return err
@@ -121,8 +142,14 @@ func (s *KeyValueStore) MSetNX(ctx context.Context, values map[string]any) (bool
 	if len(values) == 0 {
 		return false, errors.New("MSETNX requires at least one key/value pair")
 	}
+	keys := mapKeysForCodec(values, s.client.codec)
+	if err := validatePublicV080StringKeys(keys); err != nil {
+		return false, err
+	}
+	if err := validateSameSlotStringKeys("MSETNX", keys); err != nil {
+		return false, err
+	}
 	if bulk, ok := s.client.exec.(keyValueMSetNXExecutor); ok {
-		keys := mapKeysForCodec(values, s.client.codec)
 		encodedValues := make([]any, 0, len(values))
 		for _, key := range keys {
 			encoded, err := s.client.encode(values[key])
@@ -145,7 +172,7 @@ func (s *KeyValueStore) MSetNX(ctx context.Context, values map[string]any) (bool
 	}
 	args := make([]any, 1, 1+2*len(values))
 	args[0] = "MSETNX"
-	for _, key := range mapKeysForCodec(values, s.client.codec) {
+	for _, key := range keys {
 		encoded, err := s.client.encode(values[key])
 		if err != nil {
 			return false, err
@@ -188,6 +215,9 @@ func (s *KeyValueStore) StrLen(ctx context.Context, key string) (int64, error) {
 }
 
 func (s *KeyValueStore) GetSet(ctx context.Context, key string, value any) (any, error) {
+	if err := validatePublicStringKey(key); err != nil {
+		return nil, err
+	}
 	encoded, err := s.client.encode(value)
 	if err != nil {
 		return nil, err
@@ -222,6 +252,9 @@ func (s *KeyValueStore) GetEX(ctx context.Context, key string, opt GetEXOptions)
 	if err := validatePositiveExpiryOptions("GETEX", opt.EXSeconds, opt.PXMilliseconds, opt.EXATSeconds, opt.PXATMillis); err != nil {
 		return nil, err
 	}
+	if err := validateExpiryOptionBounds("GETEX", opt.EXSeconds, opt.PXMilliseconds, opt.EXATSeconds, opt.PXATMillis); err != nil {
+		return nil, err
+	}
 	args := []any{"GETEX", key}
 	appendInt64Ptr(&args, "EX", opt.EXSeconds)
 	appendInt64Ptr(&args, "PX", opt.PXMilliseconds)
@@ -238,6 +271,9 @@ func (s *KeyValueStore) GetEX(ctx context.Context, key string, opt GetEXOptions)
 }
 
 func (s *KeyValueStore) SetNX(ctx context.Context, key string, value any) (bool, error) {
+	if err := validatePublicStringKey(key); err != nil {
+		return false, err
+	}
 	encoded, err := s.client.encode(value)
 	if err != nil {
 		return false, err
@@ -250,6 +286,12 @@ func (s *KeyValueStore) SetEX(ctx context.Context, key string, seconds int64, va
 	if seconds <= 0 {
 		return errors.New("SETEX expiration must be positive")
 	}
+	if err := validateRelativeExpiryValue("SETEX", seconds, maxRelativeExpirySecsV080); err != nil {
+		return err
+	}
+	if err := validatePublicStringKey(key); err != nil {
+		return err
+	}
 	encoded, err := s.client.encode(value)
 	if err != nil {
 		return err
@@ -260,6 +302,12 @@ func (s *KeyValueStore) SetEX(ctx context.Context, key string, seconds int64, va
 func (s *KeyValueStore) PSetEX(ctx context.Context, key string, milliseconds int64, value any) error {
 	if milliseconds <= 0 {
 		return errors.New("PSETEX expiration must be positive")
+	}
+	if err := validateRelativeExpiryValue("PSETEX", milliseconds, maxRelativeExpiryMillisV080); err != nil {
+		return err
+	}
+	if err := validatePublicStringKey(key); err != nil {
+		return err
 	}
 	encoded, err := s.client.encode(value)
 	if err != nil {

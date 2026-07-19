@@ -20,81 +20,53 @@ const (
 	nativeDefaultPort               = "6388"
 	nativeDefaultTLSPort            = "6389"
 	nativeMaxFrameBytes             = 128 * 1024 * 1024
+	nativeUnauthenticatedFrameBytes = 64 * 1024
 	nativeMaxContainerItems         = 1_000_000
 	nativeAutoLaneID                = math.MaxUint32
 	nativeDefaultGoAwayDrainTimeout = 30 * time.Second
 	nativeEventBufferCapacity       = 4096
 	nativeMaxBufferedEventBytes     = 16 * 1024 * 1024
 
-	nativeFlagCompressed    = 0x08
+	nativeFlagTrace         = 0x01
 	nativeFlagCustomPayload = 0x02
+	nativeFlagWarning       = 0x04
+	nativeFlagCompressed    = 0x08
+	nativeFlagNoReply       = 0x10
 	nativeFlagMoreChunks    = 0x20
+
+	nativeResponseWireFlags = nativeFlagTrace | nativeFlagCustomPayload |
+		nativeFlagWarning | nativeFlagCompressed | nativeFlagMoreChunks
+	nativeStableChunkFlags = nativeFlagTrace | nativeFlagCustomPayload | nativeFlagWarning
 
 	nativeStatusOK = 0
 
-	nativeOpAuth                   = 0x0002
-	nativeOpPing                   = 0x0003
-	nativeOpShards                 = 0x0007
-	nativeOpGoAway                 = 0x000A
-	nativeOpStartup                = 0x000C
-	nativeOpWindowUpdate           = 0x000D
-	nativeOpPipeline               = 0x000E
-	nativeOpEvent                  = 0x0010
-	nativeOpSubscribeEvents        = 0x0011
-	nativeOpUnsubscribeEvents      = 0x0012
-	nativeOpCommandExec            = 0x0100
-	nativeOpGet                    = 0x0101
-	nativeOpSet                    = 0x0102
-	nativeOpDel                    = 0x0103
-	nativeOpMGet                   = 0x0104
-	nativeOpMSet                   = 0x0105
-	nativeOpFlowClaimDue           = 0x0203
-	nativeOpFlowCreateMany         = 0x020F
-	nativeOpFlowCompleteMany       = 0x0210
-	nativeOpFlowPolicySet          = 0x021E
-	nativeOpFlowPolicyGet          = 0x021F
-	nativeOpFlowSpawnChildren      = 0x0220
-	nativeOpFlowStepContinue       = 0x0222
-	nativeOpFlowStartAndClaim      = 0x0223
-	nativeOpFlowRunStepsMany       = 0x0224
-	nativeOpFlowScheduleCreate     = 0x0225
-	nativeOpFlowScheduleGet        = 0x0226
-	nativeOpFlowScheduleDelete     = 0x0227
-	nativeOpFlowScheduleFireDue    = 0x0228
-	nativeOpFlowScheduleList       = 0x0229
-	nativeOpFlowScheduleFire       = 0x022A
-	nativeOpFlowSchedulePause      = 0x022B
-	nativeOpFlowScheduleResume     = 0x022C
-	nativeOpFlowEffectReserve      = 0x0240
-	nativeOpFlowEffectConfirm      = 0x0241
-	nativeOpFlowEffectFail         = 0x0242
-	nativeOpFlowEffectCompensate   = 0x0243
-	nativeOpFlowEffectGet          = 0x0244
-	nativeOpFlowGovernanceLedger   = 0x0245
-	nativeOpFlowApprovalRequest    = 0x0246
-	nativeOpFlowApprovalApprove    = 0x0247
-	nativeOpFlowApprovalReject     = 0x0248
-	nativeOpFlowApprovalGet        = 0x0249
-	nativeOpFlowCircuitOpen        = 0x024A
-	nativeOpFlowCircuitClose       = 0x024B
-	nativeOpFlowCircuitGet         = 0x024C
-	nativeOpFlowBudgetReserve      = 0x024D
-	nativeOpFlowBudgetGet          = 0x024E
-	nativeOpFlowLimitLease         = 0x024F
-	nativeOpFlowLimitSpend         = 0x0250
-	nativeOpFlowLimitRelease       = 0x0251
-	nativeOpFlowLimitGet           = 0x0252
-	nativeOpFlowApprovalList       = 0x0253
-	nativeOpFlowGovernanceOverview = 0x0254
-	nativeOpFlowBudgetList         = 0x0255
-	nativeOpFlowLimitList          = 0x0256
-	nativeOpFlowBudgetCommit       = 0x0257
-	nativeOpFlowBudgetRelease      = 0x0258
+	nativeOpHello             = 0x0001
+	nativeOpAuth              = 0x0002
+	nativeOpPing              = 0x0003
+	nativeOpShards            = 0x0007
+	nativeOpGoAway            = 0x000A
+	nativeOpStartup           = 0x000C
+	nativeOpWindowUpdate      = 0x000D
+	nativeOpPipeline          = 0x000E
+	nativeOpEvent             = 0x0010
+	nativeOpSubscribeEvents   = 0x0011
+	nativeOpUnsubscribeEvents = 0x0012
+	nativeOpCommandExec       = 0x0100
+	nativeOpGet               = 0x0101
+	nativeOpSet               = 0x0102
+	nativeOpDel               = 0x0103
+	nativeOpMGet              = 0x0104
+	nativeOpMSet              = 0x0105
 
 	nativeCompactFlowClaimJobs    = 0x80
 	nativeCompactOKList           = 0x81
 	nativeCompactKVGet            = 0x82
 	nativeCompactKVMGet           = 0x83
+	nativeCompactFlowRecord       = 0x84
+	nativeCompactFlowRecordList   = 0x85
+	nativeCompactBinaryListList   = 0x86
+	nativeCompactBinaryMapList    = 0x87
+	nativeCompactIntegerList      = 0x88
 	nativeCompactKVMGetFixed      = 0x89
 	nativeCompactPipelineRequest  = 0x94
 	nativeCompactPipelineResponse = 0x95
@@ -115,8 +87,10 @@ type NativeExecutor struct {
 	nextID               uint64
 	nextLane             atomic.Uint32
 	maxRequestFrameBytes int
+	maxResponseBytes     int
 	maxPipelineCommands  int
 	maxDataLanes         uint32
+	responseCodecs       nativeResponseCodecs
 	flow                 *nativeFlowController
 	replayWindowUpdate   map[string]any
 	connectInFlight      *nativeConnectAttempt
@@ -153,17 +127,22 @@ type nativeConnectAttempt struct {
 }
 
 type nativeConnectedTransport struct {
-	conn            net.Conn
-	reader          *bufio.Reader
-	writer          *bufio.Writer
-	startupResponse any
-	windowResponse  any
+	conn           net.Conn
+	reader         *bufio.Reader
+	writer         *bufio.Writer
+	helloResponse  any
+	windowResponse any
+	contract       nativeHelloContract
 }
 
 type NativeError struct {
 	Status uint16
 	Kind   string
 	Value  any
+
+	// Keep NativeError non-comparable: Value can hold maps and slices, and a
+	// nominally comparable error value can otherwise make errors.Is panic.
+	_ [0]func()
 }
 
 var (
@@ -214,6 +193,7 @@ func newNativeExecutor(options NativeOptions) *NativeExecutor {
 		opts:                 options,
 		closed:               make(chan struct{}),
 		maxRequestFrameBytes: nativeDefaultRequestFrameBytes,
+		maxResponseBytes:     options.MaxResponseBytes,
 		maxPipelineCommands:  nativeDefaultPipelineCommands,
 		maxDataLanes:         1,
 		flow:                 newNativeFlowController(nativeDefaultConnectionCredits, nativeDefaultLaneCredits, nativeDefaultLaneQueue, options.MaxQueuedRequests),
@@ -403,49 +383,6 @@ func (e *NativeExecutor) pipelineDetailedOnLane(ctx context.Context, commands []
 	return results, nil
 }
 
-func (e *NativeExecutor) pipelineChunkWithoutGate(ctx context.Context, commands [][]any, laneID uint32, maxFrameBytes int) ([]pipelineItemResult, error) {
-	payload, flags, err := nativePipelinePayload(commands, laneID, maxFrameBytes)
-	if err != nil {
-		var limitErr nativeEncodeLimitError
-		if !errors.As(err, &limitErr) {
-			return nil, err
-		}
-		return e.splitOversizedPipelineChunk(ctx, commands, laneID, maxFrameBytes)
-	}
-	budget := pipelineBlockingBudget(commands)
-	value, err := e.requestWithoutSessionGate(ctx, nativeOpPipeline, laneID, payload, flags, budget)
-	if err != nil {
-		var limitErr nativeEncodeLimitError
-		if errors.As(err, &limitErr) {
-			return e.splitOversizedPipelineChunk(ctx, commands, laneID, maxFrameBytes)
-		}
-		return nil, &pipelineChunkExecutionError{
-			cause:    fmt.Errorf("PIPELINE: %w", err),
-			affected: len(commands),
-		}
-	}
-	return pipelineItemResults(value, len(commands))
-}
-
-func (e *NativeExecutor) splitOversizedPipelineChunk(ctx context.Context, commands [][]any, laneID uint32, maxFrameBytes int) ([]pipelineItemResult, error) {
-	if len(commands) == 1 {
-		return nil, &pipelineChunkExecutionError{
-			cause:    fmt.Errorf("PIPELINE command exceeds server-advertised %d-byte frame limit", maxFrameBytes),
-			affected: 1,
-		}
-	}
-	middle := len(commands) / 2
-	left, err := e.pipelineChunkWithoutGate(ctx, commands[:middle], laneID, maxFrameBytes)
-	if err != nil {
-		return left, err
-	}
-	right, err := e.pipelineChunkWithoutGate(ctx, commands[middle:], laneID, maxFrameBytes)
-	if err != nil {
-		return append(left, right...), err
-	}
-	return append(left, right...), nil
-}
-
 func nativePipelinePayload(commands [][]any, laneID uint32, maxFrameBytes int) (any, byte, error) {
 	if payload, ok, err := compactPipelinePlanWithLimit(commands, maxFrameBytes); ok || err != nil {
 		return payload, nativeFlagCustomPayload, err
@@ -457,10 +394,14 @@ func nativePipelinePayload(commands [][]any, laneID uint32, maxFrameBytes int) (
 			return nil, 0, &pipelineCommandBuildError{index: idx, cause: err}
 		}
 		if command.flags != 0 {
-			// Typed PIPELINE items require map bodies. Rebuild compact/custom
-			// commands through COMMAND_EXEC, matching an ordinary command's wire
-			// semantics without embedding an opaque body the server cannot parse.
-			command, err = commandExecNativeCommand(commandPart(args[0]), args[1:])
+			if provider, ok := command.payload.(nativePipelineBodyProvider); ok {
+				command.payload, err = provider.nativePipelineBody()
+				command.flags = 0
+			} else {
+				// Typed PIPELINE items require map bodies. Rebuild other compact/custom
+				// commands through COMMAND_EXEC because an opaque body cannot be nested.
+				command, err = commandExecNativeCommand(commandPart(args[0]), args[1:])
+			}
 			if err != nil {
 				return nil, 0, &pipelineCommandBuildError{index: idx, cause: err}
 			}

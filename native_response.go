@@ -10,10 +10,15 @@ import (
 	"time"
 )
 
-func readNativeResponse(reader *bufio.Reader) (nativeResponse, error) {
-	assembler := newNativeResponseAssembler(nativeMaxFrameBytes, nativeMaxResponseChunkFrames)
+type nativeResponsePolicy struct {
+	maxBytes int
+	codecs   nativeResponseCodecs
+}
+
+func readNativeResponseWithPolicy(reader *bufio.Reader, policy nativeResponsePolicy) (nativeResponse, error) {
+	assembler := newNativeResponseAssembler(policy.maxBytes, nativeMaxResponseChunkFrames, policy.codecs)
 	for {
-		frame, err := readNativeFrame(reader)
+		frame, err := readNativeFrameWithLimit(reader, policy.maxBytes)
 		if err != nil {
 			return nativeResponse{}, err
 		}
@@ -28,6 +33,13 @@ func readNativeResponse(reader *bufio.Reader) (nativeResponse, error) {
 }
 
 func decodeNativeResponseFrame(first nativeFrame, body []byte, flags byte) (nativeResponse, error) {
+	return decodeNativeResponseFrameWithCodecs(first, body, flags, nativeResponseCodecs{})
+}
+
+func decodeNativeResponseFrameWithCodecs(first nativeFrame, body []byte, flags byte, codecs nativeResponseCodecs) (nativeResponse, error) {
+	if err := validateNativeResponseFlags(flags, false); err != nil {
+		return nativeResponse{}, err
+	}
 	if flags&nativeFlagCompressed != 0 {
 		return nativeResponse{}, errors.New("ferricstore native compressed responses are not negotiated")
 	}
@@ -40,7 +52,7 @@ func decodeNativeResponseFrame(first nativeFrame, body []byte, flags byte) (nati
 		if len(body) == 2 {
 			return nativeResponse{}, errors.New("ferricstore native custom response payload is empty")
 		}
-		value, ok, err := decodeNativeCompactValue(first.opcode, body[2:])
+		value, ok, err := decodeNativeCompactValueWithCodecs(first.opcode, body[2:], codecs)
 		if err != nil {
 			return nativeResponse{}, err
 		}
@@ -76,6 +88,16 @@ func decodeNativeResponseFrame(first nativeFrame, body []byte, flags byte) (nati
 		value:     value,
 		wireBytes: len(body),
 	}, nil
+}
+
+func validateNativeResponseFlags(flags byte, chunksAllowed bool) error {
+	if flags&^nativeResponseWireFlags != 0 || flags&nativeFlagNoReply != 0 {
+		return fmt.Errorf("ferricstore native response uses unsupported flags %#x", flags)
+	}
+	if !chunksAllowed && flags&nativeFlagMoreChunks != 0 {
+		return errors.New("ferricstore native response is still marked as chunked")
+	}
+	return nil
 }
 
 func validateNativeServerInitiatedResponse(frame nativeResponse) error {
@@ -157,6 +179,7 @@ func defaultNativeOptions(addr string, tlsEnabled bool) NativeOptions {
 		ReconnectMaxRetries: 1,
 		ProtocolLanes:       nativeDefaultProtocolLanes,
 		MaxQueuedRequests:   nativeDefaultQueuedRequests,
+		MaxResponseBytes:    nativeDefaultResponseBytes,
 		addressInput:        addr,
 		addressUsesDefault:  !nativeAddressHasExplicitPort(addr),
 	}

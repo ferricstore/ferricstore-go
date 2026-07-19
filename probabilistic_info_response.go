@@ -50,7 +50,6 @@ var topKInfoSchema = [...]probabilisticInfoField{
 	{"k", infoPositiveInteger},
 	{"width", infoPositiveInteger},
 	{"depth", infoPositiveInteger},
-	{"decay", infoUnitFloat},
 }
 
 var tDigestInfoSchema = [...]probabilisticInfoField{

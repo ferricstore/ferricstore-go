@@ -20,8 +20,12 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.7.5`, by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.8.0`, by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
+
+## Compatibility
+
+The Go package contract is v0.8.0 and requires FerricStore 0.8.0 or newer. This is a breaking beta API update; the native wire protocol remains v1.
 
 ## Client
 
@@ -214,7 +218,7 @@ Use `OpenPubSub` when you want events on the existing native multiplexed connect
 
 Shared native events are delivered through a bounded client buffer. If the buffer is full, the SDK drops new events instead of blocking normal command responses. Check `client.DroppedEvents()` or `pubsub.DroppedEvents()` if wake/event loss matters to your worker loop.
 
-Reconnect is enabled by default with one conservative retry. The SDK reconnects when the socket is already closed or startup failed before the command was accepted. It does not retry server errors, context cancellation, or requests that may already have reached FerricStore. Disable it with `ferricstore.WithNativeReconnect(0)`.
+Reconnect is enabled by default with one conservative retry. The SDK reconnects when the socket is already closed or HELLO/connection setup failed before the command was accepted. FerricStore 0.8.0 `busy` and `reroute` errors are replayed at most once only when the response supplies both `retryable: true` and `safe_to_retry: true`; `retry_after_ms` is honored. Context cancellation and transport failures after a mutation may have reached the server, so those unknown outcomes are never replayed. Disable reconnect with `ferricstore.WithNativeReconnect(0)`.
 
 ```go
 client := ferricstore.NewClient(
@@ -259,7 +263,8 @@ defer func() { _ = client.Close() }()
 ```
 
 Topology commands honor structured reroute responses and replay at most once,
-only when the server explicitly returns `safe_to_retry: true`. For a new
+only when the server explicitly returns both `retryable: true` and
+`safe_to_retry: true`. For a new
 server/module command that the SDK cannot infer a routing key for, provide the
 key explicitly:
 
@@ -282,6 +287,13 @@ profile, _ := client.KV().Get(ctx, "tenant:1:profile")
 _, _ = client.Hash().Set(ctx, "order:1", "status", "paid")
 _, _ = client.ListStore().RPush(ctx, "outbox", "event-1")
 _, _ = client.SetStore().Add(ctx, "seen", "event-1")
+
+_, _ = client.TopK().ReserveWithOptions(ctx, "popular", 100, ferricstore.TopKReserveOptions{
+	Width: ferricstore.Int64(200),
+	Depth: ferricstore.Int64(7),
+})
+_, _ = client.TopK().IncrBy(ctx, "popular", ferricstore.TopKIncrement{Item: "search", Count: 3})
+entries, _ := client.TopK().ListWithCount(ctx, "popular")
 ```
 
 Available store helpers include KV, hash, list, set, sorted set, stream, bitmap, HyperLogLog, geo, Bloom, Cuckoo, Count-Min Sketch, TopK, and TDigest. FerricStore JSON document commands are not exposed by this SDK because the current server does not support them.
@@ -291,14 +303,18 @@ Available store helpers include KV, hash, list, set, sorted set, stream, bitmap,
 Use value refs for larger durable values that should be attached to workflow state by reference.
 
 ```go
-ref, err := client.PutValue(ctx, "analysis", map[string]any{"score": 98}, ferricstore.ValuePutOptions{
-	OwnerFlowID:  "flow-1",
+put, err := client.ValuePut(ctx, map[string]any{"score": 98}, ferricstore.ValuePutOptions{
 	PartitionKey: "tenant:1",
 	TTLMS:        ferricstore.Int64(3600000),
 })
+putFields := put.(map[string]any)
+ref := putFields["ref"].(string)
 
-values, err := client.ValueMGet(ctx, []string{fmt.Sprint(ref)}, nil)
+values, err := client.ValueMGet(ctx, []string{ref}, nil)
 ```
+
+`PutValue` writes a named value onto an existing owner Flow. Named values do not
+accept a TTL; they inherit the owner Flow's retention policy.
 
 ## Attributes, Schedules, Governance
 
@@ -356,10 +372,17 @@ approval, err := client.ApprovalRequest(ctx, "approval-1", ferricstore.ApprovalR
 budget, err := client.BudgetReserve(ctx, "llm:tenant:acme", 100, ferricstore.Int64(10_000), ferricstore.Int64(60_000), "reservation-1", nil)
 ```
 
-FerricStore 0.7.5 releases distributed-limit credits by amount through
-`LimitRelease`. Newer servers return reservation IDs from `LimitSpend`; pass
-those IDs to `LimitReleaseWithOptions` for exact release. The exact method
-never falls back to an amount-only release.
+FerricStore 0.8.0 releases distributed-limit credits only by the exact
+reservation IDs returned from `LimitSpend`:
+
+```go
+released, err := client.LimitRelease(ctx, "api:tenant:acme", ferricstore.LimitReleaseOptions{
+	ShardID:        spend.ShardID,
+	ReservationIDs: spend.ReservationIDs,
+})
+```
+
+The v0.8 SDK has no amount-only release fallback.
 
 Circuit breakers are cheap reads in the normal path and explicit writes when the circuit changes:
 
@@ -408,7 +431,7 @@ Before release, run the compatibility, fuzz, stress/performance, and three Docke
 ./scripts/integration-cluster-docker.sh
 ```
 
-`api-compat.sh` compares the exported API with the release named in `.api-baseline`. The security suite covers protected mode, ACLs, TLS verification, and mTLS. The cluster suite starts three real nodes and exercises learned routing and failover.
+`api-compat.sh` compares the exported API with the release named in `.api-baseline`. During the breaking v0.8 transition, `.api-allowed-breaks` pins the exact audited incompatibility set; any additional removal or signature change still fails the gate. The security suite covers protected mode, ACLs, TLS verification, and mTLS. The cluster suite starts three real nodes and exercises learned routing and failover.
 
 For release gating against a server image that should support every current command,
 enable strict command coverage:

@@ -6,6 +6,9 @@ type FlowRecord struct {
 	State            string
 	PartitionKey     string
 	Payload          any
+	Error            any
+	FailureReason    string
+	MaxActiveMS      int64
 	LeaseToken       string
 	FencingToken     int64
 	Version          int64
@@ -32,6 +35,7 @@ type CreateItem struct {
 	ValueRefs    map[string]string
 	Attributes   map[string]any
 	StateMeta    map[string]any
+	MaxActiveMS  any
 }
 
 type ChildSpec struct {
@@ -42,6 +46,8 @@ type ChildSpec struct {
 	Values       map[string]any
 	ValueRefs    map[string]string
 	Attributes   map[string]any
+	StateMeta    map[string]any
+	MaxActiveMS  any
 }
 
 type ClaimedItem struct {
@@ -103,21 +109,6 @@ type RequestContext struct {
 	Scopes  []string
 }
 
-type RequestContextOptions struct {
-	RequestContext *RequestContext
-}
-
-type InvocationCreateOptions struct {
-	Context        map[string]any
-	IdempotencyKey string
-	RequestContext *RequestContext
-}
-
-type InvocationPartitionListOptions struct {
-	Scope          string
-	RequestContext *RequestContext
-}
-
 type RateLimitResult struct {
 	Status    string
 	Count     int64
@@ -139,9 +130,10 @@ type KeyInfo struct {
 }
 
 type FetchOrComputeResult struct {
-	Status       string
-	Value        any
-	ComputeToken any
+	Status         string
+	Value          any
+	Hint           string
+	OwnershipToken any
 }
 
 type CreateOptions struct {
@@ -158,6 +150,7 @@ type CreateOptions struct {
 	Priority       *int64
 	Idempotent     *bool
 	RetentionTTLMS *int64
+	MaxActiveMS    any
 	Values         map[string]any
 	ValueRefs      map[string]string
 	Attributes     map[string]any
@@ -176,6 +169,7 @@ type CreateManyOptions struct {
 	Idempotent     *bool
 	Independent    *bool
 	RetentionTTLMS *int64
+	MaxActiveMS    any
 	Values         map[string]any
 	ValueRefs      map[string]string
 	Attributes     map[string]any
@@ -200,7 +194,6 @@ type ClaimDueOptions struct {
 	Payload           *bool
 	PayloadMaxBytes   *int64
 	Values            []string
-	ValueMaxBytes     *int64
 	IncludeState      bool
 	IncludeAttributes *bool
 }
@@ -219,7 +212,6 @@ type ReclaimOptions struct {
 	Payload           *bool
 	PayloadMaxBytes   *int64
 	Values            []string
-	ValueMaxBytes     *int64
 	IncludeAttributes *bool
 }
 

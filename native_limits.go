@@ -343,50 +343,6 @@ func (f *nativeFlowController) close(err error) {
 	f.mu.Unlock()
 }
 
-func (e *NativeExecutor) applyStartupCapabilitiesLocked(value any) {
-	frameBytes := nativeDefaultRequestFrameBytes
-	pipelineCommands := nativeDefaultPipelineCommands
-	lanes := uint32(1)
-	connectionCredits := nativeDefaultConnectionCredits
-	laneCredits := nativeDefaultLaneCredits
-	laneQueue := nativeDefaultLaneQueue
-
-	if n, ok := nativeCapabilityInteger(value, "max_frame_bytes", []string{"limits", "payload"}, true); ok {
-		frameBytes = boundedNativeFrameBytes(n)
-	}
-	if n, ok := nativeCapabilityInteger(value, "max_pipeline_commands", []string{"limits", "payload"}, false); ok && n <= math.MaxInt {
-		pipelineCommands = int(n)
-	}
-	if n, ok := nativeCapabilityInteger(value, "max_lanes_per_connection", []string{"limits", "multiplexing", "payload"}, true); ok && n <= math.MaxUint32 {
-		lanes = uint32(n)
-	}
-	configured := e.opts.ProtocolLanes
-	if configured == 0 {
-		configured = nativeDefaultProtocolLanes
-	}
-	if lanes > configured {
-		lanes = configured
-	}
-	if lanes == 0 {
-		lanes = 1
-	}
-	if n, ok := nativeCapabilityInteger(value, "max_inflight_per_connection", []string{"flow_control", "limits", "payload"}, false); ok && n <= math.MaxInt {
-		connectionCredits = int(n)
-	}
-	if n, ok := nativeCapabilityInteger(value, "max_inflight_per_lane", []string{"flow_control", "limits", "payload"}, false); ok && n <= math.MaxInt {
-		laneCredits = int(n)
-	}
-	if n, ok := nativeCapabilityInteger(value, "max_lane_queue", []string{"flow_control", "limits", "multiplexing", "payload"}, false); ok && n <= math.MaxInt {
-		laneQueue = int(n)
-	}
-
-	e.maxRequestFrameBytes = frameBytes
-	e.maxPipelineCommands = pipelineCommands
-	e.maxDataLanes = lanes
-	e.nextLane.Store(0)
-	e.flow = newNativeFlowController(connectionCredits, laneCredits, laneQueue, e.opts.MaxQueuedRequests)
-}
-
 func boundedNativeFrameBytes(value int64) int {
 	if value > int64(nativeMaxFrameBytes) {
 		return nativeMaxFrameBytes

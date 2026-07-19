@@ -37,12 +37,44 @@ func TestFlowMutationsRejectInvalidArgumentsBeforeCodecOrTransport(t *testing.T)
 			_, err := client.Create(context.Background(), CreateOptions{ID: "flow", Type: "order", RetentionTTLMS: &zero, Payload: "payload"})
 			return err
 		}},
+		{name: "create empty value name", call: func(client *Client) error {
+			_, err := client.Create(context.Background(), CreateOptions{
+				ID: "flow", Type: "order", Values: map[string]any{"": "payload"},
+			})
+			return err
+		}},
+		{name: "create empty value ref", call: func(client *Client) error {
+			_, err := client.Create(context.Background(), CreateOptions{
+				ID: "flow", Type: "order", ValueRefs: map[string]string{"result": ""},
+			})
+			return err
+		}},
 		{name: "value put negative now", call: func(client *Client) error {
 			_, err := client.ValuePut(context.Background(), "payload", ValuePutOptions{NowMS: -1})
 			return err
 		}},
 		{name: "value put invalid ttl", call: func(client *Client) error {
 			_, err := client.ValuePut(context.Background(), "payload", ValuePutOptions{TTLMS: &zero})
+			return err
+		}},
+		{name: "named value put with ttl", call: func(client *Client) error {
+			ttl := int64(1)
+			_, err := client.ValuePut(context.Background(), "payload", ValuePutOptions{
+				OwnerFlowID: "flow", Name: "result", TTLMS: &ttl,
+			})
+			return err
+		}},
+		{name: "named value put without owner", call: func(client *Client) error {
+			_, err := client.ValuePut(context.Background(), "payload", ValuePutOptions{Name: "result"})
+			return err
+		}},
+		{name: "shared value put with override", call: func(client *Client) error {
+			override := true
+			_, err := client.ValuePut(context.Background(), "payload", ValuePutOptions{Override: &override})
+			return err
+		}},
+		{name: "put value without name", call: func(client *Client) error {
+			_, err := client.PutValue(context.Background(), "", "payload", ValuePutOptions{OwnerFlowID: "flow"})
 			return err
 		}},
 		{name: "value mget empty ref", call: func(client *Client) error {
@@ -69,10 +101,6 @@ func TestFlowMutationsRejectInvalidArgumentsBeforeCodecOrTransport(t *testing.T)
 			_, err := client.Signal(context.Background(), SignalOptions{ID: "flow", Signal: "approve", TransitionTo: "running", NamedValues: NamedValues{Values: map[string]any{"v": "payload"}}})
 			return err
 		}},
-		{name: "signal unsupported priority", call: func(client *Client) error {
-			_, err := client.Signal(context.Background(), SignalOptions{ID: "flow", Signal: "approve", Priority: &zero, NamedValues: NamedValues{Values: map[string]any{"v": "payload"}}})
-			return err
-		}},
 		{name: "start missing id", call: func(client *Client) error {
 			_, err := client.StartAndClaim(context.Background(), StartAndClaimOptions{Type: "order", InitialState: "queued", Worker: "worker", Payload: "payload"})
 			return err
@@ -91,6 +119,20 @@ func TestFlowMutationsRejectInvalidArgumentsBeforeCodecOrTransport(t *testing.T)
 		}},
 		{name: "start negative lease", call: func(client *Client) error {
 			_, err := client.StartAndClaim(context.Background(), StartAndClaimOptions{ID: "flow", Type: "order", InitialState: "queued", Worker: "worker", LeaseMS: -1, Payload: "payload"})
+			return err
+		}},
+		{name: "start empty value name", call: func(client *Client) error {
+			_, err := client.StartAndClaim(context.Background(), StartAndClaimOptions{
+				ID: "flow", Type: "order", InitialState: "queued", Worker: "worker",
+				Values: map[string]any{"": "payload"},
+			})
+			return err
+		}},
+		{name: "start empty value ref", call: func(client *Client) error {
+			_, err := client.StartAndClaim(context.Background(), StartAndClaimOptions{
+				ID: "flow", Type: "order", InitialState: "queued", Worker: "worker",
+				ValueRefs: map[string]string{"result": ""},
+			})
 			return err
 		}},
 		{name: "extend missing id", call: func(client *Client) error {
@@ -125,6 +167,10 @@ func TestFlowMutationsRejectInvalidArgumentsBeforeCodecOrTransport(t *testing.T)
 			_, err := client.Transition(context.Background(), TransitionOptions{ID: "flow", FromState: "queued", ToState: "ready", FencingToken: -1, Payload: "payload"})
 			return err
 		}},
+		{name: "transition missing lease", call: func(client *Client) error {
+			_, err := client.Transition(context.Background(), TransitionOptions{ID: "flow", FromState: "queued", ToState: "ready", Payload: "payload"})
+			return err
+		}},
 		{name: "step missing lease", call: func(client *Client) error {
 			_, err := client.StepContinue(context.Background(), StepContinueOptions{ID: "flow", FromState: "a", ToState: "b", Payload: "payload"})
 			return err
@@ -153,10 +199,6 @@ func TestFlowMutationsRejectInvalidArgumentsBeforeCodecOrTransport(t *testing.T)
 			_, err := client.Retry(context.Background(), RetryOptions{ID: "flow", Error: "payload"})
 			return err
 		}},
-		{name: "retry unsupported named values", call: func(client *Client) error {
-			_, err := client.Retry(context.Background(), RetryOptions{ID: "flow", LeaseToken: "lease", NamedValues: NamedValues{Values: map[string]any{"v": "payload"}}})
-			return err
-		}},
 		{name: "fail missing id", call: func(client *Client) error {
 			_, err := client.Fail(context.Background(), FailOptions{LeaseToken: "lease", Error: "payload"})
 			return err
@@ -167,10 +209,6 @@ func TestFlowMutationsRejectInvalidArgumentsBeforeCodecOrTransport(t *testing.T)
 		}},
 		{name: "rewind missing event", call: func(client *Client) error {
 			_, err := client.Rewind(context.Background(), RewindOptions{ID: "flow"})
-			return err
-		}},
-		{name: "rewind unsupported reason ref", call: func(client *Client) error {
-			_, err := client.Rewind(context.Background(), RewindOptions{ID: "flow", ToEvent: "1-0", ReasonRef: "reason"})
 			return err
 		}},
 	}

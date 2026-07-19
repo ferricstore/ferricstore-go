@@ -4,7 +4,6 @@ package ferricstore
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 )
@@ -18,18 +17,24 @@ type claimedFlow struct {
 func assertStringCommands(t *testing.T, ctx context.Context, client *Client, prefix string) {
 	t.Helper()
 
-	key := prefix + "string"
+	key := prefix + "{copy}:string"
 	requireOKResponse(t, must[any](t)(client.KV().SetWithOptions(ctx, key, "abc", SetOptions{PXMilliseconds: Int64(60_000)})))
 	requireString(t, must[any](t)(client.KV().Get(ctx, key)), "abc")
+	requireOKResponse(t, must[any](t)(client.KV().SetWithOptions(ctx, prefix+"exat", "seconds", SetOptions{EXATSeconds: Int64(time.Now().Unix() + 600)})))
+	requireOKResponse(t, must[any](t)(client.KV().SetWithOptions(ctx, prefix+"pxat", "milliseconds", SetOptions{PXATMillis: Int64(time.Now().UnixMilli() + 600_000)})))
+	keepTTLKey := prefix + "keepttl"
+	requireOKResponse(t, must[any](t)(client.KV().SetWithOptions(ctx, keepTTLKey, "first", SetOptions{PXMilliseconds: Int64(600_000)})))
+	requireOKResponse(t, must[any](t)(client.KV().SetWithOptions(ctx, keepTTLKey, "second", SetOptions{KeepTTL: true})))
+	requirePositive(t, must[int64](t)(client.KV().PTTL(ctx, keepTTLKey)))
 	requireInt64(t, must[int64](t)(client.KV().Exists(ctx, key)), 1)
 	values := must[[]any](t)(client.KV().MGet(ctx, key, prefix+"missing"))
 	if len(values) != 2 || values[0] != "abc" || values[1] != nil {
 		t.Fatalf("MGET = %#v", values)
 	}
-	if err := client.KV().MSet(ctx, map[string]any{prefix + "string2": "2", prefix + "string3": "3"}); err != nil {
+	if err := client.KV().MSet(ctx, map[string]any{prefix + "{mset}:string2": "2", prefix + "{mset}:string3": "3"}); err != nil {
 		t.Fatal(err)
 	}
-	requireTrue(t, must[bool](t)(client.KV().MSetNX(ctx, map[string]any{prefix + "nx1": "1", prefix + "nx2": "2"})))
+	requireTrue(t, must[bool](t)(client.KV().MSetNX(ctx, map[string]any{prefix + "{msetnx}:nx1": "1", prefix + "{msetnx}:nx2": "2"})))
 	requireInt64(t, must[int64](t)(client.KV().Incr(ctx, prefix+"counter")), 1)
 	requireInt64(t, must[int64](t)(client.KV().IncrBy(ctx, prefix+"counter", 4)), 5)
 	requireInt64(t, must[int64](t)(client.KV().Decr(ctx, prefix+"counter")), 4)
@@ -58,11 +63,11 @@ func assertStringCommands(t *testing.T, ctx context.Context, client *Client, pre
 	if err := client.KV().PSetEX(ctx, prefix+"psetex", 60_000, "1"); err != nil {
 		t.Fatal(err)
 	}
-	requireTrue(t, must[bool](t)(client.Copy(ctx, key, prefix+"copy", true)))
-	if err := client.Rename(ctx, prefix+"copy", prefix+"renamed"); err != nil {
+	requireTrue(t, must[bool](t)(client.Copy(ctx, key, prefix+"{copy}:copy", true)))
+	if err := client.Rename(ctx, prefix+"{copy}:copy", prefix+"{copy}:renamed"); err != nil {
 		t.Fatal(err)
 	}
-	requireTrue(t, must[bool](t)(client.RenameNX(ctx, prefix+"renamed", prefix+"renamed-nx")))
+	requireTrue(t, must[bool](t)(client.RenameNX(ctx, prefix+"{copy}:renamed", prefix+"{copy}:renamed-nx")))
 	requireValue(t, must[string](t)(client.RandomKey(ctx)))
 	requireLenAtLeast(t, must[[]string](t)(client.Keys(ctx, prefix+"*")), 1)
 	requireValue(t, must[any](t)(client.Scan(ctx, 0, prefix+"*", Int(10))))
@@ -74,7 +79,7 @@ func assertStringCommands(t *testing.T, ctx context.Context, client *Client, pre
 	requireValue(t, must[any](t)(client.WaitAOF(ctx, 0, 0, 1)))
 	requireValue(t, must[any](t)(client.Memory(ctx, "USAGE", key)))
 	requireString(t, must[any](t)(client.KV().GetDel(ctx, prefix+"setnx")), "1")
-	requireNonNegative(t, must[int64](t)(client.Unlink(ctx, prefix+"nx1")))
+	requireNonNegative(t, must[int64](t)(client.Unlink(ctx, prefix+"{msetnx}:nx1")))
 }
 
 func assertHashCommands(t *testing.T, ctx context.Context, client *Client, prefix string) {
@@ -109,12 +114,6 @@ func assertHashCommands(t *testing.T, ctx context.Context, client *Client, prefi
 	requireValue(t, must[any](t)(client.Hash().PExpire(ctx, key, 60_000, "field")))
 	requireValue(t, must[any](t)(client.Hash().PTTL(ctx, key, "field")))
 	requireValue(t, must[any](t)(client.Hash().ExpireTime(ctx, key, "field")))
-	if value, err := client.Hash().PExpireTime(ctx, key, "field"); err != nil {
-		requireCommandError(t, err)
-		skipIntegrationCommandCoverage("server image does not support HPEXPIRETIME", "HPEXPIRETIME")
-	} else {
-		requireValue(t, value)
-	}
 	got := must[[]any](t)(client.Hash().GetEX(ctx, key, []string{"field"}, HashGetEXOptions{PXMilliseconds: Int64(60_000)}))
 	if len(got) != 1 || got[0] != "value" {
 		t.Fatalf("HGETEX = %#v", got)
@@ -136,8 +135,8 @@ func assertListSetSortedSetCommands(t *testing.T, ctx context.Context, client *C
 	requireString(t, must[any](t)(client.ListStore().LPop(ctx, popKey)), "left")
 	requireString(t, must[any](t)(client.ListStore().RPop(ctx, popKey)), "right")
 
-	listKey := prefix + "list"
-	listDst := prefix + "list-dst"
+	listKey := prefix + "{list}:main"
+	listDst := prefix + "{list}:dst"
 	requireInt64(t, must[int64](t)(client.ListStore().LPush(ctx, listKey, "b", "a")), 2)
 	requireInt64(t, must[int64](t)(client.ListStore().RPush(ctx, listKey, "c")), 3)
 	requireLenAtLeast(t, must[[]any](t)(client.ListStore().Range(ctx, listKey, 0, -1)), 1)
@@ -164,8 +163,8 @@ func assertListSetSortedSetCommands(t *testing.T, ctx context.Context, client *C
 	requirePositive(t, must[int64](t)(client.ListStore().RPush(ctx, listKey, "mpop")))
 	requireValue(t, must[any](t)(client.ListStore().BLMPop(ctx, 1, []string{listKey}, "LEFT", Int(1))))
 
-	setA := prefix + "set-a"
-	setB := prefix + "set-b"
+	setA := prefix + "{set}:a"
+	setB := prefix + "{set}:b"
 	requireInt64(t, must[int64](t)(client.SetStore().Add(ctx, setA, "a", "b")), 2)
 	requireInt64(t, must[int64](t)(client.SetStore().Add(ctx, setB, "b", "c")), 2)
 	requireLenAtLeast(t, must[[]any](t)(client.SetStore().Members(ctx, setA)), 1)
@@ -178,9 +177,9 @@ func assertListSetSortedSetCommands(t *testing.T, ctx context.Context, client *C
 	requireLen(t, must[[]any](t)(client.SetStore().Diff(ctx, setA, setB)), 1)
 	requireLen(t, must[[]any](t)(client.SetStore().Inter(ctx, setA, setB)), 1)
 	requireLenAtLeast(t, must[[]any](t)(client.SetStore().Union(ctx, setA, setB)), 1)
-	requireNonNegative(t, must[int64](t)(client.SetStore().DiffStore(ctx, prefix+"sdiff", setA, setB)))
-	requireNonNegative(t, must[int64](t)(client.SetStore().InterStore(ctx, prefix+"sinter", setA, setB)))
-	requireNonNegative(t, must[int64](t)(client.SetStore().UnionStore(ctx, prefix+"sunion", setA, setB)))
+	requireNonNegative(t, must[int64](t)(client.SetStore().DiffStore(ctx, prefix+"{set}:sdiff", setA, setB)))
+	requireNonNegative(t, must[int64](t)(client.SetStore().InterStore(ctx, prefix+"{set}:sinter", setA, setB)))
+	requireNonNegative(t, must[int64](t)(client.SetStore().UnionStore(ctx, prefix+"{set}:sunion", setA, setB)))
 	requireNonNegative(t, must[int64](t)(client.SetStore().InterCard(ctx, []string{setA, setB}, Int64(10))))
 	_ = must[bool](t)(client.SetStore().Move(ctx, setA, setB, "a"))
 	requireValue(t, must[any](t)(client.SetStore().Scan(ctx, setB, 0, "", Int(10))))
@@ -230,45 +229,28 @@ func assertStreamBitmapHllGeoCommands(t *testing.T, ctx context.Context, client 
 	requireNonNegative(t, must[int64](t)(client.Stream().Trim(ctx, stream, true, "10", nil)))
 	requireNonNegative(t, must[int64](t)(client.Stream().Del(ctx, stream, streamID)))
 
-	bitmap := prefix + "bitmap"
+	bitmap := prefix + "{bitmap}:source"
 	requireInt64(t, must[int64](t)(client.Bitmap().SetBit(ctx, bitmap, 7, 1)), 0)
 	requireInt64(t, must[int64](t)(client.Bitmap().GetBit(ctx, bitmap, 7)), 1)
 	requirePositive(t, must[int64](t)(client.Bitmap().Count(ctx, bitmap)))
 	requireNonNegative(t, must[int64](t)(client.Bitmap().Pos(ctx, bitmap, 1, nil, nil)))
-	requireNonNegative(t, must[int64](t)(client.Bitmap().Op(ctx, "OR", prefix+"bitmap-out", bitmap)))
+	requireNonNegative(t, must[int64](t)(client.Bitmap().Op(ctx, "OR", prefix+"{bitmap}:out", bitmap)))
 
-	hll := prefix + "hll"
+	hll := prefix + "{hll}:source"
 	requireNonNegative(t, must[int64](t)(client.HyperLogLog().Add(ctx, hll, "a", "b")))
 	requirePositive(t, must[int64](t)(client.HyperLogLog().Count(ctx, hll)))
-	if err := client.HyperLogLog().Merge(ctx, prefix+"hll-dst", hll); err != nil {
+	if err := client.HyperLogLog().Merge(ctx, prefix+"{hll}:dst", hll); err != nil {
 		t.Fatal(err)
 	}
 
-	geo := prefix + "geo"
+	geo := prefix + "{geo}:source"
 	requireInt64(t, must[int64](t)(client.Geo().Add(ctx, geo, 13.361389, 38.115556, "palermo")), 1)
 	requireInt64(t, must[int64](t)(client.Geo().Add(ctx, geo, 15.087269, 37.502669, "catania")), 1)
 	requireValue(t, must[any](t)(client.Geo().Pos(ctx, geo, "palermo")))
 	requireValue(t, must[any](t)(client.Geo().Distance(ctx, geo, "palermo", "catania", "km")))
 	requireLen(t, must[[]string](t)(client.Geo().Hash(ctx, geo, "palermo")), 1)
 	requireValue(t, must[any](t)(client.Geo().Search(ctx, geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}})))
-	requireNonNegative(t, must[int64](t)(client.Geo().SearchStore(ctx, prefix+"geo-dst", geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}}, false)))
-	stored, err := client.Geo().SearchStore(ctx, prefix+"geo-dist-dst", geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}}, true)
-	if err != nil {
-		if !isUnsupportedGeoSearchStoreDist(err) {
-			t.Fatal(err)
-		}
-		skipIntegrationCommandCoverage("server image does not support GEOSEARCHSTORE STOREDIST", "GEOSEARCHSTORE STOREDIST")
-	} else {
-		requireNonNegative(t, stored)
-	}
-}
-
-func isUnsupportedGeoSearchStoreDist(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "syntax error") && strings.Contains(message, "storedist")
+	requireNonNegative(t, must[int64](t)(client.Geo().SearchStore(ctx, prefix+"{geo}:dst", geo, GeoSearchOptions{FromMember: "palermo", ByRadius: &GeoRadius{Radius: 200, Unit: "km"}}, false)))
 }
 
 func assertBatchFlowCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
@@ -309,22 +291,14 @@ func assertSearchCommands(t *testing.T, ctx context.Context, client *Client, typ
 		NowMS:        now,
 	}))
 
-	records, err := client.Search(ctx, SearchOptions{
+	records := must[[]FlowRecord](t)(client.Search(ctx, SearchOptions{
 		Type:                 typeName,
 		State:                "searchable",
 		PartitionKey:         partition,
 		Count:                Int(10),
 		ConsistentProjection: Bool(true),
 		Attributes:           map[string]any{"search_marker": marker},
-	})
-	if err != nil {
-		if isUnsupportedFlowSearchCommand(err) {
-			t.Logf("skipping FLOW.SEARCH integration against this server image: %v", err)
-			skipIntegrationCommandCoverage("server image does not support FLOW.SEARCH", "FLOW.SEARCH")
-			return
-		}
-		t.Fatal(err)
-	}
+	}))
 	if !hasRecordID(records, id) {
 		t.Fatalf("FLOW.SEARCH = %#v", records)
 	}
@@ -346,14 +320,14 @@ func assertSingleMutationCommands(t *testing.T, ctx context.Context, client *Cli
 
 	failed := createAndClaim(t, ctx, client, typeName, runID, "fail", "queued", now, 30_000)
 	_ = must[*FlowRecord](t)(client.Fail(ctx, FailOptions{ID: failed.id, LeaseToken: failed.job.LeaseToken, FencingToken: failed.job.FencingToken, PartitionKey: failed.partitionKey, Error: map[string]any{"failed": true}}))
-	if record := must[*FlowRecord](t)(client.Get(ctx, failed.id, failed.partitionKey, nil, nil)); record == nil || record.State != "failed" {
+	if record := must[*FlowRecord](t)(client.Get(ctx, failed.id, failed.partitionKey, nil)); record == nil || record.State != "failed" {
 		t.Fatalf("failed record = %#v", record)
 	}
 	_ = must[[]FlowRecord](t)(client.Failures(ctx, typeName, ReadOptions{Count: Int(20)}))
 
 	cancelled := createAndClaim(t, ctx, client, typeName, runID, "cancel", "queued", now, 30_000)
 	_ = must[*FlowRecord](t)(client.Cancel(ctx, CancelOptions{ID: cancelled.id, LeaseToken: cancelled.job.LeaseToken, FencingToken: cancelled.job.FencingToken, PartitionKey: cancelled.partitionKey, Reason: map[string]any{"cancelled": true}}))
-	if record := must[*FlowRecord](t)(client.Get(ctx, cancelled.id, cancelled.partitionKey, nil, nil)); record == nil || record.State != "cancelled" {
+	if record := must[*FlowRecord](t)(client.Get(ctx, cancelled.id, cancelled.partitionKey, nil)); record == nil || record.State != "cancelled" {
 		t.Fatalf("cancelled record = %#v", record)
 	}
 	_ = must[[]FlowRecord](t)(client.Terminals(ctx, typeName, ReadOptions{Count: Int(50)}))
@@ -374,51 +348,23 @@ func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Clie
 		StateMeta:    map[string]any{"version": "1"},
 		NowMS:        now,
 	}
-	started, err := client.StartAndClaim(ctx, startOptions)
-	stateMetaSupported := true
-	if err != nil && isUnsupportedFusedStateMetaOption(err) {
-		t.Logf("server image does not support fused Flow state_meta options: %v", err)
-		stateMetaSupported = false
-		startOptions.ID = "go-sdk:fused-start-core:" + runID
-		startOptions.StateMeta = nil
-		started, err = client.StartAndClaim(ctx, startOptions)
-	}
-	if err != nil {
-		if isUnsupportedFusedFlowCommand(err) {
-			t.Logf("skipping fused Flow integration against this server image: %v", err)
-			skipIntegrationCommandCoverage(
-				"server image does not support fused Flow AST",
-				"FLOW.RUN_STEPS_MANY",
-				"FLOW.STEP_CONTINUE",
-			)
-			return
-		}
-		t.Fatal(err)
-	}
+	started := must[*FlowRecord](t)(client.StartAndClaim(ctx, startOptions))
 	if started == nil || started.ID != startOptions.ID || started.RunState != "step-a" {
 		t.Fatalf("FLOW.START_AND_CLAIM = %#v", started)
 	}
-	if stateMetaSupported && flowStateMetaValue(started, "step-a", "version") != "1" {
+	if flowStateMetaValue(started, "step-a", "version") != "1" {
 		t.Fatalf("FLOW.START_AND_CLAIM state_meta = %#v", started)
 	}
 
-	if stateMetaSupported {
-		indexed, err := client.Search(ctx, SearchOptions{
-			Type:                 typeName,
-			PartitionKey:         partition,
-			Count:                Int(10),
-			ConsistentProjection: Bool(true),
-			StateMeta:            map[string]map[string]any{"step-a": {"version": "1"}},
-		})
-		if err != nil {
-			if isUnsupportedFusedFlowCommand(err) || isUnsupportedFlowSearchCommand(err) {
-				t.Logf("skipping fused Flow search integration against this server image: %v", err)
-			} else {
-				t.Fatal(err)
-			}
-		} else if !hasRecordID(indexed, startOptions.ID) {
-			t.Fatalf("FLOW.SEARCH state_meta = %#v", indexed)
-		}
+	indexed := must[[]FlowRecord](t)(client.Search(ctx, SearchOptions{
+		Type:                 typeName,
+		PartitionKey:         partition,
+		Count:                Int(10),
+		ConsistentProjection: Bool(true),
+		StateMeta:            map[string]map[string]any{"step-a": {"version": "1"}},
+	}))
+	if !hasRecordID(indexed, startOptions.ID) {
+		t.Fatalf("FLOW.SEARCH state_meta = %#v", indexed)
 	}
 
 	stepOptions := StepContinueOptions{
@@ -433,31 +379,14 @@ func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Clie
 		StateMeta:    map[string]any{"version": "2"},
 		NowMS:        now + 1,
 	}
-	if !stateMetaSupported {
-		stepOptions.StateMeta = nil
-	}
-	continued, err := client.StepContinue(ctx, stepOptions)
-	if err != nil && stepOptions.StateMeta != nil && isUnsupportedFusedStateMetaOption(err) {
-		t.Logf("server image does not support fused Flow continuation state_meta options: %v", err)
-		stateMetaSupported = false
-		stepOptions.StateMeta = nil
-		continued, err = client.StepContinue(ctx, stepOptions)
-	}
-	if err != nil {
-		if isUnsupportedFusedFlowCommand(err) {
-			t.Logf("skipping fused Flow continuation integration against this server image: %v", err)
-			skipIntegrationCommandCoverage("server image does not support FLOW.STEP_CONTINUE", "FLOW.STEP_CONTINUE")
-		} else {
-			t.Fatal(err)
-		}
-	} else if continued == nil || continued.RunState != "step-b" {
+	continued := must[*FlowRecord](t)(client.StepContinue(ctx, stepOptions))
+	if continued == nil || continued.RunState != "step-b" {
 		t.Fatalf("FLOW.STEP_CONTINUE = %#v", continued)
-	} else {
-		if stateMetaSupported && flowStateMetaValue(continued, "step-b", "version") != "2" {
-			t.Fatalf("FLOW.STEP_CONTINUE state_meta = %#v", continued)
-		}
-		_ = must[*FlowRecord](t)(client.Complete(ctx, CompleteOptions{ID: continued.ID, LeaseToken: continued.LeaseToken, FencingToken: continued.FencingToken, PartitionKey: continued.PartitionKey, Result: map[string]any{"done": true}}))
 	}
+	if flowStateMetaValue(continued, "step-b", "version") != "2" {
+		t.Fatalf("FLOW.STEP_CONTINUE state_meta = %#v", continued)
+	}
+	_ = must[*FlowRecord](t)(client.Complete(ctx, CompleteOptions{ID: continued.ID, LeaseToken: continued.LeaseToken, FencingToken: continued.FencingToken, PartitionKey: continued.PartitionKey, Result: map[string]any{"done": true}}))
 
 	runIDPrefix := "go-sdk:fused-run:" + runID
 	if err := client.RunStepsMany(ctx, RunStepsManyOptions{
@@ -472,71 +401,14 @@ func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Clie
 			{ID: runIDPrefix + ":b"},
 		},
 	}); err != nil {
-		if isUnsupportedFusedFlowCommand(err) {
-			t.Logf("skipping fused Flow run-steps integration against this server image: %v", err)
-			skipIntegrationCommandCoverage("server image does not support FLOW.RUN_STEPS_MANY", "FLOW.RUN_STEPS_MANY")
-			return
-		}
 		t.Fatal(err)
 	}
 	for _, id := range []string{runIDPrefix + ":a", runIDPrefix + ":b"} {
-		record := must[*FlowRecord](t)(client.Get(ctx, id, partition, nil, nil))
+		record := must[*FlowRecord](t)(client.Get(ctx, id, partition, nil))
 		if record == nil || record.State != "completed" || record.RunState != "bulk-done" {
 			t.Fatalf("FLOW.RUN_STEPS_MANY record %s = %#v", id, record)
 		}
 	}
-}
-
-func isUnsupportedFusedFlowCommand(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unsupported command ast") ||
-		strings.Contains(message, "unknown flow option state_meta") ||
-		strings.Contains(message, "unknown command flow.start_and_claim") ||
-		strings.Contains(message, "unknown command flow.step_continue") ||
-		strings.Contains(message, "unknown command flow.run_steps_many")
-}
-
-func isUnsupportedFusedStateMetaOption(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unknown flow option state_meta") ||
-		strings.Contains(message, "native unknown flow option state_meta") ||
-		strings.Contains(message, "unsupported command ast")
-}
-
-func isUnsupportedFlowSearchCommand(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unknown command 'flow.search'") ||
-		strings.Contains(message, "unknown command flow.search") ||
-		strings.Contains(message, "native unsupported opcode") ||
-		strings.Contains(message, "is not indexed for broad search")
-}
-
-func isUnsupportedValueMGetCommand(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unknown command 'flow.value.mget'") ||
-		strings.Contains(message, "native unsupported opcode")
-}
-
-func isUnsupportedNativePolicyOption(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "native unknown flow option indexed_attributes") ||
-		strings.Contains(message, "native unknown flow option indexed_state_meta") ||
-		strings.Contains(message, "native unknown flow option retry")
 }
 
 func assertManyMutationCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
@@ -566,7 +438,7 @@ func assertManyMutationCommands(t *testing.T, ctx context.Context, client *Clien
 	cancelRecords := make([]*FlowRecord, 0, 2)
 	for _, suffix := range []string{"a", "b"} {
 		id := "go-sdk:cancel-many:" + runID + ":" + suffix
-		cancelRecords = append(cancelRecords, must[*FlowRecord](t)(client.Get(ctx, id, cancelPartition, nil, nil)))
+		cancelRecords = append(cancelRecords, must[*FlowRecord](t)(client.Get(ctx, id, cancelPartition, nil)))
 	}
 	cancelItems := make([]FencedItem, 0, len(cancelRecords))
 	for _, record := range cancelRecords {
@@ -582,7 +454,7 @@ func assertManyMutationCommands(t *testing.T, ctx context.Context, client *Clien
 		Reason:       map[string]any{"cancelled": true},
 	}))
 	for _, record := range cancelRecords {
-		updated := must[*FlowRecord](t)(client.Get(ctx, record.ID, cancelPartition, nil, nil))
+		updated := must[*FlowRecord](t)(client.Get(ctx, record.ID, cancelPartition, nil))
 		if updated == nil || updated.State != "cancelled" {
 			t.Fatalf("FLOW.CANCEL_MANY record = %#v", updated)
 		}
@@ -612,9 +484,9 @@ func assertRepairIndexAndRewindCommands(t *testing.T, ctx context.Context, clien
 	parentID := "go-sdk:parent:" + runID
 	parentPartition := parentID + ":partition"
 	_ = must[*FlowRecord](t)(client.Create(ctx, CreateOptions{ID: parentID, Type: typeName, State: "dispatch", PartitionKey: parentPartition, RootFlowID: "root:" + runID, CorrelationID: "corr:" + runID, Idempotent: Bool(true)}))
-	parent := must[*FlowRecord](t)(client.Get(ctx, parentID, parentPartition, nil, nil))
+	parent := must[*FlowRecord](t)(client.Get(ctx, parentID, parentPartition, nil))
 	_ = must[any](t)(client.SpawnChildren(ctx, SpawnChildrenOptions{
-		ParentID:     parentID,
+		ID:           parentID,
 		PartitionKey: parentPartition,
 		FencingToken: &parent.FencingToken,
 		GroupID:      "fanout",

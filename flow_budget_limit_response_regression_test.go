@@ -62,6 +62,10 @@ func TestBudgetAndLimitResultsRejectIntegrityViolations(t *testing.T) {
 			_, err := budgetResult(map[string]any{"used": int64(-1)}, nil)
 			return err
 		}},
+		{name: "budget exact integer overflow", want: "used", run: func() error {
+			_, err := budgetResult(map[string]any{"used": int64(maxFlowExactIntegerV080 + 1)}, nil)
+			return err
+		}},
 		{name: "inconsistent budget remaining", want: "remaining", run: func() error {
 			_, err := budgetResult(map[string]any{"limit": int64(10), "used": int64(4), "remaining": int64(9)}, nil)
 			return err
@@ -72,6 +76,10 @@ func TestBudgetAndLimitResultsRejectIntegrityViolations(t *testing.T) {
 		}},
 		{name: "negative limit free", want: "free", run: func() error {
 			_, err := limitResult(map[string]any{"free": int64(-1)}, nil)
+			return err
+		}},
+		{name: "limit exact integer overflow", want: "epoch", run: func() error {
+			_, err := limitResult(map[string]any{"epoch": int64(maxFlowExactIntegerV080 + 1)}, nil)
 			return err
 		}},
 		{name: "lease shard mismatch", want: "shard_id", run: func() error {

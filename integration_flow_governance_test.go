@@ -96,7 +96,7 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 	_ = must[EffectResult](t)(client.EffectCompensate(ctx, gov.id, "send-push", EffectStatusOptions{PartitionKey: gov.partitionKey, LeaseToken: gov.job.LeaseToken, FencingToken: &gov.job.FencingToken, Reason: "rollback", NowMS: Int64(now + 13)}))
 	_ = must[EffectResult](t)(client.EffectReserve(ctx, gov.id, "send-sms", "sms.send", EffectReserveOptions{PartitionKey: gov.partitionKey, LeaseToken: gov.job.LeaseToken, FencingToken: &gov.job.FencingToken, OperationDigest: "digest-3", IdempotencyKey: "idem:" + runID + ":sms", NowMS: Int64(now + 14)}))
 	_ = must[EffectResult](t)(client.EffectFail(ctx, gov.id, "send-sms", EffectStatusOptions{PartitionKey: gov.partitionKey, LeaseToken: gov.job.LeaseToken, FencingToken: &gov.job.FencingToken, Reason: "provider-error", LatencyMS: Int64(20), NowMS: Int64(now + 15)}))
-	requireValue(t, must[[]map[string]any](t)(client.GovernanceLedger(ctx, gov.id, ReadOptions{PartitionKey: gov.partitionKey, Count: Int(10)})))
+	requireValue(t, must[[]map[string]any](t)(client.GovernanceLedger(ctx, gov.id, GovernanceLedgerOptions{PartitionKey: gov.partitionKey, Limit: Int(10)})))
 
 	approvalScope := "approval:" + runID
 	approvalID := "go-sdk:approval:" + runID
@@ -130,18 +130,12 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 	limitScope := "limit:" + runID
 	requireValue(t, must[LimitResult](t)(client.LimitLease(ctx, limitScope, 0, 5, 30_000, Int64(10), Int64(now+26))))
 	spent := must[LimitResult](t)(client.LimitSpend(ctx, limitScope, 0, 2, Int64(now+27)))
-	switch len(spent.ReservationIDs) {
-	case 0:
-		// FerricStore 0.7.5 exposes the released amount-based contract.
-		requireValue(t, must[LimitResult](t)(client.LimitRelease(ctx, limitScope, 0, 1)))
-	case 2:
-		// Newer servers expose reservation identities for exact release.
-		requireValue(t, must[LimitResult](t)(client.LimitReleaseWithOptions(ctx, limitScope, LimitReleaseOptions{
-			ShardID: 0, ReservationIDs: spent.ReservationIDs[:1], NowMS: Int64(now + 28),
-		})))
-	default:
+	if len(spent.ReservationIDs) != 2 {
 		t.Fatalf("limit spend reservation ids = %#v", spent.ReservationIDs)
 	}
+	requireValue(t, must[LimitResult](t)(client.LimitRelease(ctx, limitScope, LimitReleaseOptions{
+		ShardID: 0, ReservationIDs: spent.ReservationIDs[:1], NowMS: Int64(now + 28),
+	})))
 	requireValue(t, must[*LimitResult](t)(client.LimitGet(ctx, limitScope, Int64(now+29))))
 	requireValue(t, must[[]LimitResult](t)(client.LimitList(ctx, limitScope, "", Int(10), Int64(now+30))))
 	requireValue(t, must[GovernanceOverview](t)(client.GovernanceOverview(ctx, ApprovalListOptions{Limit: Int(10)})))

@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-func scheduleFireResult(value any, err error) (ScheduleFireResult, error) {
+func scheduleFireResultWithCodec(value any, err error, codec Codec) (ScheduleFireResult, error) {
 	if err != nil {
 		return ScheduleFireResult{}, err
 	}
@@ -35,7 +35,7 @@ func scheduleFireResult(value any, err error) (ScheduleFireResult, error) {
 	if err != nil {
 		return ScheduleFireResult{}, fmt.Errorf("FLOW.SCHEDULE.FIRE schedule: %w", err)
 	}
-	schedule, err := scheduleResultFromMap(scheduleMap)
+	schedule, err := scheduleResultFromMapWithCodec(scheduleMap, codec)
 	if err != nil {
 		return ScheduleFireResult{}, err
 	}

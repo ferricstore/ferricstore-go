@@ -37,10 +37,10 @@ func TestIntegrationAdminMetadataAndExpectedErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireNonNegative(t, must[int64](t)(client.LastSave(ctx)))
-	if err := client.BgSave(ctx); err != nil {
+	if err := client.Save(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Save(ctx); err != nil {
+	if err := client.BgSave(ctx); err != nil {
 		t.Fatal(err)
 	}
 	requireValue(t, must[any](t)(client.Module(ctx, "LIST")))

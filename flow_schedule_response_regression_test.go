@@ -74,6 +74,7 @@ func TestScheduleResultRejectsInvalidRecordIntegrity(t *testing.T) {
 		{name: "missing state", raw: map[string]any{"id": "daily", "kind": "interval"}, want: "state"},
 		{name: "negative fire count", raw: map[string]any{"id": "daily", "kind": "interval", "state": "active", "fire_count": int64(-1)}, want: "fire_count"},
 		{name: "negative attempts", raw: map[string]any{"id": "daily", "kind": "interval", "state": "active", "attempts": int64(-1)}, want: "attempts"},
+		{name: "fire count exceeds exact range", raw: map[string]any{"id": "daily", "kind": "interval", "state": "active", "fire_count": maxFlowExactIntegerV080 + 1}, want: "fire_count"},
 		{name: "conflicting state alias", raw: map[string]any{"id": "daily", "kind": "interval", "state": "active", "status": "paused"}, want: "conflicting"},
 		{name: "conflicting count alias", raw: map[string]any{"id": "daily", "kind": "interval", "state": "active", "fire_count": int64(2), "fires": int64(3)}, want: "conflicting"},
 	}

@@ -32,11 +32,54 @@ func readNativeRequestFrame(reader *bufio.Reader) (nativeFrame, error) {
 }
 
 func writeNativeTestResponse(writer *bufio.Writer, request nativeFrame, status uint16, value any) error {
+	if request.opcode == nativeOpHello && status == nativeStatusOK {
+		value = normalizedNativeHelloForTest(value)
+	}
 	valueBody, err := encodeNativeValue(value)
 	if err != nil {
 		return err
 	}
 	return writeNativeRawTestResponse(writer, request, status, valueBody)
+}
+
+// normalizedNativeHelloForTest upgrades terse transport-test fixtures to the
+// mandatory FerricStore 0.8 HELLO envelope while preserving their limit
+// overrides. Contract-rejection tests call parseNativeHelloContract directly.
+func normalizedNativeHelloForTest(value any) any {
+	mapping, err := nativeMap(value)
+	if err != nil {
+		return value
+	}
+	if _, exists := mapping["capabilities"]; exists {
+		return value
+	}
+	hello := nativeHelloForTest()
+	limits := hello["capabilities"].(map[string]any)["limits"].(map[string]any)
+	for _, key := range []string{"max_frame_bytes", "max_response_bytes", "max_pipeline_commands", "max_lane_queue"} {
+		if override, exists := mapping[key]; exists {
+			limits[key] = override
+		}
+	}
+	if nested, nestedErr := nativeMap(mapping["limits"]); nestedErr == nil {
+		for key, override := range nested {
+			limits[key] = override
+		}
+	}
+	capabilities := hello["capabilities"].(map[string]any)
+	for _, key := range []string{"multiplexing", "flow_control"} {
+		if nested, nestedErr := nativeMap(mapping[key]); nestedErr == nil {
+			target := capabilities[key].(map[string]any)
+			for field, override := range nested {
+				target[field] = override
+			}
+		}
+	}
+	for _, key := range []string{"auth_required", "protocol", "version"} {
+		if override, exists := mapping[key]; exists {
+			hello[key] = override
+		}
+	}
+	return hello
 }
 
 func writeNativeRawTestResponse(writer *bufio.Writer, request nativeFrame, status uint16, valueBody []byte) error {

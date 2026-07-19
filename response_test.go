@@ -335,6 +335,12 @@ func TestFlowResponsesRejectImpossibleCriticalValues(t *testing.T) {
 			}, RawCodec{})
 			return err
 		}},
+		{name: "claimed fencing token exceeds exact range", call: func() error {
+			_, err := claimedItemFromNative(map[string]any{
+				"id": "flow", "lease_token": "lease", "fencing_token": maxFlowExactIntegerV080 + 1,
+			}, RawCodec{})
+			return err
+		}},
 		{name: "claimed tuple trailing field", call: func() error {
 			_, err := claimedItemFromNative([]any{
 				"flow", "partition", "lease", int64(1), "queued", map[string]any{}, "trailing",

@@ -32,6 +32,9 @@ func (c *Client) Create(ctx context.Context, opt CreateOptions) (*FlowRecord, er
 	appendInt64Ptr(&args, "PRIORITY", opt.Priority)
 	appendBoolPtr(&args, "IDEMPOTENT", opt.Idempotent)
 	appendInt64Ptr(&args, "RETENTION_TTL_MS", opt.RetentionTTLMS)
+	if err := appendFlowMaxActiveMS(&args, opt.MaxActiveMS); err != nil {
+		return nil, err
+	}
 	appendAttributes(&args, opt.Attributes, nil, nil)
 	appendStateMeta(&args, opt.StateMeta)
 	if err := c.appendNamedValues(&args, NamedValues{Values: opt.Values, ValueRefs: opt.ValueRefs}); err != nil {
@@ -90,18 +93,24 @@ func (c *Client) CreateMany(ctx context.Context, opt CreateManyOptions) ([]FlowR
 	appendBoolPtr(&args, "IDEMPOTENT", opt.Idempotent)
 	appendBoolPtr(&args, "INDEPENDENT", opt.Independent)
 	appendInt64Ptr(&args, "RETENTION_TTL_MS", opt.RetentionTTLMS)
-	attrs, err := sharedCreateManyAttributes(opt.Items, opt.Attributes)
-	if err != nil {
+	if err := appendFlowMaxActiveMS(&args, opt.MaxActiveMS); err != nil {
 		return nil, err
 	}
-	appendAttributes(&args, attrs, nil, nil)
-	stateMeta, err := sharedCreateManyStateMeta(opt.Items, opt.StateMeta)
-	if err != nil {
-		return nil, err
-	}
-	appendStateMeta(&args, stateMeta)
+	appendAttributes(&args, opt.Attributes, nil, nil)
+	appendStateMeta(&args, opt.StateMeta)
+	mappedItems := anyCreateItemMaxActive(opt.Items) ||
+		anyCreateItemAttributes(opt.Items) || anyCreateItemStateMeta(opt.Items)
 	extended := anyCreateItemValues(opt.Items)
-	if extended {
+	if mappedItems {
+		args = append(args, "ITEMS_MAPS", len(opt.Items))
+		for _, item := range opt.Items {
+			mapped, err := c.createManyItemMap(item, opt)
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, mapped)
+		}
+	} else if extended {
 		args = append(args, "ITEMS_EXT", len(opt.Items))
 		for _, item := range opt.Items {
 			partition := "-"
@@ -193,7 +202,6 @@ func (c *Client) Signal(ctx context.Context, opt SignalOptions) (any, error) {
 		now = nowMS()
 	}
 	appendOpt(&args, "NOW", now)
-	appendInt64Ptr(&args, "PRIORITY", opt.Priority)
 	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
 		return nil, err
 	}
@@ -233,6 +241,9 @@ func (c *Client) StartAndClaim(ctx context.Context, opt StartAndClaimOptions) (*
 	appendOpt(&args, "CORRELATION_ID", opt.CorrelationID)
 	appendInt64Ptr(&args, "PRIORITY", opt.Priority)
 	appendInt64Ptr(&args, "RETENTION_TTL_MS", opt.RetentionTTLMS)
+	if err := appendFlowMaxActiveMS(&args, opt.MaxActiveMS); err != nil {
+		return nil, err
+	}
 	appendAttributes(&args, opt.Attributes, nil, nil)
 	appendStateMeta(&args, opt.StateMeta)
 	if err := c.appendNamedValues(&args, NamedValues{Values: opt.Values, ValueRefs: opt.ValueRefs}); err != nil {
@@ -251,6 +262,9 @@ func (c *Client) ClaimDue(ctx context.Context, opt ClaimDueOptions) ([]FlowRecor
 	if err != nil {
 		return nil, err
 	}
+	if err := validateFlowResponseLimit("FLOW.CLAIM_DUE", value, opt.Limit); err != nil {
+		return nil, err
+	}
 	return recordsFromNative(value, c.codec)
 }
 
@@ -258,6 +272,9 @@ func (c *Client) ClaimJobs(ctx context.Context, opt ClaimDueOptions) ([]ClaimedI
 	opt.JobOnly = true
 	value, err := c.claimDue(ctx, opt)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateFlowResponseLimit("FLOW.CLAIM_DUE", value, opt.Limit); err != nil {
 		return nil, err
 	}
 	return claimedItemsFromNative(value, c.codec)
@@ -315,7 +332,7 @@ func (c *Client) claimDue(ctx context.Context, opt ClaimDueOptions) (any, error)
 	}
 	appendInt64Ptr(&args, "BLOCK", opt.BlockMS)
 	appendPayloadRead(&args, opt.Payload, opt.PayloadMaxBytes)
-	appendValueReturn(&args, opt.Values, opt.ValueMaxBytes)
+	appendValueReturn(&args, opt.Values)
 	appendBoolPtr(&args, "RECLAIM_EXPIRED", opt.ReclaimExpired)
 	appendInt64Ptr(&args, "RECLAIM_RATIO", opt.ReclaimRatio)
 	return c.typedReply(ctx, args...)
@@ -326,6 +343,9 @@ func (c *Client) Reclaim(ctx context.Context, opt ReclaimOptions) ([]FlowRecord,
 	if err != nil {
 		return nil, err
 	}
+	if err := validateFlowResponseLimit("FLOW.RECLAIM", value, opt.Limit); err != nil {
+		return nil, err
+	}
 	return recordsFromNative(value, c.codec)
 }
 
@@ -333,6 +353,9 @@ func (c *Client) ReclaimJobs(ctx context.Context, opt ReclaimOptions) ([]Claimed
 	opt.JobOnly = true
 	value, err := c.reclaim(ctx, opt)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateFlowResponseLimit("FLOW.RECLAIM", value, opt.Limit); err != nil {
 		return nil, err
 	}
 	return claimedItemsFromNative(value, c.codec)
@@ -371,6 +394,6 @@ func (c *Client) reclaim(ctx context.Context, opt ReclaimOptions) (any, error) {
 		}
 	}
 	appendPayloadRead(&args, opt.Payload, opt.PayloadMaxBytes)
-	appendValueReturn(&args, opt.Values, opt.ValueMaxBytes)
+	appendValueReturn(&args, opt.Values)
 	return c.typedReply(ctx, args...)
 }

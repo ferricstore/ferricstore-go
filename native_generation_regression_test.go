@@ -12,12 +12,17 @@ func TestNativeConnectionGenerationSkipsZeroOnWrap(t *testing.T) {
 
 	exec := NewNativeExecutor("unused", WithNativeHeartbeat(0, 0))
 	exec.connectionGeneration = ^uint64(0)
+	contract, err := parseNativeHelloContract(nativeHelloForTest(), nativeDefaultResponseBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
 	exec.mu.Lock()
 	exec.installNativeConnectionLocked(&nativeConnectedTransport{
-		conn:            clientConn,
-		reader:          bufio.NewReader(clientConn),
-		writer:          bufio.NewWriter(clientConn),
-		startupResponse: map[string]any{"ready": true},
+		conn:          clientConn,
+		reader:        bufio.NewReader(clientConn),
+		writer:        bufio.NewWriter(clientConn),
+		helloResponse: nativeHelloForTest(),
+		contract:      contract,
 	})
 	generation := exec.connectionGeneration
 	exec.mu.Unlock()

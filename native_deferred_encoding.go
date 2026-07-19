@@ -6,8 +6,11 @@ import (
 )
 
 type nativeDeferredCodecValue struct {
-	codec Codec
-	value any
+	codec             Codec
+	value             any
+	maxEncodedBytes   int
+	encodedValueLabel string
+	command           string
 }
 
 type deferredCodecExecutor interface {
@@ -41,6 +44,11 @@ func encodeNativeDeferredCodecValue(value nativeDeferredCodecValue) (any, error)
 	}
 	if _, nested := encoded.(nativeDeferredCodecValue); nested {
 		return nil, fmt.Errorf("ferricstore codec returned an internal deferred value")
+	}
+	if value.maxEncodedBytes > 0 {
+		if err := validateEncodedByteLimit(value.command, value.encodedValueLabel, encoded, value.maxEncodedBytes); err != nil {
+			return nil, err
+		}
 	}
 	return encoded, nil
 }

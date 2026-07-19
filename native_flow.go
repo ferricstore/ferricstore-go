@@ -19,6 +19,26 @@ const (
 
 func buildFlowNativeCommand(name string, args []any) (nativeCommand, bool, error) {
 	switch name {
+	case "FLOW.CREATE":
+		return buildFlowAdminNative(name, nativeOpFlowCreate, args, "id")
+	case "FLOW.GET":
+		return buildFlowQueryNative(name, nativeOpFlowGet, args, nativeFlowQueryShape{leadingFields: []string{"id"}})
+	case "FLOW.COMPLETE":
+		return buildFlowAdminNative(name, nativeOpFlowComplete, args, "id", "lease_token")
+	case "FLOW.TRANSITION":
+		return buildFlowAdminNative(name, nativeOpFlowTransition, args, "id", "from_state", "to_state")
+	case "FLOW.RETRY":
+		return buildFlowAdminNative(name, nativeOpFlowRetry, args, "id", "lease_token")
+	case "FLOW.FAIL":
+		return buildFlowAdminNative(name, nativeOpFlowFail, args, "id", "lease_token")
+	case "FLOW.CANCEL":
+		return buildFlowAdminNative(name, nativeOpFlowCancel, args, "id")
+	case "FLOW.EXTEND_LEASE":
+		return buildFlowAdminNative(name, nativeOpFlowExtendLease, args, "id", "lease_token")
+	case "FLOW.HISTORY":
+		return buildFlowQueryNative(name, nativeOpFlowHistory, args, nativeFlowQueryShape{leadingFields: []string{"id"}})
+	case "FLOW.REWIND":
+		return buildFlowAdminNative(name, nativeOpFlowRewind, args, "id")
 	case "FLOW.POLICY.SET":
 		return buildFlowPolicySetNative(args)
 	case "FLOW.POLICY.GET":
@@ -26,18 +46,57 @@ func buildFlowNativeCommand(name string, args []any) (nativeCommand, bool, error
 	case "FLOW.SPAWN_CHILDREN":
 		return buildFlowSpawnChildrenNative(args)
 	}
-	if hasFlowCommandOnlyOption(name, args) {
-		return nativeCommand{}, false, nil
-	}
 	switch name {
 	case "FLOW.CREATE_MANY":
 		return buildFlowCreateManyNative(args)
 	case "FLOW.CLAIM_DUE":
-		return buildFlowClaimDueNative(args)
+		return buildFlowClaimDueAnyNative(args)
+	case "FLOW.RECLAIM":
+		return buildFlowQueryNative(name, nativeOpFlowReclaim, args, nativeFlowQueryShape{leadingFields: []string{"type"}, repeatedStates: true})
+	case "FLOW.LIST":
+		return buildFlowQueryNative(name, nativeOpFlowList, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
+	case "FLOW.TERMINALS":
+		return buildFlowQueryNative(name, nativeOpFlowTerminals, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
+	case "FLOW.FAILURES":
+		return buildFlowQueryNative(name, nativeOpFlowFailures, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
+	case "FLOW.BY_PARENT":
+		return buildFlowQueryNative(name, nativeOpFlowByParent, args, nativeFlowQueryShape{leadingFields: []string{"parent_id"}})
+	case "FLOW.BY_ROOT":
+		return buildFlowQueryNative(name, nativeOpFlowByRoot, args, nativeFlowQueryShape{leadingFields: []string{"root_id"}})
+	case "FLOW.BY_CORRELATION":
+		return buildFlowQueryNative(name, nativeOpFlowByCorrelation, args, nativeFlowQueryShape{leadingFields: []string{"correlation_id"}})
+	case "FLOW.INFO":
+		return buildFlowQueryNative(name, nativeOpFlowInfo, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
+	case "FLOW.STUCK":
+		return buildFlowQueryNative(name, nativeOpFlowStuck, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
+	case "FLOW.RETENTION_CLEANUP":
+		return buildFlowQueryNative(name, nativeOpFlowRetentionCleanup, args, nativeFlowQueryShape{})
+	case "FLOW.STATS":
+		return buildFlowQueryNative(name, nativeOpFlowStats, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
+	case "FLOW.ATTRIBUTES":
+		return buildFlowQueryNative(name, nativeOpFlowAttributes, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
+	case "FLOW.ATTRIBUTE_VALUES":
+		return buildFlowQueryNative(name, nativeOpFlowAttributeValues, args, nativeFlowQueryShape{leadingFields: []string{"type", "attribute"}})
+	case "FLOW.SEARCH":
+		return buildFlowQueryNative(name, nativeOpFlowSearch, args, nativeFlowQueryShape{nestedStateMeta: true})
 	case "FLOW.COMPLETE_MANY":
-		return buildFlowCompleteManyNative(args)
+		return buildFlowCompleteManyAnyNative(args)
+	case "FLOW.TRANSITION_MANY":
+		return buildFlowMutationManyNative(name, nativeOpFlowTransitionMany, args, nativeFlowManyTransition)
+	case "FLOW.RETRY_MANY":
+		return buildFlowMutationManyNative(name, nativeOpFlowRetryMany, args, nativeFlowManyClaimed)
+	case "FLOW.FAIL_MANY":
+		return buildFlowMutationManyNative(name, nativeOpFlowFailMany, args, nativeFlowManyClaimed)
+	case "FLOW.CANCEL_MANY":
+		return buildFlowMutationManyNative(name, nativeOpFlowCancelMany, args, nativeFlowManyCancel)
+	case "FLOW.VALUE.PUT":
+		return buildFlowValuePutNative(args)
+	case "FLOW.VALUE.MGET":
+		return buildFlowValueMGetNative(args)
 	case "FLOW.START_AND_CLAIM":
 		return buildFlowAdminNative(name, nativeOpFlowStartAndClaim, args, "id")
+	case "FLOW.SIGNAL":
+		return buildFlowAdminNative(name, nativeOpFlowSignal, args, "id")
 	case "FLOW.STEP_CONTINUE":
 		return buildFlowAdminNative(name, nativeOpFlowStepContinue, args, "id", "lease_token", "from_state", "to_state")
 	case "FLOW.RUN_STEPS_MANY":
@@ -113,24 +172,11 @@ func buildFlowNativeCommand(name string, args []any) (nativeCommand, bool, error
 	}
 }
 
-func hasFlowCommandOnlyOption(name string, args []any) bool {
-	for _, arg := range args {
-		token := strings.ToUpper(asString(arg))
-		if token == "INDEXED_STATE_META" {
-			return true
-		}
-		if name != "FLOW.SEARCH" && token == "STATE_META" {
-			return true
-		}
-	}
-	return false
-}
-
 func buildFlowCreateManyNative(args []any) (nativeCommand, bool, error) {
 	if len(args) < 2 {
 		return nativeCommand{}, false, nil
 	}
-	if _, token, ok := flowItemMarker(args[1:]); ok && token == "ITEMS_EXT" {
+	if _, token, ok := flowItemMarker(args[1:]); ok && (token == "ITEMS_EXT" || token == "ITEMS_MAPS") {
 		return buildFlowCreateManyExtendedNative(args)
 	}
 	wirePartition := asString(args[0])

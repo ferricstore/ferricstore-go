@@ -11,6 +11,8 @@ type topologyRouteData struct {
 	snapshot topologyRoutingSnapshot
 }
 
+type topologyRouteSlot uint16
+
 func routingKeyForCommand(args []any) (any, bool) {
 	if len(args) == 0 {
 		return nil, false
@@ -41,7 +43,7 @@ func routingKeyForBuiltCommand(args []any, command nativeCommand) (any, bool) {
 	if !ok {
 		return nil, false
 	}
-	for _, field := range []string{"key", "partition_key", "id", "owner_flow_id", "parent_id", "root_id", "correlation_id", "scope"} {
+	for _, field := range []string{"key", "partition_key", "id", "owner_flow_id", "parent_flow_id", "root_flow_id", "correlation_id", "scope"} {
 		value := mapping[field]
 		if isRouteKey(value) {
 			return value, true
@@ -146,10 +148,10 @@ func singleShardKey(keys []any) (any, bool) {
 	firstSlot := 0
 	found := false
 	for _, key := range keys {
-		if !isRouteKey(key) {
+		slot, ok := routingTargetSlot(key)
+		if !ok {
 			return nil, false
 		}
-		slot := routeSlotForKey(key)
 		if !found {
 			first, firstSlot, found = key, slot, true
 			continue
@@ -162,6 +164,19 @@ func singleShardKey(keys []any) (any, bool) {
 		return nil, false
 	}
 	return first, true
+}
+
+func routingTargetSlot(value any) (int, bool) {
+	if slot, ok := value.(topologyRouteSlot); ok {
+		if int(slot) < routeSlotCount {
+			return int(slot), true
+		}
+		return 0, false
+	}
+	if !isRouteKey(value) {
+		return 0, false
+	}
+	return routeSlotForKey(value), true
 }
 
 func isRouteKey(value any) bool {

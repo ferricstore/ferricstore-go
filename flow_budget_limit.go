@@ -51,7 +51,6 @@ type LimitResult struct {
 
 type LimitReleaseOptions struct {
 	ShardID        int64
-	Amount         *int64
 	ReservationIDs []string
 	NowMS          *int64
 	DeadlineMS     *int64
@@ -73,6 +72,9 @@ func (c *Client) BudgetCommit(ctx context.Context, scope, reservationID string, 
 	if err := validateBudgetSettlement(scope, reservationID, &actualAmount, nowMS); err != nil {
 		return BudgetResult{}, err
 	}
+	if err := validateGovernanceUsage(usage); err != nil {
+		return BudgetResult{}, err
+	}
 	args := []any{"FLOW.BUDGET.COMMIT", scope, "RESERVATION_ID", reservationID, "ACTUAL_AMOUNT", actualAmount}
 	if usage != nil {
 		args = append(args, "USAGE", usage)
@@ -91,7 +93,7 @@ func (c *Client) BudgetRelease(ctx context.Context, scope, reservationID string,
 }
 
 func (c *Client) BudgetGet(ctx context.Context, scope string) (*BudgetResult, error) {
-	if err := validateRequiredText("scope", scope); err != nil {
+	if err := validateGovernanceScope("scope", scope); err != nil {
 		return nil, err
 	}
 	value, err := c.typedReply(ctx, "FLOW.BUDGET.GET", scope)
@@ -107,10 +109,14 @@ func (c *Client) BudgetList(ctx context.Context, scope, partitionKey string, lim
 		return nil, err
 	}
 	args := []any{"FLOW.BUDGET.LIST"}
-	appendOpt(&args, "SCOPE", scope)
-	appendOpt(&args, "PARTITION", partitionKey)
+	appendGovernanceScopeFilter(&args, scope, partitionKey)
 	appendIntPtr(&args, "LIMIT", limit)
-	maps, err := mapList(c.typedReply(ctx, args...))
+	value, err := c.typedReply(ctx, args...)
+	maps, err := mapListWithLimit(
+		"FLOW.BUDGET.LIST", limit,
+		defaultFlowResponseLimitV080, maxClampedFlowListItemsV080,
+		value, err,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -144,31 +150,14 @@ func (c *Client) LimitSpend(ctx context.Context, scope string, shardID, amount i
 	return limitResult(c.typedReply(ctx, args...))
 }
 
-// LimitRelease uses the amount-based release contract supported by
-// FerricStore 0.7.5 and earlier. Servers that require reservation identities
-// reject this form; use LimitReleaseWithOptions with the IDs returned by
-// LimitSpend for those servers.
-func (c *Client) LimitRelease(ctx context.Context, scope string, shardID, amount int64) (LimitResult, error) {
-	if err := validateLimitMutation(scope, shardID, amount, nil); err != nil {
-		return LimitResult{}, err
-	}
-	return limitResult(c.typedReply(
-		ctx, "FLOW.LIMIT.RELEASE", scope, "SHARD_ID", shardID, "AMOUNT", amount,
-	))
-}
-
-// LimitReleaseWithOptions releases the exact reservation IDs returned by
-// FerricStore. Amount, when provided, must equal len(ReservationIDs).
-func (c *Client) LimitReleaseWithOptions(ctx context.Context, scope string, opt LimitReleaseOptions) (LimitResult, error) {
+// LimitRelease releases exact reservation IDs returned by LimitSpend.
+func (c *Client) LimitRelease(ctx context.Context, scope string, opt LimitReleaseOptions) (LimitResult, error) {
 	reservationIDs, err := validateLimitReleaseOptions(scope, opt)
 	if err != nil {
 		return LimitResult{}, err
 	}
 	args := []any{"FLOW.LIMIT.RELEASE", scope, "SHARD_ID", opt.ShardID}
-	appendInt64Ptr(&args, "AMOUNT", opt.Amount)
-	if opt.ReservationIDs != nil {
-		args = append(args, "RESERVATION_IDS", reservationIDs)
-	}
+	args = append(args, "RESERVATION_IDS", reservationIDs)
 	appendInt64Ptr(&args, "NOW", opt.NowMS)
 	appendInt64Ptr(&args, "DEADLINE_MS", opt.DeadlineMS)
 	return limitResult(c.typedReply(ctx, args...))
@@ -193,11 +182,15 @@ func (c *Client) LimitList(ctx context.Context, scope, partitionKey string, limi
 		return nil, err
 	}
 	args := []any{"FLOW.LIMIT.LIST"}
-	appendOpt(&args, "SCOPE", scope)
-	appendOpt(&args, "PARTITION", partitionKey)
+	appendGovernanceScopeFilter(&args, scope, partitionKey)
 	appendIntPtr(&args, "LIMIT", limit)
 	appendInt64Ptr(&args, "NOW", nowMS)
-	maps, err := mapList(c.typedReply(ctx, args...))
+	value, err := c.typedReply(ctx, args...)
+	maps, err := mapListWithLimit(
+		"FLOW.LIMIT.LIST", limit,
+		defaultFlowResponseLimitV080, maxClampedFlowListItemsV080,
+		value, err,
+	)
 	if err != nil {
 		return nil, err
 	}

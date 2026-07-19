@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestIntegrationDockerScriptDefaultsToFerricStore075(t *testing.T) {
+func TestIntegrationDockerScriptDefaultsToFerricStore080(t *testing.T) {
 	for _, path := range []string{
 		"scripts/integration-docker.sh",
 		"scripts/integration-security-docker.sh",
@@ -16,9 +16,19 @@ func TestIntegrationDockerScriptDefaultsToFerricStore075(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(body), "ghcr.io/ferricstore/ferricstore:0.7.5") {
-			t.Fatalf("%s should default to FerricStore 0.7.5", path)
+		if !strings.Contains(string(body), "ghcr.io/ferricstore/ferricstore:0.8.0") {
+			t.Fatalf("%s should default to FerricStore 0.8.0", path)
 		}
+	}
+}
+
+func TestV080IntegrationCommandCoverageFailsClosed(t *testing.T) {
+	body, err := os.ReadFile("scripts/integration-docker.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "FERRICSTORE_STRICT_COMMAND_COVERAGE=1") {
+		t.Fatal("exact v0.8.0 integration must reject skipped command coverage")
 	}
 }
 
@@ -28,7 +38,7 @@ func TestDockerComposeDefaultsToSupportedFerricStoreVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := string(body)
-	if !strings.Contains(contents, "ghcr.io/ferricstore/ferricstore:0.7.5") {
+	if !strings.Contains(contents, "ghcr.io/ferricstore/ferricstore:0.8.0") {
 		t.Fatal("docker compose should default to the SDK's pinned supported server version")
 	}
 	if strings.Contains(contents, "ferricstore:latest") {

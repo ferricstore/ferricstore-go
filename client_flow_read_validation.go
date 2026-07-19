@@ -5,14 +5,14 @@ import (
 	"strings"
 )
 
-func validateFlowGet(id string, values []string, valueMaxBytes *int64) error {
-	if err := validateRequiredText("flow id", id); err != nil {
+func validateFlowGet(id string, values []string) error {
+	if err := validatePublicFlowID("flow id", id); err != nil {
 		return err
 	}
 	if err := validateClaimStrings("value names", values); err != nil {
 		return err
 	}
-	return validateOptionalNonNegativeInt64("value_max_bytes", valueMaxBytes)
+	return nil
 }
 
 func validateFlowReadKey(name, value string, opt ReadOptions) error {
@@ -22,7 +22,26 @@ func validateFlowReadKey(name, value string, opt ReadOptions) error {
 	return validateFlowReadOptions(opt)
 }
 
+func validateFlowTypeRead(flowType string, opt ReadOptions) error {
+	if err := validatePublicFlowType("flow type", flowType); err != nil {
+		return err
+	}
+	return validateFlowReadOptions(opt)
+}
+
+func validateFlowIDRead(name, id string, opt ReadOptions) error {
+	if err := validatePublicFlowID(name, id); err != nil {
+		return err
+	}
+	return validateFlowReadOptions(opt)
+}
+
 func validateFlowSearch(opt SearchOptions) error {
+	if opt.Type != "" {
+		if err := validatePublicFlowType("flow type", opt.Type); err != nil {
+			return err
+		}
+	}
 	if err := validateFlowReadRange(opt.Count, opt.FromMS, opt.ToMS); err != nil {
 		return err
 	}
@@ -68,20 +87,20 @@ func validateFlowStateMetaQuery(stateMeta map[string]map[string]any) error {
 }
 
 func validateFlowStuck(flowType string, count *int, olderThanMS, nowMS *int64) error {
-	if err := validateRequiredText("flow type", flowType); err != nil {
+	if err := validatePublicFlowType("flow type", flowType); err != nil {
 		return err
 	}
 	if err := validateOptionalPositiveInt("count", count); err != nil {
 		return err
 	}
-	if err := validateOptionalNonNegativeInt64("older_than_ms", olderThanMS); err != nil {
+	if err := validateOptionalFlowExactNonNegative("older_than_ms", olderThanMS); err != nil {
 		return err
 	}
-	return validateOptionalNonNegativeInt64("now_ms", nowMS)
+	return validateOptionalFlowExactNonNegative("now_ms", nowMS)
 }
 
 func validateFlowHistory(opt HistoryOptions) error {
-	if err := validateRequiredText("flow id", opt.ID); err != nil {
+	if err := validatePublicFlowID("flow id", opt.ID); err != nil {
 		return err
 	}
 	if opt.Count < 0 {
@@ -90,26 +109,38 @@ func validateFlowHistory(opt HistoryOptions) error {
 	if err := validateFlowReadRange(nil, opt.FromMS, opt.ToMS); err != nil {
 		return err
 	}
-	if err := validateOptionalNonNegativeInt64("from_version", opt.FromVersion); err != nil {
+	if err := validateOptionalFlowExactNonNegative("from_version", opt.FromVersion); err != nil {
 		return err
 	}
-	if err := validateOptionalNonNegativeInt64("to_version", opt.ToVersion); err != nil {
+	if err := validateOptionalFlowExactNonNegative("to_version", opt.ToVersion); err != nil {
 		return err
 	}
 	if opt.FromVersion != nil && opt.ToVersion != nil && *opt.FromVersion > *opt.ToVersion {
 		return errors.New("from_version must not exceed to_version")
 	}
-	return validateOptionalNonNegativeInt64("payload_max_bytes", opt.PayloadMaxBytes)
+	fromEventMS, err := validateFlowHistoryEvent("from_event", opt.FromEvent)
+	if err != nil {
+		return err
+	}
+	toEventMS, err := validateFlowHistoryEvent("to_event", opt.ToEvent)
+	if err != nil {
+		return err
+	}
+	if opt.FromEvent != "" && opt.ToEvent != "" &&
+		(fromEventMS > toEventMS || fromEventMS == toEventMS && opt.FromEvent > opt.ToEvent) {
+		return errors.New("from_event must not exceed to_event")
+	}
+	return validateOptionalFlowExactNonNegative("payload_max_bytes", opt.PayloadMaxBytes)
 }
 
 func validateFlowReadRange(count *int, fromMS, toMS *int64) error {
 	if err := validateOptionalPositiveInt("count", count); err != nil {
 		return err
 	}
-	if err := validateOptionalNonNegativeInt64("from_ms", fromMS); err != nil {
+	if err := validateOptionalFlowExactNonNegative("from_ms", fromMS); err != nil {
 		return err
 	}
-	if err := validateOptionalNonNegativeInt64("to_ms", toMS); err != nil {
+	if err := validateOptionalFlowExactNonNegative("to_ms", toMS); err != nil {
 		return err
 	}
 	if fromMS != nil && toMS != nil && *fromMS > *toMS {

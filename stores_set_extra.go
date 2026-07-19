@@ -37,6 +37,9 @@ func (s *SetStore) Card(ctx context.Context, key string) (int64, error) {
 }
 
 func (s *SetStore) RandMember(ctx context.Context, key string, count *int) ([]any, error) {
+	if err := validateRandomReplacementCount("SRANDMEMBER", count); err != nil {
+		return nil, err
+	}
 	args := []any{"SRANDMEMBER", key}
 	if count != nil {
 		args = append(args, *count)

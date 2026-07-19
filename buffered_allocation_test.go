@@ -34,6 +34,22 @@ func BenchmarkBufferedCommandCapacitySizing(b *testing.B) {
 	}
 }
 
+func TestBufferedOversizedCommandIsRejectedWithoutCopyingPayload(t *testing.T) {
+	exec := NewBufferedExecutorWithOptions(nil, BufferedOptions{
+		MaxCommands: 1,
+		MaxBytes:    128,
+	})
+	value := make([]byte, 64*1024)
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, err := exec.Do(context.Background(), "SET", "key", value); !errors.Is(err, ErrBufferedCapacity) {
+			t.Fatalf("oversized buffered command error = %v, want %v", err, ErrBufferedCapacity)
+		}
+	})
+	if allocs > 3 {
+		t.Fatalf("oversized buffered admission allocations = %.1f; want <= 3 without a payload copy", allocs)
+	}
+}
+
 func (*bufferedStaticPipelineExecutor) Do(context.Context, ...any) (any, error) {
 	return nil, errors.New("unexpected direct Do call")
 }

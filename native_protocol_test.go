@@ -512,7 +512,7 @@ func TestNativeGoAwayDrainsPendingRequestAndReconnects(t *testing.T) {
 	}
 }
 
-func TestNativeExecutorDoesNotReconnectAfterRequestWriteStarted(t *testing.T) {
+func TestNativeExecutorDoesNotReplayMutationAfterRequestWriteStarted(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -541,9 +541,15 @@ func TestNativeExecutorDoesNotReconnectAfterRequestWriteStarted(t *testing.T) {
 			errc <- err
 			return
 		}
-		if _, err := readNativeRequestFrame(reader); err != nil {
+		request, err := readNativeRequestFrame(reader)
+		if err != nil {
 			_ = conn.Close()
 			errc <- err
+			return
+		}
+		if request.opcode != nativeOpSet {
+			_ = conn.Close()
+			errc <- fmt.Errorf("mutation opcode = %#x, want SET %#x", request.opcode, nativeOpSet)
 			return
 		}
 		_ = conn.Close()
@@ -555,7 +561,7 @@ func TestNativeExecutorDoesNotReconnectAfterRequestWriteStarted(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = client.Ping(ctx, "hello")
+	err = client.KV().Set(ctx, "mutation", "value")
 	if err == nil {
 		t.Fatal("expected closed connection error")
 	}
@@ -608,10 +614,20 @@ func TestNativeCommandExecPreservesRequestContextNamedArguments(t *testing.T) {
 				t.Fatal(err)
 			}
 			payload := command.payload.(map[string]any)
-			want := test.args[1:]
-			if asString(test.args[0]) == "COMMAND_EXEC" {
-				want = test.args[2:]
+			if asString(test.args[0]) != "COMMAND_EXEC" {
+				if command.opcode != nativeOpHSet {
+					t.Fatalf("implicit HSET opcode = %#x, want %#x", command.opcode, nativeOpHSet)
+				}
+				fields, ok := payload["fields"].(map[string]any)
+				if !ok || fields["REQUEST_CONTEXT"] != "value" {
+					t.Fatalf("literal REQUEST_CONTEXT field was not preserved: %#v", payload)
+				}
+				if _, exists := payload["request_context"]; exists {
+					t.Fatalf("raw command data was interpreted as request context: %#v", payload)
+				}
+				return
 			}
+			want := test.args[2:]
 			encodedWant, err := nativeCommandArgs(want)
 			if err != nil {
 				t.Fatal(err)
@@ -627,53 +643,52 @@ func TestNativeCommandExecPreservesRequestContextNamedArguments(t *testing.T) {
 }
 
 func TestNativeCommandExecCarriesRequestContext(t *testing.T) {
-	command, err := buildNativeCommand(commandWithRequestContext(
-		"INVOCATION.CREATE",
-		[]any{"send-email", "{}"},
-		&RequestContext{
-			Subject: "proxy",
-			Tenant:  "acme",
-			Scopes:  []string{"invocation:create:*", "tenant:acme"},
-		},
-	))
+	command, err := commandExecNativeCommand(
+		"SET",
+		appendNativeRequestContext([]any{"cache-key", "value"},
+			&RequestContext{
+				Subject: "proxy",
+				Tenant:  "acme",
+				Scopes:  []string{"kv:write:*", "tenant:acme"},
+			}),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	payload := command.payload.(map[string]any)
-	if payload["command"] != "INVOCATION.CREATE" {
+	if payload["command"] != "SET" {
 		t.Fatalf("unexpected command-exec command: %#v", payload)
 	}
-	if !reflect.DeepEqual(payload["args"], []any{"send-email", "{}"}) {
+	if !reflect.DeepEqual(payload["args"], []any{"cache-key", "value"}) {
 		t.Fatalf("unexpected command-exec args: %#v", payload["args"])
 	}
 	requestContext := payload["request_context"].(map[string]any)
 	if requestContext["subject"] != "proxy" || requestContext["tenant"] != "acme" {
 		t.Fatalf("unexpected request context: %#v", requestContext)
 	}
-	if !reflect.DeepEqual(requestContext["scopes"], []string{"invocation:create:*", "tenant:acme"}) {
+	if !reflect.DeepEqual(requestContext["scopes"], []string{"kv:write:*", "tenant:acme"}) {
 		t.Fatalf("unexpected request context scopes: %#v", requestContext["scopes"])
 	}
 }
 
 func TestNativeExplicitCommandExecCarriesRequestContext(t *testing.T) {
-	args := append([]any{"COMMAND_EXEC"}, commandWithRequestContext(
-		"INVOCATION.CREATE",
-		[]any{"send-email", "{}"},
-		&RequestContext{Subject: "proxy", Scopes: []string{"invocation:create:*", "invocation:create:*"}},
-	)...)
+	args := appendNativeRequestContext(
+		[]any{"COMMAND_EXEC", "SET", "cache-key", "value"},
+		&RequestContext{Subject: "proxy", Scopes: []string{"kv:write:*", "kv:write:*"}},
+	)
 	command, err := buildNativeCommand(args)
 	if err != nil {
 		t.Fatal(err)
 	}
 	payload := command.payload.(map[string]any)
-	if payload["command"] != "INVOCATION.CREATE" {
+	if payload["command"] != "SET" {
 		t.Fatalf("unexpected explicit command-exec command: %#v", payload)
 	}
-	if !reflect.DeepEqual(payload["args"], []any{"send-email", "{}"}) {
+	if !reflect.DeepEqual(payload["args"], []any{"cache-key", "value"}) {
 		t.Fatalf("unexpected explicit command-exec args: %#v", payload["args"])
 	}
 	requestContext := payload["request_context"].(map[string]any)
-	if !reflect.DeepEqual(requestContext, map[string]any{"subject": "proxy", "scopes": []string{"invocation:create:*"}}) {
+	if !reflect.DeepEqual(requestContext, map[string]any{"subject": "proxy", "scopes": []string{"kv:write:*"}}) {
 		t.Fatalf("unexpected explicit request context: %#v", requestContext)
 	}
 }
@@ -732,7 +747,7 @@ func serveNativeWireTest(conn net.Conn) error {
 	if err != nil {
 		return err
 	}
-	if startup.opcode != nativeOpStartup || startup.laneID != 0 {
+	if startup.opcode != nativeOpHello || startup.laneID != 0 {
 		return errUnexpectedFrame(startup)
 	}
 	payload, _, err := decodeNativeValue(startup.body)
@@ -740,8 +755,8 @@ func serveNativeWireTest(conn net.Conn) error {
 		return err
 	}
 	startupMap := payload.(map[string]any)
-	if asString(startupMap["driver_name"]) != "ferricstore-go" {
-		return errUnexpectedValue("driver_name", startupMap["driver_name"])
+	if asString(startupMap["client_name"]) != "ferricstore-go" {
+		return errUnexpectedValue("client_name", startupMap["client_name"])
 	}
 	if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
 		return err

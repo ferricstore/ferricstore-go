@@ -108,15 +108,15 @@ func TestTopologyKeyValueMSetUsesOwningRoute(t *testing.T) {
 	}
 }
 
-func TestTopologyCrossSlotMSetRequiresExplicitPolicy(t *testing.T) {
+func TestTopologyCrossSlotMSetRequiresOneHashSlot(t *testing.T) {
 	listenerA, framesA, _ := startRoutedNativeEndpoint(t, func(nativeFrame, int) any { return []byte("OK") })
 	listenerB, framesB, _ := startRoutedNativeEndpoint(t, func(nativeFrame, int) any { return []byte("OK") })
 	exec, keyA, keyB := topologyExecutorForTwoEndpoints(t, listenerA, listenerB)
 	t.Cleanup(func() { _ = exec.Close() })
 
 	err := NewClientWithExecutor(exec).KV().MSet(context.Background(), map[string]any{keyA: "a", keyB: "b"})
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "opt in") {
-		t.Fatalf("default cross-slot MSET error = %v; want explicit policy rejection", err)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "hash slot") {
+		t.Fatalf("default cross-slot MSET error = %v; want hash-slot rejection", err)
 	}
 	select {
 	case frame := <-framesA:
@@ -130,7 +130,7 @@ func TestTopologyCrossSlotMSetRequiresExplicitPolicy(t *testing.T) {
 	}
 }
 
-func TestTopologyCrossSlotMSetPolicyAppliesToAllEntryPoints(t *testing.T) {
+func TestTopologyCrossSlotMSetIsRejectedAtAllEntryPoints(t *testing.T) {
 	tests := []struct {
 		name string
 		call func(context.Context, *TopologyNativeExecutor, string, string) error
@@ -150,8 +150,8 @@ func TestTopologyCrossSlotMSetPolicyAppliesToAllEntryPoints(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			listenerA, framesA, errsA := startRoutedNativeEndpoint(t, func(nativeFrame, int) any { return []byte("OK") })
-			listenerB, framesB, errsB := startRoutedNativeEndpoint(t, func(nativeFrame, int) any { return []byte("OK") })
+			listenerA, framesA, _ := startRoutedNativeEndpoint(t, func(nativeFrame, int) any { return []byte("OK") })
+			listenerB, framesB, _ := startRoutedNativeEndpoint(t, func(nativeFrame, int) any { return []byte("OK") })
 			exec, keyA, keyB := topologyExecutorForTwoEndpoints(
 				t, listenerA, listenerB,
 				WithTopologyCrossShardWritePolicy(CrossShardWritePerShard),
@@ -160,54 +160,18 @@ func TestTopologyCrossSlotMSetPolicyAppliesToAllEntryPoints(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 
-			if err := tc.call(ctx, exec, keyA, keyB); err != nil {
-				t.Fatal(err)
+			if err := tc.call(ctx, exec, keyA, keyB); err == nil ||
+				!strings.Contains(strings.ToLower(err.Error()), "hash slot") {
+				t.Fatalf("cross-slot MSET error = %v; want hash-slot rejection", err)
 			}
 			for name, frames := range map[string]<-chan nativeFrame{"a": framesA, "b": framesB} {
 				select {
 				case frame := <-frames:
-					if frame.opcode != nativeOpMSet {
-						t.Fatalf("endpoint %s MSET opcode = %d; want %d", name, frame.opcode, nativeOpMSet)
-					}
-				case <-ctx.Done():
-					t.Fatalf("endpoint %s did not receive its MSET", name)
+					t.Fatalf("rejected MSET reached endpoint %s: %#v", name, frame)
+				default:
 				}
 			}
-			if err := <-errsA; err != nil {
-				t.Fatal(err)
-			}
-			if err := <-errsB; err != nil {
-				t.Fatal(err)
-			}
 		})
-	}
-}
-
-func TestTopologyCrossSlotMSetReportsPartialWrites(t *testing.T) {
-	listenerA, _, errsA := startRoutedNativeEndpoint(t, func(nativeFrame, int) any { return []byte("OK") })
-	listenerB, errsB := startFailingRoutedNativeEndpoint(t)
-	exec, keyA, keyB := topologyExecutorForTwoEndpoints(
-		t, listenerA, listenerB,
-		WithTopologyCrossShardWritePolicy(CrossShardWritePerShard),
-	)
-	t.Cleanup(func() { _ = exec.Close() })
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	err := NewClientWithExecutor(exec).KV().MSet(ctx, map[string]any{keyA: "a", keyB: "b"})
-	var partial *TopologyPartialWriteError
-	if !errors.As(err, &partial) {
-		t.Fatalf("cross-slot MSET error = %T %v; want TopologyPartialWriteError", err, err)
-	}
-	if partial.Command != "MSET" || partial.Succeeded != 1 || len(partial.Failures) != 1 {
-		t.Fatalf("partial MSET = %+v; want one successful key and one failure", partial)
-	}
-	assertTopologyWriteFailure(t, partial.Failures[0], keyB, listenerB)
-	if err := <-errsA; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-errsB; err != nil {
-		t.Fatal(err)
 	}
 }
 

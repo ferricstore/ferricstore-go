@@ -258,8 +258,14 @@ func (c *Client) Command(ctx context.Context, args ...any) (any, error) {
 		return nil, err
 	}
 	defer c.legacyGate.readUnlock()
-	if session := c.currentLegacySession(); session != nil {
-		return session.Do(ctx, affineCommandArgs(args)...)
+	if session, multi := c.currentLegacySessionState(); session != nil {
+		payload := affineCommandArgs(args)
+		if multi {
+			if err := validateV080TransactionCommand(payload); err != nil {
+				return nil, err
+			}
+		}
+		return session.Do(ctx, payload...)
 	}
 	return c.commandWithoutLegacy(ctx, args...)
 }
@@ -299,6 +305,9 @@ func (c *Client) commandUnlockedWithState(ctx context.Context, args ...any) (any
 }
 
 func (c *Client) commandUnlockedWithPreparedState(ctx context.Context, args ...any) (any, bool, error) {
+	if err := validateCommandArgs(args); err != nil {
+		return nil, false, err
+	}
 	if exec, ok := c.exec.(commandStateExecutor); ok {
 		return exec.doWithState(ctx, args...)
 	}
@@ -327,6 +336,23 @@ func (c *Client) encode(value any) (any, error) {
 		return nativeDeferredCodecValue{codec: c.codec, value: value}, nil
 	}
 	return c.codec.Encode(value)
+}
+
+func (c *Client) encodeWithByteLimit(command, field string, value any, limit int) (any, error) {
+	encoded, err := c.encode(value)
+	if err != nil {
+		return nil, err
+	}
+	if deferred, ok := encoded.(nativeDeferredCodecValue); ok {
+		deferred.command = command
+		deferred.encodedValueLabel = field
+		deferred.maxEncodedBytes = limit
+		return deferred, nil
+	}
+	if err := validateEncodedByteLimit(command, field, encoded, limit); err != nil {
+		return nil, err
+	}
+	return encoded, nil
 }
 
 func appendOpt(args *[]any, name string, value any) {
@@ -439,9 +465,8 @@ func (c *Client) appendNamedValue(args *[]any, name string, value any) error {
 	return nil
 }
 
-func appendValueReturn(args *[]any, values []string, maxBytes *int64) {
+func appendValueReturn(args *[]any, values []string) {
 	for _, name := range values {
 		*args = append(*args, "VALUE", name)
 	}
-	appendInt64Ptr(args, "VALUE_MAX_BYTES", maxBytes)
 }

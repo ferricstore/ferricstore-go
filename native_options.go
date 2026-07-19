@@ -21,6 +21,7 @@ type NativeOptions struct {
 	ReconnectMaxRetries int
 	ProtocolLanes       uint32
 	MaxQueuedRequests   int
+	MaxResponseBytes    int
 	eventSubscription   *nativeEventSubscription
 	addressInput        string
 	addressUsesDefault  bool
@@ -96,7 +97,7 @@ func WithNativeGoAwayDrainTimeout(timeout time.Duration) NativeOption {
 	}
 }
 
-// WithNativeLanes caps automatic data-lane use. The server-advertised STARTUP
+// WithNativeLanes caps automatic data-lane use. The server-advertised HELLO
 // limit may reduce this value further.
 func WithNativeLanes(lanes uint32) NativeOption {
 	return func(opts *NativeOptions) {
@@ -115,6 +116,17 @@ func WithNativeMaxQueuedRequests(limit int) NativeOption {
 			limit = 0
 		}
 		opts.MaxQueuedRequests = limit
+	}
+}
+
+// WithNativeMaxResponseBytes caps a logical response after all native chunks
+// have been reassembled. HELLO may reduce this limit further.
+func WithNativeMaxResponseBytes(limit int) NativeOption {
+	return func(opts *NativeOptions) {
+		if limit <= 0 {
+			limit = nativeDefaultResponseBytes
+		}
+		opts.MaxResponseBytes = limit
 	}
 }
 

@@ -74,6 +74,13 @@ func TestScheduleFireDueRejectsMalformedSchedulerSummary(t *testing.T) {
 			},
 		},
 		{
+			name: "count exceeds requested maximum",
+			response: map[string]any{
+				"claimed": int64(101), "fired": int64(101),
+				"skipped": int64(0), "errors": []any{},
+			},
+		},
+		{
 			name: "inconsistent outcomes",
 			response: map[string]any{
 				"claimed": int64(2), "fired": int64(1), "skipped": int64(0), "errors": []any{},

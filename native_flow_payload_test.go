@@ -55,6 +55,13 @@ func TestCompactFlowPayloadsAreMaterializedLazilyAndBounded(t *testing.T) {
 				"ITEMS", "flow-1", "p1", "lease-1", int64(7),
 			},
 		},
+		{
+			name: "value mget",
+			args: []any{
+				"FLOW.VALUE.MGET", "f:{fa:1}:v:first", "f:{fa:1}:v:second",
+				"MAX_BYTES", int64(1024),
+			},
+		},
 	}
 
 	for _, test := range tests {

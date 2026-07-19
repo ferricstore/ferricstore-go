@@ -1,6 +1,9 @@
 package ferricstore
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 func validateRunStepsManyOptions(opt RunStepsManyOptions) error {
 	if err := validateFlowBatchSize(len(opt.Items)); err != nil {
@@ -12,17 +15,18 @@ func validateRunStepsManyOptions(opt RunStepsManyOptions) error {
 	if opt.Steps < 0 {
 		return errors.New("run_steps_many steps must be positive")
 	}
-	if opt.Type == "" {
-		return errors.New("run_steps_many type must be a non-empty string")
+	if err := validatePublicFlowType("run_steps_many type", opt.Type); err != nil {
+		return err
 	}
 	if opt.Worker == "" {
 		return errors.New("run_steps_many worker must be a non-empty string")
 	}
-	if opt.LeaseMS < 0 {
-		return errors.New("run_steps_many lease must be positive")
+	leaseMS := opt.LeaseMS
+	if leaseMS == 0 {
+		leaseMS = 30_000
 	}
-	if opt.NowMS < 0 {
-		return errors.New("run_steps_many now must be non-negative")
+	if err := validateFlowDeadline("run_steps_many lease", opt.NowMS, leaseMS); err != nil {
+		return err
 	}
 	if opt.RetentionTTLMS != nil && *opt.RetentionTTLMS <= 0 {
 		return errors.New("run_steps_many retention ttl must be positive")
@@ -32,10 +36,17 @@ func validateRunStepsManyOptions(opt RunStepsManyOptions) error {
 			return errors.New("run_steps_many states must be non-empty strings")
 		}
 	}
+	stepCount := opt.Steps
+	if len(opt.States) != 0 {
+		stepCount = len(opt.States)
+	}
+	if len(opt.Items) > 0 && stepCount > maxFlowMutationBatchItemsV080/len(opt.Items) {
+		return fmt.Errorf("flow run step operation count exceeds maximum %d", maxFlowMutationBatchItemsV080)
+	}
 	seen := make(map[string]struct{}, len(opt.Items))
 	for _, item := range opt.Items {
-		if item.ID == "" {
-			return errors.New("run_steps_many item ids must be non-empty strings")
+		if err := validatePublicFlowID("run_steps_many item id", item.ID); err != nil {
+			return err
 		}
 		if _, exists := seen[item.ID]; exists {
 			return errors.New("flow duplicate id in batch")

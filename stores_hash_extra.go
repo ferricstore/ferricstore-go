@@ -66,6 +66,9 @@ func (s *HashStore) StrLen(ctx context.Context, key, field string) (int64, error
 }
 
 func (s *HashStore) RandField(ctx context.Context, key string, count *int, withValues bool) (any, error) {
+	if err := validateRandomReplacementCount("HRANDFIELD", count); err != nil {
+		return nil, err
+	}
 	if withValues && count == nil {
 		return nil, errors.New("HRANDFIELD WITHVALUES requires count")
 	}
@@ -133,6 +136,9 @@ func (s *HashStore) GetEX(ctx context.Context, key string, fields []string, opt 
 	if err := validatePositiveExpiryOptions("HGETEX", opt.EXSeconds, opt.PXMilliseconds, opt.EXATSeconds, opt.PXATMillis); err != nil {
 		return nil, err
 	}
+	if err := validateExpiryOptionBounds("HGETEX", opt.EXSeconds, opt.PXMilliseconds, opt.EXATSeconds, opt.PXATMillis); err != nil {
+		return nil, err
+	}
 	if len(fields) == 0 {
 		return nil, nil
 	}
@@ -170,6 +176,9 @@ func (s *HashStore) SetEX(ctx context.Context, key string, values map[string]any
 		return false, errors.New("HSETEX only supports EXSeconds")
 	}
 	if err := validatePositiveExpiryOptions("HSETEX", opt.EXSeconds); err != nil {
+		return false, err
+	}
+	if err := validateExpiryOptionBounds("HSETEX", opt.EXSeconds, nil, nil, nil); err != nil {
 		return false, err
 	}
 	if len(values) == 0 {
@@ -260,16 +269,8 @@ func (s *HashStore) ExpireTime(ctx context.Context, key string, fields ...string
 	return hashFieldIntegerResponse("HEXPIRETIME", value, err, len(fields), hashFieldTTLResult)
 }
 
-func (s *HashStore) PExpireTime(ctx context.Context, key string, fields ...string) (any, error) {
-	if err := validateHashFieldArgs("HPEXPIRETIME", fields); err != nil {
-		return nil, err
-	}
-	args := []any{"HPEXPIRETIME", key, "FIELDS", len(fields)}
-	for _, field := range fields {
-		args = append(args, field)
-	}
-	value, err := s.client.typedReply(ctx, args...)
-	return hashFieldIntegerResponse("HPEXPIRETIME", value, err, len(fields), hashFieldTTLResult)
+func (s *HashStore) PExpireTime(_ context.Context, _ string, _ ...string) (any, error) {
+	return nil, errors.New("HPEXPIRETIME is unsupported by FerricStore 0.8")
 }
 
 func (s *HashStore) Persist(ctx context.Context, key string, fields ...string) (any, error) {

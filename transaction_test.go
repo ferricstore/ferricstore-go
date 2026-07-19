@@ -207,6 +207,29 @@ func TestWatchAllowsAffineReadBeforeMulti(t *testing.T) {
 	}
 }
 
+func TestTransactionForKeysDoesNotReplaceActiveWatchRouting(t *testing.T) {
+	exec := &transactionRecordingExecutor{calls: make(chan []any, 8)}
+	client := NewClientWithExecutor(exec)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := client.Watch(ctx, "watched"); err != nil {
+		t.Fatal(err)
+	}
+	<-exec.calls
+	if _, err := client.TransactionForKeys(ctx, "different"); err == nil {
+		t.Fatal("TransactionForKeys replaced an active WATCH session")
+	}
+	select {
+	case call := <-exec.calls:
+		t.Fatalf("rejected TransactionForKeys reached the watched session: %#v", call)
+	default:
+	}
+	if err := client.Unwatch(ctx); err != nil {
+		t.Fatalf("rejected TransactionForKeys discarded active WATCH: %v", err)
+	}
+}
+
 func TestTransactionWaitHonorsCommandContext(t *testing.T) {
 	exec := &transactionRecordingExecutor{calls: make(chan []any, 8)}
 	client := NewClientWithExecutor(exec)

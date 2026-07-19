@@ -37,7 +37,16 @@ func TestNativeResponseCompactPayloadRequiresWireFlag(t *testing.T) {
 	}
 	wrongOpcode := frame
 	wrongOpcode.opcode = nativeOpMSet
-	if _, err := decodeNativeResponseFrame(wrongOpcode, body, nativeFlagCustomPayload); err == nil {
+	codecs, err := parseNativeResponseCodecs(map[string]any{
+		"typed_value": true,
+		"compact_response_opcodes": map[string]any{
+			"kv_get_v1": []any{int64(nativeOpGet)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeNativeResponseFrameWithCodecs(wrongOpcode, body, nativeFlagCustomPayload, codecs); err == nil {
 		t.Fatal("compact GET payload was accepted for MSET opcode")
 	}
 

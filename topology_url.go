@@ -34,7 +34,10 @@ func parseFerricURL(raw string) (parsedFerricURL, error) {
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return parsedFerricURL{}, err
+		// net/url includes the complete input in parse errors. FerricStore URLs
+		// may contain credentials, so returning that error would disclose the
+		// password to logs and callers.
+		return parsedFerricURL{}, errors.New("invalid FerricStore URL")
 	}
 	if parsed.Path != "" && parsed.Path != "/" {
 		return parsedFerricURL{}, fmt.Errorf("FerricStore URL path %q is unsupported", parsed.Path)

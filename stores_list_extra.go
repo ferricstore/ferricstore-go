@@ -3,7 +3,6 @@ package ferricstore
 import (
 	"context"
 	"errors"
-	"math"
 	"strings"
 )
 
@@ -118,8 +117,8 @@ func (s *ListStore) BLPop(ctx context.Context, timeoutSeconds int64, keys ...str
 	if len(keys) == 0 {
 		return nil, errors.New("BLPOP requires at least one key")
 	}
-	if timeoutSeconds < 0 {
-		return nil, errors.New("BLPOP timeout must be non-negative")
+	if err := validateBlockingTimeoutSeconds("BLPOP", timeoutSeconds); err != nil {
+		return nil, err
 	}
 	args := []any{"BLPOP"}
 	for _, key := range keys {
@@ -134,8 +133,8 @@ func (s *ListStore) BRPop(ctx context.Context, timeoutSeconds int64, keys ...str
 	if len(keys) == 0 {
 		return nil, errors.New("BRPOP requires at least one key")
 	}
-	if timeoutSeconds < 0 {
-		return nil, errors.New("BRPOP timeout must be non-negative")
+	if err := validateBlockingTimeoutSeconds("BRPOP", timeoutSeconds); err != nil {
+		return nil, err
 	}
 	args := []any{"BRPOP"}
 	for _, key := range keys {
@@ -150,8 +149,8 @@ func (s *ListStore) BLMove(ctx context.Context, source, destination, whereFrom, 
 	if !validListDirection(whereFrom) || !validListDirection(whereTo) {
 		return nil, errors.New("BLMOVE directions must be LEFT or RIGHT")
 	}
-	if timeoutSeconds < 0 {
-		return nil, errors.New("BLMOVE timeout must be non-negative")
+	if err := validateBlockingTimeoutSeconds("BLMOVE", timeoutSeconds); err != nil {
+		return nil, err
 	}
 	value, err := s.client.typedReply(ctx, "BLMOVE", source, destination, whereFrom, whereTo, timeoutSeconds)
 	if err != nil || value == nil {
@@ -161,8 +160,8 @@ func (s *ListStore) BLMove(ctx context.Context, source, destination, whereFrom, 
 }
 
 func (s *ListStore) BLMPop(ctx context.Context, timeoutSeconds float64, keys []string, where string, count *int) (any, error) {
-	if math.IsNaN(timeoutSeconds) || math.IsInf(timeoutSeconds, 0) || timeoutSeconds < 0 {
-		return nil, errors.New("BLMPOP timeout must be finite and non-negative")
+	if err := validateBlockingTimeoutSecondsFloat("BLMPOP", timeoutSeconds); err != nil {
+		return nil, err
 	}
 	if len(keys) == 0 {
 		return nil, errors.New("BLMPOP requires at least one key")

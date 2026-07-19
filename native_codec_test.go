@@ -232,21 +232,26 @@ func TestNativeFlowCompactCommandBuilders(t *testing.T) {
 	}
 }
 
-func TestNativeFlowClaimDueWithExplicitNowFallsBackToCommandExec(t *testing.T) {
+func TestNativeFlowClaimDueWithExplicitNowUsesTypedSchema(t *testing.T) {
+	now := nowMS()
 	command, err := buildNativeCommand([]any{
 		"FLOW.CLAIM_DUE",
 		"email",
 		"WORKER", "worker-1",
 		"LEASE_MS", int64(30_000),
 		"LIMIT", int64(1),
-		"NOW", nowMS(),
+		"NOW", now,
 		"RETURN", "JOBS_COMPACT",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command.opcode != nativeOpCommandExec || command.flags != 0 {
-		t.Fatalf("explicit NOW must preserve exact server command semantics, got %#v", command)
+	if command.opcode != nativeOpFlowClaimDue || command.flags != 0 {
+		t.Fatalf("explicit NOW must use the typed Flow schema, got %#v", command)
+	}
+	payload := command.payload.(map[string]any)
+	if payload["now_ms"] != now {
+		t.Fatalf("explicit NOW was not preserved: %#v", payload)
 	}
 }
 
@@ -377,7 +382,7 @@ func TestCreateManyCompactRejectsPerItemAttributes(t *testing.T) {
 	}
 }
 
-func TestNativeFlowClaimDueWithMalformedNumberFallsBackToCommandExec(t *testing.T) {
+func TestNativeFlowClaimDueWithMalformedNumberReachesTypedServerValidation(t *testing.T) {
 	command, err := buildNativeCommand([]any{
 		"FLOW.CLAIM_DUE",
 		"email",
@@ -389,8 +394,12 @@ func TestNativeFlowClaimDueWithMalformedNumberFallsBackToCommandExec(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command.opcode != nativeOpCommandExec || command.flags != 0 {
-		t.Fatalf("malformed numeric option must reach server validation, got %#v", command)
+	if command.opcode != nativeOpFlowClaimDue || command.flags != 0 {
+		t.Fatalf("malformed numeric option must use typed server validation, got %#v", command)
+	}
+	payload := command.payload.(map[string]any)
+	if payload["limit"] != "not-a-number" {
+		t.Fatalf("malformed numeric option was changed before server validation: %#v", payload)
 	}
 }
 
@@ -450,7 +459,7 @@ func TestNativeFastPathsFallBackForUnsupportedArguments(t *testing.T) {
 	}
 }
 
-func TestNativeFlowCompleteManyFallsBackWhenResultIsPresent(t *testing.T) {
+func TestNativeFlowCompleteManyUsesTypedSchemaWhenResultIsPresent(t *testing.T) {
 	command, err := buildNativeCommand([]any{
 		"FLOW.COMPLETE_MANY",
 		"MIXED",
@@ -463,8 +472,12 @@ func TestNativeFlowCompleteManyFallsBackWhenResultIsPresent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command.opcode != nativeOpCommandExec || command.flags != 0 {
-		t.Fatalf("expected generic fallback for result-bearing complete_many, got %#v", command)
+	if command.opcode != nativeOpFlowCompleteMany || command.flags != 0 {
+		t.Fatalf("expected typed opcode for result-bearing complete_many, got %#v", command)
+	}
+	payload, ok := command.payload.(map[string]any)
+	if !ok || !reflect.DeepEqual(payload["result"], []byte("ok")) {
+		t.Fatalf("unexpected complete_many payload: %#v", command.payload)
 	}
 }
 
@@ -507,7 +520,7 @@ func TestNativeFlowStateMetaAndStepBuilders(t *testing.T) {
 	}
 }
 
-func TestNativeFlowStateMetaFallsBackToCommandExec(t *testing.T) {
+func TestNativeFlowStateMetaUsesV080DedicatedOpcode(t *testing.T) {
 	command, err := buildNativeCommand([]any{
 		"FLOW.START_AND_CLAIM", "f1",
 		"TYPE", "order",
@@ -519,12 +532,13 @@ func TestNativeFlowStateMetaFallsBackToCommandExec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command.opcode != nativeOpCommandExec || command.laneID != 1 {
-		t.Fatalf("expected command_exec fallback for state_meta mutation, got %#v", command)
+	if command.opcode != nativeOpFlowStartAndClaim || command.laneID != 1 {
+		t.Fatalf("expected dedicated state_meta mutation, got %#v", command)
 	}
 	payload := command.payload.(map[string]any)
-	if payload["command"] != "FLOW.START_AND_CLAIM" {
-		t.Fatalf("unexpected command_exec payload: %#v", payload)
+	stateMeta, ok := payload["state_meta"].(map[string]any)
+	if !ok || asInt64(stateMeta["version"]) != 1 {
+		t.Fatalf("unexpected dedicated payload: %#v", payload)
 	}
 }
 
@@ -554,7 +568,7 @@ func TestNativeFlowRunStepsManyBuilder(t *testing.T) {
 	}
 }
 
-func TestNativeFlowSearchFallsBackToCommandExec(t *testing.T) {
+func TestNativeFlowSearchUsesTypedSchema(t *testing.T) {
 	command, err := buildNativeCommand([]any{
 		"FLOW.SEARCH",
 		"TYPE", "order",
@@ -569,25 +583,18 @@ func TestNativeFlowSearchFallsBackToCommandExec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command.opcode != nativeOpCommandExec || command.laneID != 1 {
-		t.Fatalf("expected command_exec fallback for flow search, got %#v", command)
+	if command.opcode != nativeOpFlowSearch || command.laneID != 1 {
+		t.Fatalf("expected typed flow search opcode, got %#v", command)
 	}
 	payload := command.payload.(map[string]any)
-	if payload["command"] != "FLOW.SEARCH" {
-		t.Fatalf("unexpected flow search command_exec payload: %#v", payload)
+	want := map[string]any{
+		"type": "order", "state": "completed", "partition_key": "tenant:1",
+		"count": 10, "rev": true, "consistent_projection": true,
+		"attributes": map[string]any{"tenant": "acme"},
+		"state_meta": map[string]map[string]any{"completed": {"version": 3}},
 	}
-	wantArgs := []any{
-		"TYPE", "order",
-		"STATE", "completed",
-		"PARTITION", "tenant:1",
-		"COUNT", 10,
-		"REV", true,
-		"CONSISTENT_PROJECTION", true,
-		"ATTRIBUTE", "tenant", "acme",
-		"STATE_META", "completed", "version", 3,
-	}
-	if !reflect.DeepEqual(payload["args"], wantArgs) {
-		t.Fatalf("unexpected flow search command_exec args: %#v", payload)
+	if !reflect.DeepEqual(payload, want) {
+		t.Fatalf("unexpected typed flow search payload: %#v", payload)
 	}
 }
 

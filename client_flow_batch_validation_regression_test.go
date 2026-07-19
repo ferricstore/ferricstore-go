@@ -63,7 +63,7 @@ func TestFlowManyRejectsItemsOutsideBatchPartition(t *testing.T) {
 
 func TestRunStepsManyRejectsInvalidOptionsBeforeCodecOrTransport(t *testing.T) {
 	zero := int64(0)
-	oversized := make([]RunStepsItem, maxFlowBatchItems+1)
+	oversized := make([]RunStepsItem, maxFlowMutationBatchItemsV080+1)
 	for index := range oversized {
 		oversized[index].ID = fmt.Sprintf("flow-%d", index)
 	}

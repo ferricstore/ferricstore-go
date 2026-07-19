@@ -1,6 +1,7 @@
 package ferricstore
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,6 +60,33 @@ func TestNativeExecutorURLRejectsInvalidTimeouts(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatalf("NewNativeExecutorFromURL(%q) succeeded", rawURL)
+			}
+		})
+	}
+}
+
+func TestURLParseErrorsDoNotExposeCredentials(t *testing.T) {
+	t.Parallel()
+
+	const rawURL = "ferric://sdk-user:super-secret@localhost/%zz"
+	for name, construct := range map[string]func() error{
+		"native": func() error {
+			_, err := NewNativeExecutorFromURL(rawURL)
+			return err
+		},
+		"topology": func() error {
+			_, err := NewTopologyNativeExecutor([]string{rawURL})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := construct()
+			if err == nil {
+				t.Fatal("malformed URL succeeded")
+			}
+			message := err.Error()
+			if strings.Contains(message, "sdk-user") || strings.Contains(message, "super-secret") {
+				t.Fatalf("URL parse error exposed credentials: %q", message)
 			}
 		})
 	}

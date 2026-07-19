@@ -94,7 +94,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server-version: ["0.7.5"]
+        server-version: ["0.8.0"]
     env:
       FERRICSTORE_IMAGE: ghcr.io/ferricstore/ferricstore:${{ matrix.server-version }}
     steps:

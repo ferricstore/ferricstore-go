@@ -89,7 +89,7 @@ Default behavior matches the Python SDK for normal client usage: one native prot
 | `budget_list` | `BudgetList` | Covered |
 | `limit_lease` | `LimitLease` | Covered |
 | `limit_spend` | `LimitSpend` | Covered |
-| `limit_release` | `LimitRelease`, `LimitReleaseWithOptions` | Covered; amount contract for FerricStore 0.7.5 plus exact reservation-ID contract for newer servers |
+| `limit_release` | `LimitRelease` | Covered; FerricStore 0.8 exact reservation-ID contract |
 | `limit_get` | `LimitGet` | Covered |
 | `limit_list` | `LimitList` | Covered |
 
@@ -170,8 +170,7 @@ Default behavior matches the Python SDK for normal client usage: one native prot
 | namespace management | `EnsureNamespace`, `GetNamespace`, `ListNamespaces`, `DeleteNamespace` | Covered |
 | quota management | `SetQuota`, `GetQuota`, `QuotaUsage` | Covered |
 | safe management telemetry | `ClusterInfo`, `NamespaceUsage`, `FlowQuery`, `FlowHistory` | Covered |
-| invocation helpers | `InvocationDefinitionPut`, `InvocationDefinitionGet`, `InvocationDefinitionList`, `InvocationCreate`, `InvocationGet`, `InvocationPartitionList` | Covered |
-| invocation request context | `RequestContext`, `CommandExecWithContext` | Covered |
+| trusted native request context | `RequestContext`, `CommandExecWithContext` | Covered |
 
 ## Current Gaps
 

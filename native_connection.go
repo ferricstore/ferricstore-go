@@ -114,7 +114,10 @@ func (e *NativeExecutor) runConnectAttempt(ctx context.Context, attempt *nativeC
 			err = net.ErrClosed
 		} else {
 			e.installNativeConnectionLocked(transport)
-			go e.readerLoop(transport.conn, transport.reader)
+			go e.readerLoop(transport.conn, transport.reader, nativeResponsePolicy{
+				maxBytes: transport.contract.maxResponseBytes,
+				codecs:   transport.contract.responseCodecs,
+			})
 		}
 	}
 	attempt.err = err
@@ -172,21 +175,23 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 	}
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
-	startup := map[string]any{
+	hello := map[string]any{
 		"client_name": nativeClientName(options.ClientName),
-		"driver_name": "ferricstore-go",
 		"compression": "none",
 	}
-	if len(startupEvents) > 0 && !options.credentialsSet {
-		startup["events"] = startupEvents
-	}
-	startupResponse, err := e.nativeHandshakeRequest(ctx, options.Timeout, conn, reader, writer, nativeDefaultRequestFrameBytes, nativeOpStartup, startup)
+	helloResponse, err := e.nativeHandshakeRequest(
+		ctx, options.Timeout, conn, reader, writer,
+		nativeUnauthenticatedFrameBytes, nativeOpHello, hello, options.MaxResponseBytes,
+	)
 	if err != nil {
 		return nil, err
 	}
-	maxFrameBytes := nativeDefaultRequestFrameBytes
-	if n, ok := nativeCapabilityInteger(startupResponse, "max_frame_bytes", []string{"limits", "payload"}, true); ok {
-		maxFrameBytes = boundedNativeFrameBytes(n)
+	contract, err := parseNativeHelloContract(helloResponse, options.MaxResponseBytes)
+	if err != nil {
+		return nil, err
+	}
+	if contract.authRequired && !options.credentialsSet {
+		return nil, errors.New("ferricstore native HELLO requires authentication but no credentials were configured")
 	}
 	if options.credentialsSet {
 		username := options.Username
@@ -194,20 +199,24 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 			username = "default"
 		}
 		auth := map[string]any{"username": username, "password": options.Password}
-		if _, err := e.nativeHandshakeRequest(ctx, options.Timeout, conn, reader, writer, maxFrameBytes, nativeOpAuth, auth); err != nil {
+		if _, err := e.nativeHandshakeRequest(
+			ctx, options.Timeout, conn, reader, writer,
+			nativeUnauthenticatedFrameBytes, nativeOpAuth, auth, contract.maxResponseBytes,
+		); err != nil {
 			return nil, err
 		}
 	}
+	contract = constrainNativeContractForAuthentication(contract, options.credentialsSet)
 	var windowResponse any
 	if len(replayWindow) > 0 {
-		windowResponse, err = e.nativeHandshakeRequest(ctx, options.Timeout, conn, reader, writer, maxFrameBytes, nativeOpWindowUpdate, replayWindow)
+		windowResponse, err = e.nativeHandshakeRequest(ctx, options.Timeout, conn, reader, writer, contract.maxRequestFrameBytes, nativeOpWindowUpdate, replayWindow, contract.maxResponseBytes)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if options.credentialsSet && len(startupEvents) > 0 {
+	if contract.supportsEvents(startupEvents) {
 		payload := map[string]any{"events": startupEvents}
-		if _, err := e.nativeHandshakeRequest(ctx, options.Timeout, conn, reader, writer, maxFrameBytes, nativeOpSubscribeEvents, payload); err != nil {
+		if _, err := e.nativeHandshakeRequest(ctx, options.Timeout, conn, reader, writer, contract.maxRequestFrameBytes, nativeOpSubscribeEvents, payload, contract.maxResponseBytes); err != nil {
 			return nil, err
 		}
 	}
@@ -220,11 +229,11 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 	succeeded = true
 	return &nativeConnectedTransport{
 		conn: conn, reader: reader, writer: writer,
-		startupResponse: startupResponse, windowResponse: windowResponse,
+		helloResponse: helloResponse, windowResponse: windowResponse, contract: contract,
 	}, nil
 }
 
-func (e *NativeExecutor) nativeHandshakeRequest(ctx context.Context, timeout time.Duration, conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, maxFrameBytes int, opcode uint16, payload any) (any, error) {
+func (e *NativeExecutor) nativeHandshakeRequest(ctx context.Context, timeout time.Duration, conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, maxFrameBytes int, opcode uint16, payload any, maxResponseBytes ...int) (any, error) {
 	body, err := encodeNativeValueWithLimit(payload, maxFrameBytes)
 	if err != nil {
 		return nil, err
@@ -260,7 +269,11 @@ func (e *NativeExecutor) nativeHandshakeRequest(ctx context.Context, timeout tim
 	if err := writer.Flush(); err != nil {
 		return nil, err
 	}
-	frame, err := readNativeResponse(reader)
+	responseLimit := nativeMaxFrameBytes
+	if len(maxResponseBytes) > 0 && maxResponseBytes[0] > 0 {
+		responseLimit = maxResponseBytes[0]
+	}
+	frame, err := readNativeResponseWithPolicy(reader, nativeResponsePolicy{maxBytes: responseLimit})
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +293,8 @@ func (e *NativeExecutor) installNativeConnectionLocked(transport *nativeConnecte
 	e.conn = transport.conn
 	e.reader = transport.reader
 	e.writer = transport.writer
-	e.applyStartupCapabilitiesLocked(transport.startupResponse)
+	contract := transport.contract
+	e.applyHelloContractLocked(contract)
 	if transport.windowResponse != nil {
 		connectionLimit, laneLimit := nativeFlowControlLimits(transport.windowResponse)
 		e.flow.updateLimits(connectionLimit, laneLimit)

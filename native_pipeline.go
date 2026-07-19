@@ -1,11 +1,76 @@
 package ferricstore
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
 )
+
+type nativePipelineBodyProvider interface {
+	nativePipelineBody() (any, error)
+}
+
+func (e *NativeExecutor) pipelineChunkWithoutGate(ctx context.Context, commands [][]any, laneID uint32, maxFrameBytes int) ([]pipelineItemResult, error) {
+	payload, flags, err := nativePipelinePayload(commands, laneID, maxFrameBytes)
+	if err != nil {
+		var limitErr nativeEncodeLimitError
+		if !errors.As(err, &limitErr) {
+			return nil, err
+		}
+		return e.splitOversizedPipelineChunk(ctx, commands, laneID, maxFrameBytes)
+	}
+	budget := pipelineBlockingBudget(commands)
+	value, err := e.requestWithoutSessionGate(ctx, nativeOpPipeline, laneID, payload, flags, budget)
+	if err != nil {
+		var limitErr nativeEncodeLimitError
+		if errors.As(err, &limitErr) {
+			return e.splitOversizedPipelineChunk(ctx, commands, laneID, maxFrameBytes)
+		}
+		return nil, &pipelineChunkExecutionError{
+			cause:    fmt.Errorf("PIPELINE: %w", err),
+			affected: len(commands),
+		}
+	}
+	items, err := pipelineItemResults(value, len(commands))
+	if err != nil {
+		return nil, err
+	}
+	if delay, retry := retryableBusyPipeline(items); retry {
+		if err := waitNativeRetry(ctx, delay); err != nil {
+			return nil, err
+		}
+		value, err = e.requestWithoutSessionGate(ctx, nativeOpPipeline, laneID, payload, flags, budget)
+		if err != nil {
+			return nil, &pipelineChunkExecutionError{
+				cause:    fmt.Errorf("PIPELINE: %w", err),
+				affected: len(commands),
+			}
+		}
+		return pipelineItemResults(value, len(commands))
+	}
+	return items, nil
+}
+
+func (e *NativeExecutor) splitOversizedPipelineChunk(ctx context.Context, commands [][]any, laneID uint32, maxFrameBytes int) ([]pipelineItemResult, error) {
+	if len(commands) == 1 {
+		return nil, &pipelineChunkExecutionError{
+			cause:    fmt.Errorf("PIPELINE command exceeds server-advertised %d-byte frame limit", maxFrameBytes),
+			affected: 1,
+		}
+	}
+	middle := len(commands) / 2
+	left, err := e.pipelineChunkWithoutGate(ctx, commands[:middle], laneID, maxFrameBytes)
+	if err != nil {
+		return left, err
+	}
+	right, err := e.pipelineChunkWithoutGate(ctx, commands[middle:], laneID, maxFrameBytes)
+	if err != nil {
+		return append(left, right...), err
+	}
+	return append(left, right...), nil
+}
 
 // ErrPipelineNotExecuted marks commands that were not attempted after an
 // earlier non-atomic pipeline chunk failed.
@@ -185,6 +250,9 @@ func appendUint32(payload []byte, value uint32) []byte {
 }
 
 func pipelineItemResults(value any, expected int) ([]pipelineItemResult, error) {
+	if compact, ok := value.(nativeCompactPipelineValues); ok {
+		return compactPipelineItemResults(compact.value, expected)
+	}
 	if count, ok := value.(nativeCompactOKCount); ok {
 		if int(count) != expected {
 			return nil, fmt.Errorf("PIPELINE returned OK count %d, expected %d", count, expected)
@@ -208,6 +276,38 @@ func pipelineItemResults(value any, expected int) ([]pipelineItemResult, error) 
 		out = append(out, pipelineItemResult{value: value, err: err})
 	}
 	return out, nil
+}
+
+type nativeCompactPipelineValues struct {
+	value any
+}
+
+func compactPipelineItemResults(value any, expected int) ([]pipelineItemResult, error) {
+	switch values := value.(type) {
+	case []any:
+		if len(values) != expected {
+			return nil, fmt.Errorf("PIPELINE returned %d compact values, expected %d", len(values), expected)
+		}
+		out := make([]pipelineItemResult, len(values))
+		for index := range values {
+			out[index].value = values[index]
+		}
+		return out, nil
+	case []ClaimedItem:
+		if len(values) != expected {
+			return nil, fmt.Errorf("PIPELINE returned %d compact values, expected %d", len(values), expected)
+		}
+		out := make([]pipelineItemResult, len(values))
+		for index := range values {
+			out[index].value = values[index]
+		}
+		return out, nil
+	default:
+		if expected != 1 {
+			return nil, fmt.Errorf("PIPELINE returned one compact value, expected %d", expected)
+		}
+		return []pipelineItemResult{{value: value}}, nil
+	}
 }
 
 func pipelineResultValues(results []pipelineItemResult) ([]any, error) {

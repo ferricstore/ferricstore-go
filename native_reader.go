@@ -7,12 +7,24 @@ import (
 	"time"
 )
 
-func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader) {
-	assembler := newNativeResponseAssembler(nativeMaxFrameBytes, nativeMaxResponseChunkFrames)
+func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader, policies ...nativeResponsePolicy) {
+	policy := nativeResponsePolicy{maxBytes: nativeMaxFrameBytes}
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	assembler := newNativeResponseAssembler(policy.maxBytes, nativeMaxResponseChunkFrames, policy.codecs)
 	for {
-		wireFrame, err := readNativeFrame(reader)
+		wireFrame, err := readNativeFrameWithLimit(reader, policy.maxBytes)
 		if err != nil {
 			e.closeConnAndFailPendingIfCurrent(conn, err)
+			return
+		}
+		current, err := e.validateNativeWireFrameTuple(conn, wireFrame)
+		if err != nil {
+			e.closeConnAndFailPendingIfCurrent(conn, err)
+			return
+		}
+		if !current {
 			return
 		}
 		assembled, err := assembler.add(wireFrame)
@@ -35,7 +47,6 @@ func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader) {
 			if !current {
 				return
 			}
-			e.lastActivityUnixNano.Store(time.Now().UnixNano())
 			if frame.opcode == nativeOpGoAway {
 				e.handleGoAway(conn)
 			}
@@ -54,7 +65,6 @@ func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader) {
 			e.mu.Unlock()
 			return
 		}
-		e.lastActivityUnixNano.Store(time.Now().UnixNano())
 		pending := e.pending[frame.requestID]
 		if pending != nil && (pending.opcode != frame.opcode || pending.laneID != frame.laneID) {
 			e.mu.Unlock()
@@ -81,6 +91,37 @@ func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader) {
 		}
 		failNativePending(drained, errNativeConnectionUnavailable)
 	}
+}
+
+func (e *NativeExecutor) validateNativeWireFrameTuple(conn net.Conn, frame nativeFrame) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.conn != conn {
+		return false, nil
+	}
+	e.lastActivityUnixNano.Store(time.Now().UnixNano())
+	if frame.requestID == 0 {
+		return true, nil
+	}
+	pending := e.pending[frame.requestID]
+	if pending == nil {
+		// Canceled control requests are removed immediately and their late lane-0
+		// replies are harmless. Data-lane requests remain pending while draining,
+		// so an unknown data request ID can only be a protocol violation.
+		if frame.laneID == 0 {
+			return true, nil
+		}
+		return true, fmt.Errorf(
+			"ferricstore native response uses unknown data request ID %d", frame.requestID,
+		)
+	}
+	if pending.opcode == frame.opcode && pending.laneID == frame.laneID {
+		return true, nil
+	}
+	return true, fmt.Errorf(
+		"ferricstore native response mismatch: got lane=%d opcode=%d request=%d",
+		frame.laneID, frame.opcode, frame.requestID,
+	)
 }
 
 func (e *NativeExecutor) handleGoAway(conn net.Conn) {

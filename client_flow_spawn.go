@@ -9,7 +9,7 @@ func (c *Client) SpawnChildren(ctx context.Context, opt SpawnChildrenOptions) (a
 	if err := validateSpawnChildrenOptions(opt); err != nil {
 		return nil, err
 	}
-	args := []any{"FLOW.SPAWN_CHILDREN", opt.ParentID, "GROUP", opt.GroupID, "WAIT", opt.Wait, "NOW", valueOrNow(opt.NowMS)}
+	args := []any{"FLOW.SPAWN_CHILDREN", opt.ID, "GROUP", opt.GroupID, "WAIT", opt.Wait, "NOW", valueOrNow(opt.NowMS)}
 	appendOpt(&args, "PARTITION", opt.PartitionKey)
 	appendOpt(&args, "LEASE_TOKEN", opt.LeaseToken)
 	appendInt64Ptr(&args, "FENCING", opt.FencingToken)
@@ -19,9 +19,23 @@ func (c *Client) SpawnChildren(ctx context.Context, opt SpawnChildrenOptions) (a
 	appendOpt(&args, "FROM_STATE", opt.FromState)
 	appendOpt(&args, "ON_CHILD_FAILED", opt.OnChildFailed)
 	appendOpt(&args, "ON_PARENT_CLOSED", opt.OnParentClosed)
+	if err := appendFlowMaxActiveMS(&args, opt.MaxActiveMS); err != nil {
+		return nil, err
+	}
 	mixed := anyChildPartition(opt.Children)
+	mappedChildren := anyChildMaxActive(opt.Children) ||
+		anyChildAttributes(opt.Children) || anyChildStateMeta(opt.Children)
 	extended := anyChildValues(opt.Children)
-	if extended {
+	if mappedChildren {
+		args = append(args, "ITEMS_MAPS", len(opt.Children))
+		for _, child := range opt.Children {
+			mapped, err := c.childItemMap(child, opt)
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, mapped)
+		}
+	} else if extended {
 		args = append(args, "ITEMS_EXT", len(opt.Children))
 		for _, child := range opt.Children {
 			partition := child.PartitionKey

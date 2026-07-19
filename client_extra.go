@@ -2,7 +2,6 @@ package ferricstore
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -347,59 +346,6 @@ func (c *Client) FlowHistory(ctx context.Context, id string, attrs map[string]an
 	return adminArrayResponse(value)
 }
 
-func (c *Client) InvocationDefinitionPut(ctx context.Context, definition any, opt RequestContextOptions) (any, error) {
-	definitionArg, err := jsonCommandArg(definition)
-	if err != nil {
-		return nil, err
-	}
-	value, err := c.typedReply(ctx, commandWithRequestContext("INVOCATION.DEFINITION.PUT", []any{definitionArg}, opt.RequestContext)...)
-	return normalizeAdminResult(value, err)
-}
-
-func (c *Client) InvocationDefinitionGet(ctx context.Context, name string, opt RequestContextOptions) (any, error) {
-	value, err := c.typedReply(ctx, commandWithRequestContext("INVOCATION.DEFINITION.GET", []any{name}, opt.RequestContext)...)
-	return normalizeAdminResult(value, err)
-}
-
-func (c *Client) InvocationDefinitionList(ctx context.Context, opt RequestContextOptions) ([]any, error) {
-	value, err := c.typedReply(ctx, commandWithRequestContext("INVOCATION.DEFINITION.LIST", nil, opt.RequestContext)...)
-	if err != nil {
-		return nil, err
-	}
-	return adminArrayResponse(value)
-}
-
-func (c *Client) InvocationCreate(ctx context.Context, name string, attrs map[string]any, opt InvocationCreateOptions) (any, error) {
-	envelope := map[string]any{"attrs": attrs}
-	if opt.Context != nil {
-		envelope["context"] = opt.Context
-	}
-	if opt.IdempotencyKey != "" {
-		envelope["idempotency_key"] = opt.IdempotencyKey
-	}
-	envelopeArg, err := jsonCommandArg(envelope)
-	if err != nil {
-		return nil, err
-	}
-	value, err := c.typedReply(ctx, commandWithRequestContext("INVOCATION.CREATE", []any{name, envelopeArg}, opt.RequestContext)...)
-	return normalizeAdminResult(value, err)
-}
-
-func (c *Client) InvocationGet(ctx context.Context, id string, opt RequestContextOptions) (any, error) {
-	value, err := c.typedReply(ctx, commandWithRequestContext("INVOCATION.GET", []any{id}, opt.RequestContext)...)
-	return normalizeAdminResult(value, err)
-}
-
-func (c *Client) InvocationPartitionList(ctx context.Context, name string, opt InvocationPartitionListOptions) ([]any, error) {
-	args := []any{name}
-	appendOpt(&args, "SCOPE", opt.Scope)
-	value, err := c.typedReply(ctx, commandWithRequestContext("INVOCATION.PARTITION.LIST", args, opt.RequestContext)...)
-	if err != nil {
-		return nil, err
-	}
-	return adminArrayResponse(value)
-}
-
 func managementPairArgs(pairs map[string]any) ([]any, error) {
 	if len(pairs) == 0 {
 		return nil, nil
@@ -428,27 +374,4 @@ func managementPairArgs(pairs map[string]any) ([]any, error) {
 		args = append(args, key, values[key])
 	}
 	return args, nil
-}
-
-func commandWithRequestContext(command string, args []any, requestContext *RequestContext) []any {
-	out := []any{command}
-	out = append(out, args...)
-	if requestContext != nil {
-		out = appendNativeRequestContext(out, requestContext)
-	}
-	return out
-}
-
-func jsonCommandArg(value any) (string, error) {
-	if text, ok := value.(string); ok {
-		return text, nil
-	}
-	if bytes, ok := value.([]byte); ok {
-		return string(bytes), nil
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
 }

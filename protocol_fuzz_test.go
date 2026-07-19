@@ -14,6 +14,11 @@ func FuzzDecodeNativeCompactResponses(f *testing.F) {
 		{nativeCompactKVMGet, 0, 0, 0, 0},
 		{nativeCompactKVMGetFixed, 0, 0, 0, 0, 0, 0, 0, 0},
 		{nativeCompactFlowClaimJobs, 0, 0, 0, 0},
+		{nativeCompactFlowRecord, 0, 0, 0, 0},
+		{nativeCompactFlowRecordList, 0, 0, 0, 0},
+		{nativeCompactBinaryListList, 0, 0, 0, 0},
+		{nativeCompactBinaryMapList, 0, 0, 0, 0},
+		{nativeCompactIntegerList, 0, 0, 0, 0},
 		{nativeCompactPipelineResponse, 0, 0, 0, 0},
 	} {
 		f.Add(seed)
@@ -24,6 +29,11 @@ func FuzzDecodeNativeCompactResponses(f *testing.F) {
 		_, _ = decodeNativeCompactKVMGet(raw)
 		_, _ = decodeNativeCompactKVMGetFixed(raw)
 		_, _ = decodeNativeCompactClaimJobs(raw)
+		_, _ = decodeNativeCompactFlowRecord(raw)
+		_, _ = decodeNativeCompactFlowRecordList(raw)
+		_, _ = decodeNativeCompactBinaryListList(raw)
+		_, _ = decodeNativeCompactBinaryMapList(raw)
+		_, _ = decodeNativeCompactIntegerList(raw)
 		_, _ = decodeNativeCompactPipelineResponse(raw)
 		for _, opcode := range []uint16{nativeOpGet, nativeOpMGet, nativeOpSet, nativeOpPipeline, nativeOpFlowClaimDue} {
 			_, _, _ = decodeNativeCompactValue(opcode, raw)

@@ -92,6 +92,14 @@ func TestGovernanceTypedResultsRejectIntegrityViolations(t *testing.T) {
 			_, err := approvalResult(map[string]any{"requested_at_ms": int64(-1)}, nil)
 			return err
 		}},
+		{name: "approval exact integer overflow", want: "requested_at_ms", run: func() error {
+			_, err := approvalResult(map[string]any{"requested_at_ms": int64(maxFlowExactIntegerV080 + 1)}, nil)
+			return err
+		}},
+		{name: "approval negative policy version", want: "policy_version", run: func() error {
+			_, err := approvalResult(map[string]any{"policy_version": int64(-1)}, nil)
+			return err
+		}},
 		{name: "approval alias conflict", want: "conflicting", run: func() error {
 			_, err := approvalResult(map[string]any{"approver": "a", "decided_by": "b"}, nil)
 			return err
@@ -108,8 +116,26 @@ func TestGovernanceTypedResultsRejectIntegrityViolations(t *testing.T) {
 			_, err := circuitResult(map[string]any{"events": []any{}, "event_count": int64(1)}, nil)
 			return err
 		}},
+		{name: "circuit exact integer overflow", want: "open_ms", run: func() error {
+			_, err := circuitResult(map[string]any{"open_ms": int64(maxFlowExactIntegerV080 + 1)}, nil)
+			return err
+		}},
 		{name: "overview circuit shape", want: "circuits", run: func() error {
 			_, err := governanceOverviewFromMap(map[string]any{"circuits": map[string]any{}})
+			return err
+		}},
+		{name: "overview approval count", want: "approvals count", run: func() error {
+			_, err := governanceOverviewFromMap(map[string]any{
+				"approvals": []any{map[string]any{"status": "pending"}},
+				"counts":    map[string]any{"approvals": int64(2)},
+			})
+			return err
+		}},
+		{name: "overview pending count", want: "pending_approvals count", run: func() error {
+			_, err := governanceOverviewFromMap(map[string]any{
+				"approvals": []any{map[string]any{"status": "approved"}},
+				"counts":    map[string]any{"pending_approvals": int64(1)},
+			})
 			return err
 		}},
 	}

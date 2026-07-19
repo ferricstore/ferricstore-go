@@ -1,0 +1,43 @@
+- (*Client).FetchOrComputeError: changed from func(context.Context, string, string) (bool, error) to func(context.Context, string, any, string) (bool, error)
+- (*Client).FetchOrComputeErrorWithToken: removed
+- (*Client).FetchOrComputeResult: changed from func(context.Context, string, any, int64) (bool, error) to func(context.Context, string, any, any, int64) (bool, error)
+- (*Client).FetchOrComputeResultWithToken: removed
+- (*Client).Get: changed from func(context.Context, string, string, []string, *int64) (*FlowRecord, error) to func(context.Context, string, string, []string) (*FlowRecord, error)
+- (*Client).GovernanceLedger: changed from func(context.Context, string, ReadOptions) ([]map[string]any, error) to func(context.Context, string, GovernanceLedgerOptions) ([]map[string]any, error)
+- (*Client).InvocationCreate: removed
+- (*Client).InvocationDefinitionGet: removed
+- (*Client).InvocationDefinitionList: removed
+- (*Client).InvocationDefinitionPut: removed
+- (*Client).InvocationGet: removed
+- (*Client).InvocationPartitionList: removed
+- (*Client).LimitRelease: changed from func(context.Context, string, int64, int64) (LimitResult, error) to func(context.Context, string, LimitReleaseOptions) (LimitResult, error)
+- (*Client).LimitReleaseWithOptions: removed
+- (*TopKStore).List: changed from func(context.Context, string, bool) (any, error) to func(context.Context, string) ([]any, error)
+- ClaimDueOptions.ValueMaxBytes: removed
+- FetchOrComputeResult.ComputeToken: removed
+- InvocationCreateOptions: removed
+- InvocationPartitionListOptions: removed
+- LimitReleaseOptions.Amount: removed
+- NativeError: old is comparable, new is not
+- ReclaimOptions.ValueMaxBytes: removed
+- RequestContextOptions: removed
+- RetryManyOptions.DropValues: removed
+- RetryManyOptions.NamedValues: removed
+- RetryManyOptions.OverrideValues: removed
+- RetryManyOptions.ValueRefs: removed
+- RetryManyOptions.Values: removed
+- RetryOptions.DropValues: removed
+- RetryOptions.NamedValues: removed
+- RetryOptions.OverrideValues: removed
+- RetryOptions.ValueRefs: removed
+- RetryOptions.Values: removed
+- RetryResult.DropValues: removed
+- RetryResult.NamedValues: removed
+- RetryResult.OverrideValues: removed
+- RetryResult.ValueRefs: removed
+- RetryResult.Values: removed
+- RewindOptions.ReasonRef: removed
+- ScheduleOptions.ExtraOptions: removed
+- SignalOptions.Priority: removed
+- SpawnChildrenOptions.ParentID: removed
+- TopKReserveOptions.Decay: removed

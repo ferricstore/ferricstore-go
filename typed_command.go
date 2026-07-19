@@ -71,7 +71,17 @@ func (c *Client) typedCommandWithQueuePolicy(
 		if multi && !allowTransactionQueue {
 			return nil, true, ErrTypedReplyInTransaction
 		}
-		value, err := session.Do(ctx, affineCommandArgs(fallback())...)
+		args := fallback()
+		if err := validateCommandArgs(args); err != nil {
+			return nil, multi, err
+		}
+		payload := affineCommandArgs(args)
+		if multi {
+			if err := validateV080TransactionCommand(payload); err != nil {
+				return nil, true, err
+			}
+		}
+		value, err := session.Do(ctx, payload...)
 		return value, multi, err
 	}
 	if direct != nil {

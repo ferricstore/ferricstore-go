@@ -92,6 +92,93 @@ func TestStreamTrimWithOptionsSupportsMaxLenAndMinID(t *testing.T) {
 	}
 }
 
+func TestV080StreamTrimMinIDAcceptsPartialStreamIDs(t *testing.T) {
+	tests := []struct {
+		name     string
+		call     func(*StreamStore) error
+		want     []any
+		response any
+	}{
+		{
+			name: "XADD trim",
+			call: func(store *StreamStore) error {
+				_, err := store.AddWithOptions(
+					context.Background(), "events", "*", map[string]any{"type": "created"},
+					StreamAddOptions{MinID: "123"},
+				)
+				return err
+			},
+			want:     []any{"XADD", "events", "MINID", "123", "*", "type", "created"},
+			response: "123-1",
+		},
+		{
+			name: "XTRIM",
+			call: func(store *StreamStore) error {
+				_, err := store.TrimWithOptions(
+					context.Background(), "events", StreamTrimOptions{MinID: "123"},
+				)
+				return err
+			},
+			want:     []any{"XTRIM", "events", "MINID", "123"},
+			response: int64(0),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exec := &fakeExecutor{value: test.response}
+			if err := test.call(NewClientWithExecutor(exec).Stream()); err != nil {
+				t.Fatal(err)
+			}
+			if len(exec.calls) != 1 || !reflect.DeepEqual(exec.calls[0], test.want) {
+				t.Fatalf("command = %#v, want %#v", exec.calls, test.want)
+			}
+		})
+	}
+}
+
+func TestV080StreamReadsAcceptPartialStreamIDs(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*StreamStore) error
+		want []any
+	}{
+		{
+			name: "XREAD",
+			call: func(store *StreamStore) error {
+				_, err := store.Read(context.Background(), StreamReadOptions{
+					Streams: []StreamRef{{Key: "events", ID: "123"}},
+				})
+				return err
+			},
+			want: []any{"XREAD", "STREAMS", "events", "123"},
+		},
+		{
+			name: "XREADGROUP pending",
+			call: func(store *StreamStore) error {
+				_, err := store.ReadGroup(context.Background(), StreamReadGroupOptions{
+					Group: "workers", Consumer: "one",
+					Streams: []StreamRef{{Key: "events", ID: "123"}},
+				})
+				return err
+			},
+			want: []any{"XREADGROUP", "GROUP", "workers", "one", "STREAMS", "events", "123"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exec := &fakeExecutor{value: []any{}}
+			if err := test.call(NewClientWithExecutor(exec).Stream()); err != nil {
+				t.Fatal(err)
+			}
+			if len(exec.calls) != 1 || !reflect.DeepEqual(exec.calls[0], test.want) {
+				t.Fatalf("command = %#v, want %#v", exec.calls, test.want)
+			}
+		})
+	}
+}
+
 func TestStreamTrimWithOptionsRejectsInvalidStrategyBeforeIO(t *testing.T) {
 	tests := []StreamTrimOptions{
 		{},

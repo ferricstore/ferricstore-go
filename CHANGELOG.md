@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 - 2026-07-19
+
+- Adopt the breaking FerricStore 0.8.0 beta contract while retaining native wire protocol v1 and declaring FerricStore 0.8.0 as the minimum server.
+- Negotiate compact response opcodes and response limits through HELLO, reassemble interleaved chunk streams by lane/opcode/request identity, and bound aggregate response bytes.
+- Require fetch ownership tokens and Flow lease/fencing tokens, add `max_active_ms`, canonical lineage, the v0.8 signal schema, absolute/keep-TTL SET options, and slot-local MSET/MSETNX validation.
+- Follow explicit server retry dispositions and delays, fail closed on ambiguous post-send mutation outcomes, authenticate before larger frames, and prevent public access to reserved internal keys.
+- Remove TopK decay, tokenless fetch completion, lineage aliases, rejected Retry/Rewind fields, unsupported Signal priority, and cross-shard MSET scattering.
+- Replace TopK's shape-changing `List(..., withCount)` result with stable `List` and typed `ListWithCount` APIs, and preallocate maximum-size TopK batch commands.
+- Decode every FerricStore 0.8 compact mixed-pipeline value shape and require exact reservation IDs for distributed-limit release.
+- Use the dedicated v0.8 `FLOW.VALUE.PUT` opcode, including named-value options, and reject invalid named-value TTLs before encoding or transport.
+- Remove Invocation helpers that have no command implementation in the exact FerricStore 0.8.0 server contract; retain trusted request context through `CommandExecWithContext`.
 
 ## 0.2.0 - 2026-07-16
 

@@ -66,7 +66,7 @@ func TestWorkflowWorkerAcceptsPointerOutcomes(t *testing.T) {
 			}
 			err := worker.apply(context.Background(), job, "ready", func(context.Context, WorkflowContext) (Outcome, error) {
 				return test.outcome, nil
-			})
+			}, ErrorPolicyRetry)
 			if err != nil {
 				t.Fatalf("pointer outcome failed: %v", err)
 			}

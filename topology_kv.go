@@ -36,10 +36,7 @@ func (e *TopologyNativeExecutor) keyValueMSet(ctx context.Context, keys []string
 	slot := routeSlotForKey(keys[0])
 	for _, key := range keys[1:] {
 		if routeSlotForKey(key) != slot {
-			if e.crossShardWrites != CrossShardWritePerShard {
-				return nil, topologyCrossSlotMSetDisabledError()
-			}
-			return e.scatterStringMSet(ctx, keys, values)
+			return nil, errors.New("MSET requires keys in one hash slot")
 		}
 	}
 	route, snapshot, err := e.routeWithRefreshSnapshot(ctx, keys[0])

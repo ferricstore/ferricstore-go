@@ -20,7 +20,7 @@ func effectResult(value any, err error) (EffectResult, error) {
 			return EffectResult{}, err
 		}
 	}
-	policyVersion, err := adminStringOrInt(m, "policy_version")
+	policyVersion, err := governancePolicyVersion(m)
 	if err != nil {
 		return EffectResult{}, err
 	}
@@ -81,7 +81,7 @@ func approvalResultFromMap(m map[string]any) (ApprovalResult, error) {
 	if err != nil {
 		return ApprovalResult{}, err
 	}
-	policyVersion, err := adminStringOrInt(m, "policy_version")
+	policyVersion, err := governancePolicyVersion(m)
 	if err != nil {
 		return ApprovalResult{}, err
 	}
@@ -151,7 +151,57 @@ func governanceOverviewFromMap(m map[string]any) (GovernanceOverview, error) {
 			}
 		}
 	}
+	if err := validateGovernanceOverviewCounts(overview); err != nil {
+		return GovernanceOverview{}, err
+	}
 	return overview, nil
+}
+
+func validateGovernanceOverviewCounts(overview GovernanceOverview) error {
+	pendingApprovals := 0
+	for _, approval := range overview.Approvals {
+		if approval.Status == "pending" {
+			pendingApprovals++
+		}
+	}
+	openCircuits, halfOpenCircuits := 0, 0
+	for _, circuit := range overview.Circuits {
+		switch circuit.Status {
+		case "open":
+			openCircuits++
+		case "half_open":
+			halfOpenCircuits++
+		}
+	}
+	expected := []struct {
+		field string
+		count int
+	}{
+		{field: "approvals", count: len(overview.Approvals)},
+		{field: "pending_approvals", count: pendingApprovals},
+		{field: "budgets", count: len(overview.Budgets)},
+		{field: "limits", count: len(overview.Limits)},
+		{field: "circuits", count: len(overview.Circuits)},
+		{field: "open_circuits", count: openCircuits},
+		{field: "half_open_circuits", count: halfOpenCircuits},
+	}
+	for _, item := range expected {
+		raw, present := overview.Counts[item.field]
+		if !present || raw == nil {
+			continue
+		}
+		actual, err := responseInt64(raw, nil)
+		if err != nil || actual < 0 || actual > maxFlowExactIntegerV080 {
+			return fmt.Errorf("governance %s count is invalid", item.field)
+		}
+		if actual != int64(item.count) {
+			return fmt.Errorf(
+				"governance %s count %d does not match %d records",
+				item.field, actual, item.count,
+			)
+		}
+	}
+	return nil
 }
 
 func circuitResult(value any, err error) (CircuitBreakerStatus, error) {
@@ -227,7 +277,37 @@ func adminNonNegativeInt64(m map[string]any, field string) (int64, error) {
 	if value < 0 {
 		return 0, fmt.Errorf("decode admin field %s: must be non-negative", field)
 	}
+	if value > maxFlowExactIntegerV080 {
+		return 0, fmt.Errorf(
+			"decode admin field %s: exceeds FerricStore 0.8 exact integer maximum %d",
+			field,
+			maxFlowExactIntegerV080,
+		)
+	}
 	return value, nil
+}
+
+func governancePolicyVersion(m map[string]any) (string, error) {
+	raw, present := m["policy_version"]
+	if !present || raw == nil {
+		return "", nil
+	}
+	if value, err := responseString(raw, nil); err == nil {
+		if value == "" || len(value) > maxGovernanceFieldBytesV080 {
+			return "", fmt.Errorf(
+				"decode admin field policy_version: must be a non-empty string of at most %d bytes",
+				maxGovernanceFieldBytesV080,
+			)
+		}
+		return value, nil
+	}
+	value, err := responseInt64(raw, nil)
+	if err != nil || value < 0 || value > maxFlowExactIntegerV080 {
+		return "", fmt.Errorf(
+			"decode admin field policy_version: expected a non-empty string or exact non-negative integer",
+		)
+	}
+	return fmt.Sprintf("%d", value), nil
 }
 
 func governanceStringAlias(m map[string]any, canonical, legacy string) (string, error) {

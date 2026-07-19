@@ -33,6 +33,7 @@ type BufferedExecutor struct {
 	queuedBytes int
 	maxCommands int
 	maxBytes    int
+	tooLargeErr error
 	flushes     atomic.Int64
 	sent        atomic.Int64
 	maxDepth    atomic.Int64
@@ -91,6 +92,7 @@ func NewBufferedExecutorWithOptions(client *Client, opt BufferedOptions) *Buffer
 		client:      client,
 		maxCommands: opt.MaxCommands,
 		maxBytes:    opt.MaxBytes,
+		tooLargeErr: fmt.Errorf("%w: command exceeds %d retained bytes", ErrBufferedCapacity, opt.MaxBytes),
 	}
 }
 
@@ -110,13 +112,13 @@ func (e *BufferedExecutor) Do(ctx context.Context, args ...any) (any, error) {
 		return nil, fmt.Errorf("%w: maximum command count is %d", ErrBufferedCapacity, e.maxCommands)
 	}
 	e.mu.Unlock()
+	commandBytes, fits := bufferedCommandRetainedSize(args, e.maxBytes)
+	if !fits {
+		return nil, e.tooLargeErr
+	}
 	copied, err := snapshotCommandArgs(args)
 	if err != nil {
 		return nil, err
-	}
-	commandBytes, fits := bufferedCommandRetainedSize(copied, e.maxBytes)
-	if !fits {
-		return nil, fmt.Errorf("%w: command exceeds %d retained bytes", ErrBufferedCapacity, e.maxBytes)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

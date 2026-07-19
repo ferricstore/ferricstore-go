@@ -57,7 +57,11 @@ func (e *TopologyNativeExecutor) acquireCommandSession(ctx context.Context, keys
 	if err != nil {
 		return nil, err
 	}
-	return adapter.acquireCommandSessionOnLane(ctx, route.LaneID)
+	session, err := adapter.acquireCommandSessionOnLane(ctx, route.LaneID)
+	if err != nil {
+		return nil, err
+	}
+	return &topologyCommandSession{commandSession: session, slot: route.Slot}, nil
 }
 
 func (e *TopologyNativeExecutor) adapterForURL(rawurl string) (*NativeExecutor, error) {

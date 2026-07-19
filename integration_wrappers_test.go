@@ -55,7 +55,7 @@ func TestIntegrationQueueAndWorkflowWrappers(t *testing.T) {
 	if second.Claimed != 1 || second.Applied != 1 {
 		t.Fatalf("unexpected second workflow result: %#v", second)
 	}
-	if record := must[*FlowRecord](t)(client.Get(ctx, workflowID, workflowPartition, nil, nil)); record == nil || record.State != "completed" {
+	if record := must[*FlowRecord](t)(client.Get(ctx, workflowID, workflowPartition, nil)); record == nil || record.State != "completed" {
 		t.Fatalf("expected completed workflow, got %#v", record)
 	}
 }

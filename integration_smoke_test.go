@@ -38,6 +38,7 @@ func TestIntegrationKVAndFlowRoundTrip(t *testing.T) {
 		State:        "queued",
 		PartitionKey: partition,
 		Payload:      map[string]any{"step": 1},
+		MaxActiveMS:  int64(60_000),
 		RunAtMS:      now,
 		NowMS:        now,
 		Idempotent:   Bool(true),
@@ -52,8 +53,8 @@ func TestIntegrationKVAndFlowRoundTrip(t *testing.T) {
 		Result:       map[string]any{"ok": true},
 	}))
 
-	record := must[*FlowRecord](t)(client.Get(ctx, id, partition, nil, nil))
-	if record == nil || record.State != "completed" {
+	record := must[*FlowRecord](t)(client.Get(ctx, id, partition, nil))
+	if record == nil || record.State != "completed" || record.MaxActiveMS != 60_000 {
 		t.Fatalf("expected completed flow, got %#v", record)
 	}
 }

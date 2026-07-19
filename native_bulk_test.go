@@ -12,14 +12,14 @@ import (
 
 func TestNativeBulkPayloadsPreserveWireShape(t *testing.T) {
 	typedMSet, err := newNativeMSetCommand(
-		[]string{"a", "b"},
+		[]string{"{bulk}:a", "{bulk}:b"},
 		[]any{[]byte("one"), int64(2)},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	typedMSetNX, err := newNativeMSetNXCommand(
-		[]string{"a", "b"},
+		[]string{"{bulk}:a", "{bulk}:b"},
 		[]any{[]byte("one"), int64(2)},
 	)
 	if err != nil {
@@ -29,7 +29,9 @@ func TestNativeBulkPayloadsPreserveWireShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	genericMSet, err := buildNativeCommand([]any{"MSET", "a", []byte("one"), "b", int64(2)})
+	genericMSet, err := buildNativeCommand([]any{
+		"MSET", "{bulk}:a", []byte("one"), "{bulk}:b", int64(2),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,16 +55,16 @@ func TestNativeBulkPayloadsPreserveWireShape(t *testing.T) {
 			name:    "typed mset",
 			command: typedMSet,
 			want: map[string]any{"pairs": []any{
-				[]any{[]byte("a"), []byte("one")},
-				[]any{[]byte("b"), int64(2)},
+				[]any{[]byte("{bulk}:a"), []byte("one")},
+				[]any{[]byte("{bulk}:b"), int64(2)},
 			}},
 		},
 		{
 			name:    "generic mset",
 			command: genericMSet,
 			want: map[string]any{"pairs": []any{
-				[]any{[]byte("a"), []byte("one")},
-				[]any{[]byte("b"), int64(2)},
+				[]any{[]byte("{bulk}:a"), []byte("one")},
+				[]any{[]byte("{bulk}:b"), int64(2)},
 			}},
 		},
 		{
@@ -71,8 +73,8 @@ func TestNativeBulkPayloadsPreserveWireShape(t *testing.T) {
 			want: map[string]any{
 				"command": []byte("MSETNX"),
 				"args": []any{
-					[]byte("a"), []byte("one"),
-					[]byte("b"), int64(2),
+					[]byte("{bulk}:a"), []byte("one"),
+					[]byte("{bulk}:b"), int64(2),
 				},
 			},
 		},

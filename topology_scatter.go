@@ -123,18 +123,29 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 					setGroupError(err)
 					return
 				}
-				items, err := adapter.pipelineDetailedOnLane(ctx, group.commands, group.route.LaneID)
+				groupCtx, cancel := nativeContextWithBudget(
+					ctx, adapter.opts.Timeout, pipelineBlockingBudget(group.commands),
+				)
+				if cancel != nil {
+					defer cancel()
+				}
+				items, err := adapter.pipelineDetailedOnLane(groupCtx, group.commands, group.route.LaneID)
 				routeErr, safeToRetryAll := topologyPipelineRouteDisposition(items)
 				retry := false
+				var retryErr error
 				switch {
 				case err != nil && singleRouteWave:
-					retry = e.refreshAndCanRetrySafeReroute(ctx, err, 0)
+					retry, retryErr = e.refreshAndCanRetrySafeReroute(groupCtx, err, 0)
 				case err != nil && isRetryableRouteError(err):
-					_ = e.RefreshTopology(ctx)
+					_ = e.RefreshTopology(groupCtx)
 				case routeErr != nil && singleRouteWave && safeToRetryAll:
-					retry = e.refreshAndCanRetrySafeReroute(ctx, routeErr, 0)
+					retry, retryErr = e.refreshAndCanRetrySafeReroute(groupCtx, routeErr, 0)
 				case routeErr != nil:
-					_ = e.RefreshTopology(ctx)
+					_ = e.RefreshTopology(groupCtx)
+				}
+				if retryErr != nil {
+					setGroupError(retryErr)
+					return
 				}
 				if retry {
 					retrySnapshot, retryErr := e.captureRoutingTopology()
@@ -151,7 +162,7 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 							adapter, retryErr = e.adapterForTopologyRoute(group.route, retrySnapshot)
 						}
 						if retryErr == nil {
-							items, retryErr = adapter.pipelineDetailedOnLane(ctx, group.commands, group.route.LaneID)
+							items, retryErr = adapter.pipelineDetailedOnLane(groupCtx, group.commands, group.route.LaneID)
 						}
 					}
 					err = retryErr
@@ -215,12 +226,6 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 			}
 		}
 		if err != nil {
-			if err == errTopologyCrossSlotMSet {
-				flushRoutedWave()
-				value, commandErr := e.doUnlocked(ctx, args...)
-				results[index] = pipelineItemResult{value: value, err: commandErr}
-				continue
-			}
 			results[index].err = err
 			continue
 		}
@@ -295,10 +300,28 @@ func (e *TopologyNativeExecutor) scatterStringMGet(
 				results <- err
 				return
 			}
-			value, err := adapter.doNativeCommandOnLane(ctx, newNativeMGetCommand(group.keys), group.route.LaneID)
+			groupCtx, cancel := nativeContextWithBudget(ctx, adapter.opts.Timeout, nativeRequestBudget{})
+			if cancel != nil {
+				defer cancel()
+			}
+			value, err := adapter.doNativeCommandOnLane(groupCtx, newNativeMGetCommand(group.keys), group.route.LaneID)
 			if err != nil {
-				if isRetryableRouteError(err) {
-					_ = e.RefreshTopology(ctx)
+				retry, retryErr := e.refreshAndCanRetrySafeReroute(groupCtx, err, 0)
+				if retryErr != nil {
+					results <- retryErr
+					return
+				}
+				if retry {
+					items, retryErr := e.retryStringMGetGroup(groupCtx, group.keys)
+					if retryErr != nil {
+						results <- retryErr
+						return
+					}
+					for index, position := range group.positions {
+						values[position] = items[index]
+					}
+					results <- nil
+					return
 				}
 				results <- err
 				return
@@ -336,8 +359,8 @@ func (e *TopologyNativeExecutor) scatterStringCountCommand(
 	}
 
 	type countResult struct {
-		count int64
-		err   error
+		count    int64
+		failures []error
 	}
 	results := make(chan countResult, len(groups))
 	tasks := make([]func(), 0, len(groups))
@@ -346,7 +369,9 @@ func (e *TopologyNativeExecutor) scatterStringCountCommand(
 		tasks = append(tasks, func() {
 			adapter, err := e.adapterForTopologyRoute(group.route, snapshot)
 			if err != nil {
-				results <- countResult{err: topologyStringKeyWriteFailure(destructive, group.route, group.keys, err)}
+				results <- countResult{failures: []error{
+					topologyStringKeyWriteFailure(destructive, group.route, group.keys, err),
+				}}
 				return
 			}
 			var command nativeCommand
@@ -357,25 +382,46 @@ func (e *TopologyNativeExecutor) scatterStringCountCommand(
 				command = newNativeExistsCommand(group.keys)
 			default:
 				err := fmt.Errorf("unsupported typed key-count command %s", name)
-				results <- countResult{err: topologyStringKeyWriteFailure(destructive, group.route, group.keys, err)}
+				results <- countResult{failures: []error{
+					topologyStringKeyWriteFailure(destructive, group.route, group.keys, err),
+				}}
 				return
 			}
-			value, err := adapter.doNativeCommandOnLane(ctx, command, group.route.LaneID)
+			groupCtx, cancel := nativeContextWithBudget(ctx, adapter.opts.Timeout, nativeRequestBudget{})
+			if cancel != nil {
+				defer cancel()
+			}
+			value, err := adapter.doNativeCommandOnLane(groupCtx, command, group.route.LaneID)
 			if err != nil {
-				if isRetryableRouteError(err) {
-					_ = e.RefreshTopology(ctx)
+				retry, retryErr := e.refreshAndCanRetrySafeReroute(groupCtx, err, 0)
+				if retryErr != nil {
+					results <- countResult{failures: []error{
+						topologyStringKeyWriteFailure(destructive, group.route, group.keys, retryErr),
+					}}
+					return
 				}
-				results <- countResult{err: topologyStringKeyWriteFailure(destructive, group.route, group.keys, err)}
+				if retry {
+					count, failures := e.retryStringCountGroup(groupCtx, name, group.keys)
+					results <- countResult{count: count, failures: failures}
+					return
+				}
+				results <- countResult{failures: []error{
+					topologyStringKeyWriteFailure(destructive, group.route, group.keys, err),
+				}}
 				return
 			}
 			count, err := responseInt64(value, nil)
 			if err != nil {
-				results <- countResult{err: topologyStringKeyWriteFailure(destructive, group.route, group.keys, err)}
+				results <- countResult{failures: []error{
+					topologyStringKeyWriteFailure(destructive, group.route, group.keys, err),
+				}}
 				return
 			}
 			if count < 0 || count > int64(len(group.keys)) {
 				err := fmt.Errorf("%s shard count %d is outside valid range 0..%d", name, count, len(group.keys))
-				results <- countResult{err: topologyStringKeyWriteFailure(destructive, group.route, group.keys, err)}
+				results <- countResult{failures: []error{
+					topologyStringKeyWriteFailure(destructive, group.route, group.keys, err),
+				}}
 				return
 			}
 			results <- countResult{count: count}
@@ -388,116 +434,13 @@ func (e *TopologyNativeExecutor) scatterStringCountCommand(
 	var failures []error
 	for result := range results {
 		total += result.count
-		if result.err != nil {
-			failures = append(failures, result.err)
-		}
+		failures = append(failures, result.failures...)
 	}
 	if len(failures) > 0 {
 		if destructive {
 			return nil, newTopologyPartialWriteError(name, total, failures)
 		}
 		return nil, failures[0]
-	}
-	return total, nil
-}
-
-func (e *TopologyNativeExecutor) scatterCommandWithContext(ctx context.Context, name string, keys []any, requestContext any, hasRequestContext bool) (any, error) {
-	snapshot, groups, err := e.planScatterRoutes(ctx, keys)
-	if err != nil {
-		return nil, fmt.Errorf("plan %s routes: %w", name, err)
-	}
-	destructive := destructiveScatterCommand(name)
-	if len(groups) > 1 && destructive && e.crossShardWrites != CrossShardWritePerShard {
-		return nil, fmt.Errorf("cross-shard %s is disabled; opt in with WithTopologyCrossShardWritePolicy(CrossShardWritePerShard)", name)
-	}
-
-	values := topologyScatterValueSlots(name, len(keys))
-	type scatterResult struct {
-		count int64
-		err   error
-	}
-	results := make(chan scatterResult, len(groups))
-	tasks := make([]func(), 0, len(groups))
-	for _, group := range groups {
-		group := group
-		tasks = append(tasks, func() {
-			adapter, err := e.adapterForTopologyRoute(group.route, snapshot)
-			if err != nil {
-				results <- scatterResult{err: topologyKeyWriteFailure(destructive, group.route, group.keys, err)}
-				return
-			}
-			prefix := 1
-			if hasRequestContext {
-				prefix = 2
-			}
-			args := make([]any, prefix, prefix+len(group.keys)+2)
-			if hasRequestContext {
-				args[0], args[1] = "COMMAND_EXEC", name
-			} else {
-				args[0] = name
-			}
-			args = append(args, group.keys...)
-			if hasRequestContext {
-				args = appendNativeRequestContext(args, requestContext)
-			}
-			command, err := buildNativeCommand(args)
-			if err != nil {
-				results <- scatterResult{err: topologyKeyWriteFailure(destructive, group.route, group.keys, err)}
-				return
-			}
-			command.budget = blockingCommandBudget(args)
-			value, err := adapter.doNativeCommandOnLane(ctx, command, group.route.LaneID)
-			if err != nil {
-				if isRetryableRouteError(err) {
-					_ = e.RefreshTopology(ctx)
-				}
-				results <- scatterResult{err: topologyKeyWriteFailure(destructive, group.route, group.keys, err)}
-				return
-			}
-			if name == "MGET" {
-				items, ok := value.([]any)
-				if !ok || len(items) != len(group.positions) {
-					err := fmt.Errorf("MGET shard returned %T with %d values, expected %d", value, len(items), len(group.positions))
-					results <- scatterResult{err: topologyKeyWriteFailure(destructive, group.route, group.keys, err)}
-					return
-				}
-				for i, position := range group.positions {
-					values[position] = items[i]
-				}
-				results <- scatterResult{}
-				return
-			}
-			count, err := responseInt64(value, nil)
-			if err != nil {
-				results <- scatterResult{err: topologyKeyWriteFailure(destructive, group.route, group.keys, err)}
-				return
-			}
-			if count < 0 || count > int64(len(group.keys)) {
-				err := fmt.Errorf("%s shard count %d is outside valid range 0..%d", name, count, len(group.keys))
-				results <- scatterResult{err: topologyKeyWriteFailure(destructive, group.route, group.keys, err)}
-				return
-			}
-			results <- scatterResult{count: count}
-		})
-	}
-	runBoundedTopologyTasks(maxTopologyConcurrentTasks, tasks)
-	close(results)
-	var total int64
-	var failures []error
-	for result := range results {
-		total += result.count
-		if result.err != nil {
-			failures = append(failures, result.err)
-		}
-	}
-	if len(failures) > 0 {
-		if destructive {
-			return nil, newTopologyPartialWriteError(name, total, failures)
-		}
-		return nil, failures[0]
-	}
-	if name == "MGET" {
-		return values, nil
 	}
 	return total, nil
 }

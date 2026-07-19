@@ -11,14 +11,14 @@ func TestKeyValueMSetBuildsDeterministicCommand(t *testing.T) {
 	client := NewClientWithExecutor(exec)
 
 	err := client.KV().MSet(context.Background(), map[string]any{
-		"b": []byte("2"),
-		"a": []byte("1"),
+		"{set}:b": []byte("2"),
+		"{set}:a": []byte("1"),
 	})
 
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertCall(t, exec, []any{"MSET", "a", []byte("1"), "b", []byte("2")})
+	assertCall(t, exec, []any{"MSET", "{set}:a", []byte("1"), "{set}:b", []byte("2")})
 }
 
 func TestHashGetEXBuildsCommand(t *testing.T) {
@@ -103,7 +103,7 @@ func TestListBLMPopBuildsCommand(t *testing.T) {
 	assertCall(t, exec, []any{"BLMPOP", "1.5", 2, "l1", "l2", "LEFT", "COUNT", 2})
 }
 
-func TestGeoSearchStoreBuildsCommand(t *testing.T) {
+func TestGeoSearchStoreBuildsSupportedV080Command(t *testing.T) {
 	exec := &fakeExecutor{value: int64(3)}
 	client := NewClientWithExecutor(exec)
 	count := 5
@@ -114,7 +114,7 @@ func TestGeoSearchStoreBuildsCommand(t *testing.T) {
 		Desc:       true,
 		Count:      &count,
 		Any:        true,
-	}, true)
+	}, false)
 
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +126,7 @@ func TestGeoSearchStoreBuildsCommand(t *testing.T) {
 		"GEOSEARCHSTORE", "geo:dst", "geo:src",
 		"FROMLONLAT", 10.1, 20.2,
 		"BYRADIUS", float64(15), "km",
-		"DESC", "COUNT", 5, "ANY", "STOREDIST",
+		"DESC", "COUNT", 5, "ANY",
 	})
 }
 

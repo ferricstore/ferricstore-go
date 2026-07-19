@@ -2,10 +2,13 @@ package ferricstore
 
 import "errors"
 
-const maxFlowBatchItems = 1_000
+// FerricStore 0.8 defaults flow_max_batch_items to 1,000, but that setting is
+// runtime-configurable up to this server-enforced hard ceiling. The SDK must
+// not turn the default into a protocol limit.
+const maxFlowMutationBatchItemsV080 = 100_000
 
 func validateCreateManyOptions(opt CreateManyOptions) error {
-	if err := validateFlowMutationText("flow type", opt.Type); err != nil {
+	if err := validatePublicFlowType("flow type", opt.Type); err != nil {
 		return err
 	}
 	if opt.State != "" {
@@ -14,6 +17,9 @@ func validateCreateManyOptions(opt CreateManyOptions) error {
 		}
 	}
 	if err := validateCreateMutationFields(opt.NowMS, opt.RunAtMS, opt.Priority, opt.RetentionTTLMS); err != nil {
+		return err
+	}
+	if _, err := canonicalFlowMaxActiveMS(opt.MaxActiveMS); err != nil {
 		return err
 	}
 	if err := validateFlowBatchSize(len(opt.Items)); err != nil {
@@ -29,6 +35,9 @@ func validateCreateManyOptions(opt CreateManyOptions) error {
 		return err
 	}
 	for _, item := range opt.Items {
+		if _, err := canonicalFlowMaxActiveMS(item.MaxActiveMS); err != nil {
+			return err
+		}
 		if err := validateNamedValues(NamedValues{Values: item.Values, ValueRefs: item.ValueRefs}); err != nil {
 			return err
 		}
@@ -43,10 +52,10 @@ func validateCompleteManyOptions(opt CompleteManyOptions) error {
 	if err := validateClaimedItems(opt.Items, boolDefault(opt.Independent, false)); err != nil {
 		return err
 	}
-	if opt.NowMS < 0 {
-		return errors.New("flow now milliseconds must be non-negative")
+	if err := validateFlowExactNonNegative("flow now milliseconds", opt.NowMS); err != nil {
+		return err
 	}
-	if err := validateOptionalPositiveInt64("flow ttl milliseconds", opt.TTLMS); err != nil {
+	if err := validateOptionalFlowDeadline("flow ttl milliseconds", opt.NowMS, opt.TTLMS); err != nil {
 		return err
 	}
 	if err := validateNamedValues(opt.NamedValues); err != nil {
@@ -65,7 +74,7 @@ func validateTransitionManyOptions(opt TransitionManyOptions) error {
 	if opt.ToState == "running" {
 		return errors.New("flow running state is only entered by ClaimDue")
 	}
-	if err := validateFencedItems(opt.Items, boolDefault(opt.Independent, false)); err != nil {
+	if err := validateFencedItems(opt.Items, boolDefault(opt.Independent, false), true); err != nil {
 		return err
 	}
 	if err := validateFlowMutationTimes(opt.NowMS, opt.RunAtMS); err != nil {
@@ -87,9 +96,6 @@ func validateRetryManyOptions(opt RetryManyOptions) error {
 	if err := validateFlowMutationTimes(opt.NowMS, opt.RunAtMS); err != nil {
 		return err
 	}
-	if hasNamedValueMutation(opt.NamedValues) {
-		return errors.New("FLOW.RETRY_MANY does not support named value mutations")
-	}
 	return validateFlowMetadata(nil, opt.AttributesMerge, opt.AttributesDelete, opt.StateMeta)
 }
 
@@ -97,10 +103,10 @@ func validateFailManyOptions(opt FailManyOptions) error {
 	if err := validateClaimedItems(opt.Items, boolDefault(opt.Independent, false)); err != nil {
 		return err
 	}
-	if opt.NowMS < 0 {
-		return errors.New("flow now milliseconds must be non-negative")
+	if err := validateFlowExactNonNegative("flow now milliseconds", opt.NowMS); err != nil {
+		return err
 	}
-	if err := validateOptionalPositiveInt64("flow ttl milliseconds", opt.TTLMS); err != nil {
+	if err := validateOptionalFlowDeadline("flow ttl milliseconds", opt.NowMS, opt.TTLMS); err != nil {
 		return err
 	}
 	if err := validateNamedValues(opt.NamedValues); err != nil {
@@ -110,13 +116,13 @@ func validateFailManyOptions(opt FailManyOptions) error {
 }
 
 func validateCancelManyOptions(opt CancelManyOptions) error {
-	if err := validateFencedItems(opt.Items, boolDefault(opt.Independent, false)); err != nil {
+	if err := validateFencedItems(opt.Items, boolDefault(opt.Independent, false), false); err != nil {
 		return err
 	}
-	if opt.NowMS < 0 {
-		return errors.New("flow now milliseconds must be non-negative")
+	if err := validateFlowExactNonNegative("flow now milliseconds", opt.NowMS); err != nil {
+		return err
 	}
-	if err := validateOptionalPositiveInt64("flow ttl milliseconds", opt.TTLMS); err != nil {
+	if err := validateOptionalFlowDeadline("flow ttl milliseconds", opt.NowMS, opt.TTLMS); err != nil {
 		return err
 	}
 	if err := validateNamedValues(opt.NamedValues); err != nil {
@@ -131,7 +137,7 @@ func validateCreateItemIDs(items []CreateItem, unique bool) error {
 		seen = make(map[string]struct{}, len(items))
 	}
 	for _, item := range items {
-		if err := validateFlowMutationText("flow item id", item.ID); err != nil {
+		if err := validatePublicFlowID("flow item id", item.ID); err != nil {
 			return err
 		}
 		if unique {
@@ -153,14 +159,14 @@ func validateClaimedItems(items []ClaimedItem, allowDuplicates bool) error {
 		seen = make(map[string]struct{}, len(items))
 	}
 	for _, item := range items {
-		if err := validateFlowMutationText("flow item id", item.ID); err != nil {
+		if err := validatePublicFlowID("flow item id", item.ID); err != nil {
 			return err
 		}
 		if err := validateFlowMutationText("flow item lease token", item.LeaseToken); err != nil {
 			return err
 		}
-		if item.FencingToken < 0 {
-			return errors.New("flow item fencing token must be non-negative")
+		if err := validateFlowExactNonNegative("flow item fencing token", item.FencingToken); err != nil {
+			return err
 		}
 		if !allowDuplicates {
 			if _, exists := seen[item.ID]; exists {
@@ -172,7 +178,7 @@ func validateClaimedItems(items []ClaimedItem, allowDuplicates bool) error {
 	return nil
 }
 
-func validateFencedItems(items []FencedItem, allowDuplicates bool) error {
+func validateFencedItems(items []FencedItem, allowDuplicates, requireLease bool) error {
 	if err := validateFlowBatchSize(len(items)); err != nil {
 		return err
 	}
@@ -181,11 +187,16 @@ func validateFencedItems(items []FencedItem, allowDuplicates bool) error {
 		seen = make(map[string]struct{}, len(items))
 	}
 	for _, item := range items {
-		if err := validateFlowMutationText("flow item id", item.ID); err != nil {
+		if err := validatePublicFlowID("flow item id", item.ID); err != nil {
 			return err
 		}
-		if item.FencingToken < 0 {
-			return errors.New("flow item fencing token must be non-negative")
+		if err := validateFlowExactNonNegative("flow item fencing token", item.FencingToken); err != nil {
+			return err
+		}
+		if requireLease {
+			if err := validateFlowMutationText("flow item lease token", item.LeaseToken); err != nil {
+				return err
+			}
 		}
 		if !allowDuplicates {
 			if _, exists := seen[item.ID]; exists {
@@ -198,8 +209,8 @@ func validateFencedItems(items []FencedItem, allowDuplicates bool) error {
 }
 
 func validateFlowBatchSize(count int) error {
-	if count > maxFlowBatchItems {
-		return errors.New("flow batch item count exceeds maximum 1000")
+	if count > maxFlowMutationBatchItemsV080 {
+		return errors.New("flow batch item count exceeds maximum 100000")
 	}
 	return nil
 }

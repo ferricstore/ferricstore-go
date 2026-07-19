@@ -397,17 +397,26 @@ func TestTopologyChangedEventProactivelyRefreshesRoutes(t *testing.T) {
 			errCh <- err
 			return
 		}
-		value, rest, err := decodeNativeValue(startup.body)
+		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, nativeHelloForTestWithEvents("TOPOLOGY_CHANGED")); err != nil {
+			errCh <- err
+			return
+		}
+		subscribe, err := readNativeRequestFrame(reader)
+		if err != nil || subscribe.opcode != nativeOpSubscribeEvents {
+			errCh <- errUnexpectedFrame(subscribe)
+			return
+		}
+		value, rest, err := decodeNativeValue(subscribe.body)
 		if err != nil || len(rest) != 0 {
-			errCh <- errUnexpectedValue("topology STARTUP payload", value)
+			errCh <- errUnexpectedValue("topology event subscription", value)
 			return
 		}
 		payload, err := nativeMap(value)
 		if err != nil || !slices.Contains(stringList(payload["events"]), "TOPOLOGY_CHANGED") {
-			errCh <- errUnexpectedValue("topology STARTUP events", payload["events"])
+			errCh <- errUnexpectedValue("topology event subscription", payload["events"])
 			return
 		}
-		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+		if err := writeNativeTestResponse(writer, subscribe, nativeStatusOK, map[string]any{"subscribed": []any{"TOPOLOGY_CHANGED"}}); err != nil {
 			errCh <- err
 			return
 		}

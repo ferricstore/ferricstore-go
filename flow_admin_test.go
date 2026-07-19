@@ -123,13 +123,15 @@ func TestCountByStateRejectsMalformedStatsCount(t *testing.T) {
 }
 
 func TestExistsRejectsMalformedStatsCount(t *testing.T) {
-	exec := &fakeExecutor{value: map[string]any{"count": "not-a-number"}}
-	client := NewClientWithExecutor(exec)
+	for _, count := range []any{"not-a-number", int64(-1)} {
+		exec := &fakeExecutor{value: map[string]any{"count": count}}
+		client := NewClientWithExecutor(exec)
 
-	_, err := client.Exists(context.Background(), "gitea.queue.default", ReadOptions{State: "queued"})
+		_, err := client.Exists(context.Background(), "gitea.queue.default", ReadOptions{State: "queued"})
 
-	if err == nil {
-		t.Fatal("expected malformed stats count to fail")
+		if err == nil {
+			t.Fatalf("expected malformed stats count %#v to fail", count)
+		}
 	}
 }
 

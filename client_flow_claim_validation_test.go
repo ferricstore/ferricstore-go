@@ -14,7 +14,6 @@ func TestClaimDueRejectsInvalidOptionsBeforeTransport(t *testing.T) {
 		{name: "missing worker", opt: ClaimDueOptions{Type: "email"}},
 		{name: "negative lease", opt: ClaimDueOptions{Type: "email", Worker: "worker", LeaseMS: -1}},
 		{name: "negative limit", opt: ClaimDueOptions{Type: "email", Worker: "worker", Limit: -1}},
-		{name: "limit above server maximum", opt: ClaimDueOptions{Type: "email", Worker: "worker", Limit: 1_001}},
 		{name: "negative now", opt: ClaimDueOptions{Type: "email", Worker: "worker", NowMS: -1}},
 		{name: "negative block", opt: ClaimDueOptions{Type: "email", Worker: "worker", BlockMS: Int64(-1)}},
 		{name: "negative reclaim ratio", opt: ClaimDueOptions{Type: "email", Worker: "worker", ReclaimRatio: Int64(-1)}},
@@ -26,7 +25,6 @@ func TestClaimDueRejectsInvalidOptionsBeforeTransport(t *testing.T) {
 		{name: "empty partition", opt: ClaimDueOptions{Type: "email", Worker: "worker", PartitionKeys: []string{"tenant", ""}}},
 		{name: "empty value name", opt: ClaimDueOptions{Type: "email", Worker: "worker", Values: []string{"result", ""}}},
 		{name: "negative payload cap", opt: ClaimDueOptions{Type: "email", Worker: "worker", PayloadMaxBytes: Int64(-1)}},
-		{name: "negative value cap", opt: ClaimDueOptions{Type: "email", Worker: "worker", ValueMaxBytes: Int64(-1)}},
 	}
 
 	for _, tc := range tests {
@@ -51,13 +49,11 @@ func TestReclaimRejectsInvalidOptionsBeforeTransport(t *testing.T) {
 		{name: "missing worker", opt: ReclaimOptions{Type: "email"}},
 		{name: "negative lease", opt: ReclaimOptions{Type: "email", Worker: "worker", LeaseMS: -1}},
 		{name: "negative limit", opt: ReclaimOptions{Type: "email", Worker: "worker", Limit: -1}},
-		{name: "limit above server maximum", opt: ReclaimOptions{Type: "email", Worker: "worker", Limit: 1_001}},
 		{name: "negative now", opt: ReclaimOptions{Type: "email", Worker: "worker", NowMS: -1}},
 		{name: "large priority", opt: ReclaimOptions{Type: "email", Worker: "worker", Priority: Int64(3)}},
 		{name: "empty partition", opt: ReclaimOptions{Type: "email", Worker: "worker", PartitionKeys: []string{"tenant", ""}}},
 		{name: "empty value name", opt: ReclaimOptions{Type: "email", Worker: "worker", Values: []string{"result", ""}}},
 		{name: "negative payload cap", opt: ReclaimOptions{Type: "email", Worker: "worker", PayloadMaxBytes: Int64(-1)}},
-		{name: "negative value cap", opt: ReclaimOptions{Type: "email", Worker: "worker", ValueMaxBytes: Int64(-1)}},
 	}
 
 	for _, tc := range tests {

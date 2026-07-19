@@ -81,7 +81,7 @@ func validateStreamAdd(fields map[string]any, opt StreamAddOptions) error {
 		return errors.New("XADD MAXLEN must be non-negative")
 	}
 	if opt.MinID != "" {
-		if _, _, ok := parseStreamIDText(opt.MinID); !ok {
+		if !validStreamIDOrPartialText(opt.MinID) {
 			return fmt.Errorf("XADD MINID has invalid stream ID %q", opt.MinID)
 		}
 	}

@@ -20,12 +20,12 @@ func validateClaimDueOptions(opt ClaimDueOptions) error {
 	}
 	if err := validateClaimCommon(
 		opt.Type, opt.Worker, opt.LeaseMS, opt.Limit, opt.NowMS, opt.Priority,
-		opt.PartitionKeys, opt.Values, opt.PayloadMaxBytes, opt.ValueMaxBytes,
+		opt.PartitionKeys, opt.Values, opt.PayloadMaxBytes,
 	); err != nil {
 		return err
 	}
-	if opt.BlockMS != nil && *opt.BlockMS < 0 {
-		return errors.New("flow block milliseconds must be non-negative")
+	if err := validateOptionalBlockingTimeoutMS("FLOW.CLAIM_DUE", opt.BlockMS); err != nil {
+		return err
 	}
 	if opt.ReclaimRatio != nil && (*opt.ReclaimRatio < 0 || *opt.ReclaimRatio > 100) {
 		return errors.New("flow reclaim ratio must be between 0 and 100")
@@ -42,7 +42,7 @@ func validateReclaimOptions(opt ReclaimOptions) error {
 	}
 	return validateClaimCommon(
 		opt.Type, opt.Worker, opt.LeaseMS, opt.Limit, opt.NowMS, opt.Priority,
-		opt.PartitionKeys, opt.Values, opt.PayloadMaxBytes, opt.ValueMaxBytes,
+		opt.PartitionKeys, opt.Values, opt.PayloadMaxBytes,
 	)
 }
 
@@ -53,25 +53,23 @@ func validateClaimCommon(
 	nowMS int64,
 	priority *int64,
 	partitionKeys, valueNames []string,
-	payloadMaxBytes, valueMaxBytes *int64,
+	payloadMaxBytes *int64,
 ) error {
-	if flowType == "" {
-		return errors.New("flow type must be a non-empty string")
+	if err := validatePublicFlowType("flow type", flowType); err != nil {
+		return err
 	}
 	if worker == "" {
 		return errors.New("flow worker must be a non-empty string")
 	}
-	if leaseMS < 0 {
-		return errors.New("flow lease milliseconds must be positive")
+	wireLeaseMS := leaseMS
+	if wireLeaseMS == 0 {
+		wireLeaseMS = 30_000
+	}
+	if err := validateFlowDeadline("flow lease milliseconds", nowMS, wireLeaseMS); err != nil {
+		return err
 	}
 	if limit < 0 {
 		return errors.New("flow claim limit must be positive")
-	}
-	if limit > maxFlowBatchItems {
-		return fmt.Errorf("flow claim limit exceeds maximum %d", maxFlowBatchItems)
-	}
-	if nowMS < 0 {
-		return errors.New("flow now milliseconds must be non-negative")
 	}
 	if priority != nil && (*priority < 0 || *priority > maxFlowClaimPriority) {
 		return fmt.Errorf("flow claim priority must be between 0 and %d", maxFlowClaimPriority)
@@ -84,9 +82,6 @@ func validateClaimCommon(
 	}
 	if payloadMaxBytes != nil && *payloadMaxBytes < 0 {
 		return errors.New("flow payload maximum bytes must be non-negative")
-	}
-	if valueMaxBytes != nil && *valueMaxBytes < 0 {
-		return errors.New("flow value maximum bytes must be non-negative")
 	}
 	return nil
 }

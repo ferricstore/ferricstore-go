@@ -10,7 +10,6 @@ func TestTypedStoreOptionsRejectInvalidStatesBeforeExecution(t *testing.T) {
 	negative := int64(-1)
 	one := int64(1)
 	two := int64(2)
-	decay := 0.9
 	coordinate := &GeoCoordinate{Longitude: 1, Latitude: 2}
 	radius := &GeoRadius{Radius: 5, Unit: "km"}
 	box := &GeoBox{Width: 1, Height: 2, Unit: "km"}
@@ -125,9 +124,9 @@ func TestTypedStoreOptionsRejectInvalidStatesBeforeExecution(t *testing.T) {
 			},
 		},
 		{
-			name: "topk depth and decay without width",
+			name: "topk depth without width",
 			call: func(client *Client) error {
-				_, err := client.TopK().ReserveWithOptions(context.Background(), "key", 3, TopKReserveOptions{Depth: &two, Decay: &decay})
+				_, err := client.TopK().ReserveWithOptions(context.Background(), "key", 3, TopKReserveOptions{Depth: &two})
 				return err
 			},
 		},

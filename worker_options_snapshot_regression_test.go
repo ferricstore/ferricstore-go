@@ -2,6 +2,7 @@ package ferricstore
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -53,6 +54,41 @@ func TestWorkflowWorkerSnapshotsMutableOptions(t *testing.T) {
 	}
 
 	assertWorkerClaimSnapshot(t, exec.calls[0])
+}
+
+func TestWorkflowWorkerUsesOneErrorPolicySnapshotPerRun(t *testing.T) {
+	claimed := []any{map[string]any{
+		"id": "flow-1", "type": "order", "state": "ready",
+		"partition_key": "tenant:1", "lease_token": "lease-1", "fencing_token": int64(9),
+	}}
+	exec := &fakeExecutor{values: []any{claimed, []byte("OK")}}
+	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "ready")
+	handlerStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	workflow.State("ready", func(context.Context, WorkflowContext) (Outcome, error) {
+		close(handlerStarted)
+		<-releaseHandler
+		return nil, errors.New("retry me")
+	})
+	worker := workflow.Worker("worker-1", []string{"ready"}, WorkerOptions{
+		BatchSize: 1, ErrorPolicy: ErrorPolicyRetry,
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := worker.RunOnce(context.Background())
+		done <- err
+	}()
+	<-handlerStarted
+	worker.Options.ErrorPolicy = ErrorPolicyFail
+	close(releaseHandler)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	if len(exec.calls) != 2 || exec.calls[1][0] != "FLOW.RETRY" {
+		t.Fatalf("run changed error policy after admission: %#v", exec.calls)
+	}
 }
 
 func assertWorkerClaimSnapshot(t *testing.T, command []any) {

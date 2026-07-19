@@ -53,7 +53,7 @@ func TestNativeHandshakeRequestIDsSkipReservedEventIDOnWrap(t *testing.T) {
 	go func() {
 		_, err := exec.nativeHandshakeRequest(
 			context.Background(), 0, clientConn, clientReader, clientWriter,
-			nativeDefaultRequestFrameBytes, nativeOpStartup, map[string]any{},
+			nativeUnauthenticatedFrameBytes, nativeOpHello, map[string]any{},
 		)
 		done <- err
 	}()

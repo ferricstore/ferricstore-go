@@ -51,9 +51,6 @@ func metricsMapResponse(value any) (map[string]any, error) {
 		// its established last-sample-wins behavior; MetricsText is lossless.
 		result[identity] = coerceTextValue(fields[0])
 	}
-	if len(result) == 0 && strings.TrimSpace(text) != "" {
-		return nil, errors.New("expected at least one Prometheus sample")
-	}
 	return result, nil
 }
 

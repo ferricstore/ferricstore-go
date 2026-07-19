@@ -3,7 +3,6 @@ package ferricstore
 import (
 	"crypto/sha256"
 	"encoding/base64"
-	"fmt"
 	"hash/crc32"
 	"strconv"
 	"strings"
@@ -177,7 +176,7 @@ func nextFlowOption(name string, args []any, index int) int {
 			return minInt(len(args), index+2)
 		}
 		return minInt(len(args), index+3)
-	case "ITEMS", "ITEMS_EXT":
+	case "ITEMS", "ITEMS_EXT", "ITEMS_MAPS":
 		return len(args)
 	case "PARTITIONS":
 		if index+1 >= len(args) {
@@ -204,11 +203,11 @@ func flowLogicalPartitionRoutingKey(value any) (any, bool) {
 		bucketText := strings.TrimPrefix(text, autoPrefix)
 		bucket, err := strconv.Atoi(bucketText)
 		if err == nil && bucket >= 0 && bucket < 256 && strconv.Itoa(bucket) == bucketText {
-			return fmt.Sprintf("f:{fa:%d}:route", bucket), true
+			return flowTagRoutingSlot("fa:" + bucketText), true
 		}
 	}
 	digest := sha256.Sum256(bytes)
-	return "f:{f:" + base64.RawURLEncoding.EncodeToString(digest[:]) + "}:route", true
+	return flowTagRoutingSlot("f:" + base64.RawURLEncoding.EncodeToString(digest[:])), true
 }
 
 func flowAutoIDRoutingKey(value any) (any, bool) {
@@ -216,7 +215,7 @@ func flowAutoIDRoutingKey(value any) (any, bool) {
 		return nil, false
 	}
 	bucket := crc32.ChecksumIEEE(asBytes(value)) & 0xff
-	return fmt.Sprintf("f:{fa:%d}:route", bucket), true
+	return flowTagRoutingSlot("fa:" + strconv.FormatUint(uint64(bucket), 10)), true
 }
 
 func flowClaimPartitionRoutingKey(value any) (any, bool) {
@@ -227,8 +226,12 @@ func flowClaimPartitionRoutingKey(value any) (any, bool) {
 	case "AUTO", "ANY":
 		return nil, false
 	case "GLOBAL":
-		return "f:{f}:route", true
+		return flowTagRoutingSlot("f"), true
 	default:
 		return flowLogicalPartitionRoutingKey(value)
 	}
+}
+
+func flowTagRoutingSlot(tag string) topologyRouteSlot {
+	return topologyRouteSlot(int(routeCRC32(tag)) & routeSlotMask)
 }

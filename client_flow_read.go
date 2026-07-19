@@ -5,13 +5,13 @@ import (
 	"fmt"
 )
 
-func (c *Client) Get(ctx context.Context, id string, partitionKey string, values []string, valueMaxBytes *int64) (*FlowRecord, error) {
-	if err := validateFlowGet(id, values, valueMaxBytes); err != nil {
+func (c *Client) Get(ctx context.Context, id string, partitionKey string, values []string) (*FlowRecord, error) {
+	if err := validateFlowGet(id, values); err != nil {
 		return nil, err
 	}
 	args := []any{"FLOW.GET", id}
 	appendOpt(&args, "PARTITION", partitionKey)
-	appendValueReturn(&args, values, valueMaxBytes)
+	appendValueReturn(&args, values)
 	value, err := c.typedReply(ctx, args...)
 	if err != nil {
 		return nil, err
@@ -23,7 +23,7 @@ func (c *Client) recordOrGet(ctx context.Context, record *FlowRecord, err error,
 	if err != nil || record != nil {
 		return record, err
 	}
-	record, err = c.Get(ctx, id, partitionKey, nil, nil)
+	record, err = c.Get(ctx, id, partitionKey, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -34,13 +34,18 @@ func (c *Client) recordOrGet(ctx context.Context, record *FlowRecord, err error,
 }
 
 func (c *Client) List(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
-	if err := validateFlowReadKey("flow type", flowType, opt); err != nil {
+	if err := validateFlowTypeRead(flowType, opt); err != nil {
 		return nil, err
 	}
 	args := []any{"FLOW.LIST", flowType}
 	appendReadOptions(&args, opt)
 	value, err := c.typedReply(ctx, args...)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateDefaultedFlowResponseLimit(
+		"FLOW.LIST", value, opt.Count, defaultFlowResponseLimitV080, 0,
+	); err != nil {
 		return nil, err
 	}
 	return recordsFromNative(value, c.codec)
@@ -67,6 +72,11 @@ func (c *Client) Search(ctx context.Context, opt SearchOptions) ([]FlowRecord, e
 	if err != nil {
 		return nil, err
 	}
+	if err := validateDefaultedFlowResponseLimit(
+		"FLOW.SEARCH", value, opt.Count, defaultFlowResponseLimitV080, 0,
+	); err != nil {
+		return nil, err
+	}
 	return recordsFromNative(value, c.codec)
 }
 
@@ -84,33 +94,50 @@ func (c *Client) Exists(ctx context.Context, flowType string, opt ReadOptions) (
 }
 
 func (c *Client) Terminals(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
+	if err := validateFlowTypeRead(flowType, opt); err != nil {
+		return nil, err
+	}
 	return c.indexRead(ctx, "FLOW.TERMINALS", flowType, opt)
 }
 
 func (c *Client) Failures(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
+	if err := validateFlowTypeRead(flowType, opt); err != nil {
+		return nil, err
+	}
 	return c.indexRead(ctx, "FLOW.FAILURES", flowType, opt)
 }
 
 func (c *Client) ByParent(ctx context.Context, parentFlowID string, opt ReadOptions) ([]FlowRecord, error) {
+	if err := validateFlowIDRead("parent flow id", parentFlowID, opt); err != nil {
+		return nil, err
+	}
 	return c.indexRead(ctx, "FLOW.BY_PARENT", parentFlowID, opt)
 }
 
 func (c *Client) ByRoot(ctx context.Context, rootFlowID string, opt ReadOptions) ([]FlowRecord, error) {
+	if err := validateFlowIDRead("root flow id", rootFlowID, opt); err != nil {
+		return nil, err
+	}
 	return c.indexRead(ctx, "FLOW.BY_ROOT", rootFlowID, opt)
 }
 
 func (c *Client) ByCorrelation(ctx context.Context, correlationID string, opt ReadOptions) ([]FlowRecord, error) {
+	if err := validateFlowReadKey("flow correlation id", correlationID, opt); err != nil {
+		return nil, err
+	}
 	return c.indexRead(ctx, "FLOW.BY_CORRELATION", correlationID, opt)
 }
 
 func (c *Client) indexRead(ctx context.Context, command, key string, opt ReadOptions) ([]FlowRecord, error) {
-	if err := validateFlowReadKey("flow query key", key, opt); err != nil {
-		return nil, err
-	}
 	args := []any{command, key}
 	appendReadOptions(&args, opt)
 	value, err := c.typedReply(ctx, args...)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateDefaultedFlowResponseLimit(
+		command, value, opt.Count, defaultFlowResponseLimitV080, 0,
+	); err != nil {
 		return nil, err
 	}
 	return recordsFromNative(value, c.codec)
@@ -130,7 +157,7 @@ func appendReadOptions(args *[]any, opt ReadOptions) {
 }
 
 func (c *Client) Info(ctx context.Context, flowType, partitionKey string, includeCold, consistentProjection *bool) (map[string]any, error) {
-	if err := validateRequiredText("flow type", flowType); err != nil {
+	if err := validatePublicFlowType("flow type", flowType); err != nil {
 		return nil, err
 	}
 	args := []any{"FLOW.INFO", flowType}
@@ -155,6 +182,11 @@ func (c *Client) Stuck(ctx context.Context, flowType string, partitionKey string
 	appendInt64Ptr(&args, "NOW", now)
 	value, err := c.typedReply(ctx, args...)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateDefaultedFlowResponseLimit(
+		"FLOW.STUCK", value, count, defaultFlowResponseLimitV080, 0,
+	); err != nil {
 		return nil, err
 	}
 	return recordsFromNative(value, c.codec)
@@ -190,6 +222,9 @@ func (c *Client) History(ctx context.Context, opt HistoryOptions) ([]any, error)
 	items, ok := value.([]any)
 	if !ok {
 		return nil, fmt.Errorf("expected history array, got %T", value)
+	}
+	if err := validateFlowResponseLimit("FLOW.HISTORY", items, count); err != nil {
+		return nil, err
 	}
 	return items, nil
 }

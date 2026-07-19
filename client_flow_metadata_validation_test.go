@@ -81,7 +81,7 @@ func TestFlowMutationsRejectInvalidMetadataBeforeCodecOrTransport(t *testing.T) 
 func TestFlowMetadataKeysAreCanonicalizedOnTheWire(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("OK")}
 	_, err := NewClientWithExecutor(exec).Transition(context.Background(), TransitionOptions{
-		ID: "flow", FromState: "queued", ToState: "ready",
+		ID: "flow", FromState: "queued", ToState: "ready", LeaseToken: "lease",
 		NamedValues: NamedValues{
 			AttributesMerge:  map[string]any{" plan ": "pro"},
 			AttributesDelete: []string{" old_plan "},
@@ -92,8 +92,8 @@ func TestFlowMetadataKeysAreCanonicalizedOnTheWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []any{
-		"FLOW.TRANSITION", "flow", "queued", "ready", "FENCING", int64(0), "NOW", exec.calls[0][7],
-		"RUN_AT", exec.calls[0][9], "ATTRIBUTE_MERGE", "plan", "pro", "ATTRIBUTE_DELETE", "old_plan",
+		"FLOW.TRANSITION", "flow", "queued", "ready", "LEASE_TOKEN", "lease", "FENCING", int64(0), "NOW", exec.calls[0][9],
+		"RUN_AT", exec.calls[0][11], "ATTRIBUTE_MERGE", "plan", "pro", "ATTRIBUTE_DELETE", "old_plan",
 		"STATE_META", "attempt", 1,
 	}
 	if !reflect.DeepEqual(exec.calls[0], want) {

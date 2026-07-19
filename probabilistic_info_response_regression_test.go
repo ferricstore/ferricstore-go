@@ -46,14 +46,6 @@ func TestProbabilisticInfoResponsesValidateServerSchemas(t *testing.T) {
 			},
 		},
 		{
-			name:     "TOPK.INFO invalid decay",
-			response: []any{"k", int64(10), "width", int64(20), "depth", int64(5), "decay", 1.5},
-			call: func(client *Client) error {
-				_, err := client.TopK().Info(context.Background(), "topk")
-				return err
-			},
-		},
-		{
 			name: "TDIGEST.INFO non-finite weight",
 			response: []any{
 				"Compression", int64(100), "Capacity", int64(610), "Merged nodes", int64(1),
@@ -102,7 +94,7 @@ func TestProbabilisticInfoResponsesPreserveValidMaps(t *testing.T) {
 		},
 		{
 			name:     "TOPK.INFO",
-			response: []any{"k", int64(10), "width", int64(20), "depth", int64(5), "decay", 0.9},
+			response: []any{"k", int64(10), "width", int64(20), "depth", int64(5)},
 			call: func(client *Client) (map[string]any, error) {
 				return client.TopK().Info(context.Background(), "topk")
 			},

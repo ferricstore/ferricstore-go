@@ -81,7 +81,7 @@ func clusterKeysByShard(t *testing.T, exec *TopologyNativeExecutor, count int) m
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, exists := keys[route.Shard]; !exists {
+		if route.Shard >= 0 && route.Shard < count {
 			keys[route.Shard] = key
 		}
 	}

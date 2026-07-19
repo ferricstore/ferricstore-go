@@ -50,6 +50,17 @@ func parseStreamIDText[T ~string | ~[]byte](id T) (uint64, uint64, bool) {
 	return milliseconds, sequence, true
 }
 
+func validStreamIDOrPartialText[T ~string | ~[]byte](id T) bool {
+	if _, _, ok := parseStreamIDText(id); ok {
+		return true
+	}
+	if len(id) == 0 {
+		return false
+	}
+	_, ok := parseStreamIDPart(id, 0, len(id))
+	return ok
+}
+
 func parseStreamIDPart[T ~string | ~[]byte](id T, start, end int) (uint64, bool) {
 	var number uint64
 	for index := start; index < end; index++ {

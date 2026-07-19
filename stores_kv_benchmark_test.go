@@ -41,7 +41,7 @@ func TestKeyValueBulkPathsHaveBoundedAllocations(t *testing.T) {
 	for i := range keys {
 		keys[i] = "key:" + strconv.Itoa(i)
 		response[i] = []byte("value")
-		values[keys[i]] = []byte("value")
+		values["key:{bulk}:"+strconv.Itoa(i)] = []byte("value")
 	}
 	ctx := context.Background()
 	mget := NewClientWithExecutor(kvBenchmarkExecutor{response: response}).KV()
@@ -121,7 +121,7 @@ func BenchmarkKeyValueMGet100(b *testing.B) {
 func BenchmarkKeyValueMSet100(b *testing.B) {
 	values := make(map[string]any, 100)
 	for i := range 100 {
-		values["key:"+strconv.Itoa(i)] = []byte("value")
+		values["{mset}:key:"+strconv.Itoa(i)] = []byte("value")
 	}
 	store := NewClientWithExecutor(kvBenchmarkExecutor{response: []byte("OK")}).KV()
 	ctx := context.Background()
@@ -137,7 +137,7 @@ func BenchmarkKeyValueMSet100(b *testing.B) {
 func BenchmarkKeyValueMSetNX100(b *testing.B) {
 	values := make(map[string]any, 100)
 	for i := range 100 {
-		values["key:"+strconv.Itoa(i)] = []byte("value")
+		values["{msetnx}:key:"+strconv.Itoa(i)] = []byte("value")
 	}
 	store := NewClientWithExecutor(kvBenchmarkExecutor{response: int64(1)}).KV()
 	ctx := context.Background()

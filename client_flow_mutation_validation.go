@@ -8,10 +8,10 @@ import (
 const maxFlowMutationPriority int64 = 2
 
 func validateCreateOptions(opt CreateOptions) error {
-	if err := validateFlowMutationText("flow id", opt.ID); err != nil {
+	if err := validatePublicFlowID("flow id", opt.ID); err != nil {
 		return err
 	}
-	if err := validateFlowMutationText("flow type", opt.Type); err != nil {
+	if err := validatePublicFlowType("flow type", opt.Type); err != nil {
 		return err
 	}
 	if opt.State != "" {
@@ -19,7 +19,24 @@ func validateCreateOptions(opt CreateOptions) error {
 			return err
 		}
 	}
+	for _, field := range []struct{ name, value string }{
+		{name: "flow parent_flow_id", value: opt.ParentFlowID},
+		{name: "flow root_flow_id", value: opt.RootFlowID},
+	} {
+		if err := validateOptionalPublicFlowIDReference(field.name, field.value); err != nil {
+			return err
+		}
+	}
+	if err := validateFlowReference("flow correlation_id", opt.CorrelationID); err != nil {
+		return err
+	}
 	if err := validateCreateMutationFields(opt.NowMS, opt.RunAtMS, opt.Priority, opt.RetentionTTLMS); err != nil {
+		return err
+	}
+	if _, err := canonicalFlowMaxActiveMS(opt.MaxActiveMS); err != nil {
+		return err
+	}
+	if err := validateNamedValues(NamedValues{Values: opt.Values, ValueRefs: opt.ValueRefs}); err != nil {
 		return err
 	}
 	return validateFlowMetadata(opt.Attributes, nil, nil, opt.StateMeta)
@@ -36,10 +53,25 @@ func validateCreateMutationFields(nowMS, runAtMS int64, priority, retentionTTLMS
 }
 
 func validateValuePutOptions(opt ValuePutOptions) error {
-	if opt.NowMS < 0 {
-		return errors.New("flow now milliseconds must be non-negative")
+	if err := validateFlowExactNonNegative("flow now milliseconds", opt.NowMS); err != nil {
+		return err
 	}
-	return validateOptionalPositiveInt64("flow value ttl milliseconds", opt.TTLMS)
+	if err := validateOptionalPublicFlowIDReference("flow owner_flow_id", opt.OwnerFlowID); err != nil {
+		return err
+	}
+	if err := validateFlowReference("flow value name", opt.Name); err != nil {
+		return err
+	}
+	if opt.Name != "" && opt.OwnerFlowID == "" {
+		return errors.New("flow named value put requires owner_flow_id")
+	}
+	if opt.Override != nil && (opt.OwnerFlowID == "" || opt.Name == "") {
+		return errors.New("flow value override requires owner_flow_id and name")
+	}
+	if opt.OwnerFlowID != "" && opt.Name != "" && opt.TTLMS != nil {
+		return errors.New("flow named values inherit retention and do not support ttl")
+	}
+	return validateOptionalFlowDeadline("flow value ttl milliseconds", opt.NowMS, opt.TTLMS)
 }
 
 func validateValueMGet(refs []string, maxBytes *int64) error {
@@ -52,10 +84,13 @@ func validateValueMGet(refs []string, maxBytes *int64) error {
 }
 
 func validateSignalOptions(opt SignalOptions) error {
-	if err := validateFlowMutationText("flow id", opt.ID); err != nil {
+	if err := validatePublicFlowID("flow id", opt.ID); err != nil {
 		return err
 	}
 	if err := validateFlowMutationText("flow signal", opt.Signal); err != nil {
+		return err
+	}
+	if err := validateFlowReference("flow idempotency_key", opt.IdempotencyKey); err != nil {
 		return err
 	}
 	for _, state := range opt.IfStates {
@@ -66,19 +101,20 @@ func validateSignalOptions(opt SignalOptions) error {
 	if opt.TransitionTo == "running" {
 		return errors.New("flow running state is only entered by ClaimDue")
 	}
-	if opt.RunAtMS < 0 || opt.NowMS < 0 {
-		return errors.New("flow timestamps must be non-negative")
-	}
-	if opt.Priority != nil {
-		return errors.New("FLOW.SIGNAL does not support priority")
+	if err := validateFlowMutationTimes(opt.NowMS, opt.RunAtMS); err != nil {
+		return err
 	}
 	return validateNamedValues(opt.NamedValues)
 }
 
 func validateStartAndClaimOptions(opt StartAndClaimOptions) error {
+	if err := validatePublicFlowID("flow id", opt.ID); err != nil {
+		return err
+	}
+	if err := validatePublicFlowType("flow type", opt.Type); err != nil {
+		return err
+	}
 	for _, field := range []struct{ name, value string }{
-		{name: "flow id", value: opt.ID},
-		{name: "flow type", value: opt.Type},
 		{name: "flow initial state", value: opt.InitialState},
 		{name: "flow worker", value: opt.Worker},
 	} {
@@ -89,33 +125,54 @@ func validateStartAndClaimOptions(opt StartAndClaimOptions) error {
 	if opt.InitialState == "running" {
 		return errors.New("flow running state is only entered by ClaimDue")
 	}
-	if opt.LeaseMS < 0 {
-		return errors.New("flow lease milliseconds must be positive")
+	for _, field := range []struct{ name, value string }{
+		{name: "flow parent_flow_id", value: opt.ParentFlowID},
+		{name: "flow root_flow_id", value: opt.RootFlowID},
+	} {
+		if err := validateOptionalPublicFlowIDReference(field.name, field.value); err != nil {
+			return err
+		}
+	}
+	if err := validateFlowReference("flow correlation_id", opt.CorrelationID); err != nil {
+		return err
 	}
 	if err := validateCreateMutationFields(opt.NowMS, 0, opt.Priority, opt.RetentionTTLMS); err != nil {
+		return err
+	}
+	leaseMS := opt.LeaseMS
+	if leaseMS == 0 {
+		leaseMS = 30_000
+	}
+	if err := validateFlowDeadline("flow lease milliseconds", opt.NowMS, leaseMS); err != nil {
+		return err
+	}
+	if _, err := canonicalFlowMaxActiveMS(opt.MaxActiveMS); err != nil {
+		return err
+	}
+	if err := validateNamedValues(NamedValues{Values: opt.Values, ValueRefs: opt.ValueRefs}); err != nil {
 		return err
 	}
 	return validateFlowMetadata(opt.Attributes, nil, nil, opt.StateMeta)
 }
 
 func validateExtendLease(id, leaseToken string, fencingToken, leaseMS int64) error {
-	if err := validateFlowMutationText("flow id", id); err != nil {
+	if err := validatePublicFlowID("flow id", id); err != nil {
 		return err
 	}
 	if err := validateFlowMutationText("flow lease token", leaseToken); err != nil {
 		return err
 	}
-	if fencingToken < 0 {
-		return errors.New("flow fencing token must be non-negative")
+	if err := validateFlowExactNonNegative("flow fencing token", fencingToken); err != nil {
+		return err
 	}
-	if leaseMS <= 0 {
-		return errors.New("flow lease milliseconds must be positive")
-	}
-	return nil
+	return validateFlowDeadline("flow lease milliseconds", 0, leaseMS)
 }
 
 func validateTransitionOptions(opt TransitionOptions) error {
 	if err := validateFlowTransitionFields(opt.ID, opt.FromState, opt.ToState, opt.FencingToken); err != nil {
+		return err
+	}
+	if err := validateFlowMutationText("flow lease token", opt.LeaseToken); err != nil {
 		return err
 	}
 	if err := validateFlowMutationTimes(opt.NowMS, opt.RunAtMS); err != nil {
@@ -137,11 +194,12 @@ func validateStepContinueOptions(opt StepContinueOptions) error {
 	if err := validateFlowMutationText("flow lease token", opt.LeaseToken); err != nil {
 		return err
 	}
-	if opt.LeaseMS < 0 {
-		return errors.New("flow lease milliseconds must be positive")
+	leaseMS := opt.LeaseMS
+	if leaseMS == 0 {
+		leaseMS = 30_000
 	}
-	if opt.NowMS < 0 {
-		return errors.New("flow now milliseconds must be non-negative")
+	if err := validateFlowDeadline("flow lease milliseconds", opt.NowMS, leaseMS); err != nil {
+		return err
 	}
 	if err := validateNamedValues(opt.NamedValues); err != nil {
 		return err
@@ -153,7 +211,7 @@ func validateCompleteOptions(opt CompleteOptions) error {
 	if err := validateClaimedMutation(opt.ID, opt.LeaseToken, opt.FencingToken, opt.NowMS); err != nil {
 		return err
 	}
-	if err := validateOptionalPositiveInt64("flow ttl milliseconds", opt.TTLMS); err != nil {
+	if err := validateOptionalFlowDeadline("flow ttl milliseconds", opt.NowMS, opt.TTLMS); err != nil {
 		return err
 	}
 	if err := validateNamedValues(opt.NamedValues); err != nil {
@@ -166,11 +224,8 @@ func validateRetryOptions(opt RetryOptions) error {
 	if err := validateClaimedMutation(opt.ID, opt.LeaseToken, opt.FencingToken, opt.NowMS); err != nil {
 		return err
 	}
-	if opt.RunAtMS < 0 {
-		return errors.New("flow run_at milliseconds must be non-negative")
-	}
-	if hasNamedValueMutation(opt.NamedValues) {
-		return errors.New("FLOW.RETRY does not support named value mutations")
+	if err := validateFlowExactNonNegative("flow run_at milliseconds", opt.RunAtMS); err != nil {
+		return err
 	}
 	return validateFlowMetadata(nil, opt.AttributesMerge, opt.AttributesDelete, opt.StateMeta)
 }
@@ -179,7 +234,7 @@ func validateFailOptions(opt FailOptions) error {
 	if err := validateClaimedMutation(opt.ID, opt.LeaseToken, opt.FencingToken, opt.NowMS); err != nil {
 		return err
 	}
-	if err := validateOptionalPositiveInt64("flow ttl milliseconds", opt.TTLMS); err != nil {
+	if err := validateOptionalFlowDeadline("flow ttl milliseconds", opt.NowMS, opt.TTLMS); err != nil {
 		return err
 	}
 	if err := validateNamedValues(opt.NamedValues); err != nil {
@@ -189,16 +244,16 @@ func validateFailOptions(opt FailOptions) error {
 }
 
 func validateCancelOptions(opt CancelOptions) error {
-	if err := validateFlowMutationText("flow id", opt.ID); err != nil {
+	if err := validatePublicFlowID("flow id", opt.ID); err != nil {
 		return err
 	}
-	if opt.FencingToken < 0 {
-		return errors.New("flow fencing token must be non-negative")
+	if err := validateFlowExactNonNegative("flow fencing token", opt.FencingToken); err != nil {
+		return err
 	}
-	if opt.NowMS < 0 {
-		return errors.New("flow now milliseconds must be non-negative")
+	if err := validateFlowExactNonNegative("flow now milliseconds", opt.NowMS); err != nil {
+		return err
 	}
-	if err := validateOptionalPositiveInt64("flow ttl milliseconds", opt.TTLMS); err != nil {
+	if err := validateOptionalFlowDeadline("flow ttl milliseconds", opt.NowMS, opt.TTLMS); err != nil {
 		return err
 	}
 	if err := validateNamedValues(opt.NamedValues); err != nil {
@@ -208,24 +263,23 @@ func validateCancelOptions(opt CancelOptions) error {
 }
 
 func validateRewindOptions(opt RewindOptions) error {
-	if err := validateFlowMutationText("flow id", opt.ID); err != nil {
+	if err := validatePublicFlowID("flow id", opt.ID); err != nil {
 		return err
 	}
 	if err := validateFlowMutationText("flow to_event", opt.ToEvent); err != nil {
 		return err
 	}
-	if opt.RunAtMS < 0 || opt.NowMS < 0 {
-		return errors.New("flow timestamps must be non-negative")
-	}
-	if opt.ReasonRef != "" {
-		return errors.New("FLOW.REWIND does not support reason_ref")
+	if err := validateFlowMutationTimes(opt.NowMS, opt.RunAtMS); err != nil {
+		return err
 	}
 	return nil
 }
 
 func validateFlowTransitionFields(id, fromState, toState string, fencingToken int64) error {
+	if err := validatePublicFlowID("flow id", id); err != nil {
+		return err
+	}
 	for _, field := range []struct{ name, value string }{
-		{name: "flow id", value: id},
 		{name: "flow from state", value: fromState},
 		{name: "flow to state", value: toState},
 	} {
@@ -236,33 +290,27 @@ func validateFlowTransitionFields(id, fromState, toState string, fencingToken in
 	if toState == "running" {
 		return errors.New("flow running state is only entered by ClaimDue")
 	}
-	if fencingToken < 0 {
-		return errors.New("flow fencing token must be non-negative")
-	}
-	return nil
+	return validateFlowExactNonNegative("flow fencing token", fencingToken)
 }
 
 func validateClaimedMutation(id, leaseToken string, fencingToken, nowMS int64) error {
-	if err := validateFlowMutationText("flow id", id); err != nil {
+	if err := validatePublicFlowID("flow id", id); err != nil {
 		return err
 	}
 	if err := validateFlowMutationText("flow lease token", leaseToken); err != nil {
 		return err
 	}
-	if fencingToken < 0 {
-		return errors.New("flow fencing token must be non-negative")
+	if err := validateFlowExactNonNegative("flow fencing token", fencingToken); err != nil {
+		return err
 	}
-	if nowMS < 0 {
-		return errors.New("flow now milliseconds must be non-negative")
-	}
-	return nil
+	return validateFlowExactNonNegative("flow now milliseconds", nowMS)
 }
 
 func validateFlowMutationTimes(nowMS, runAtMS int64) error {
-	if nowMS < 0 || runAtMS < 0 {
-		return errors.New("flow timestamps must be non-negative")
+	if err := validateFlowExactNonNegative("flow now milliseconds", nowMS); err != nil {
+		return err
 	}
-	return nil
+	return validateFlowExactNonNegative("flow run_at milliseconds", runAtMS)
 }
 
 func validateFlowMutationPriority(priority *int64) error {
@@ -304,9 +352,4 @@ func validateNamedValues(named NamedValues) error {
 		}
 	}
 	return nil
-}
-
-func hasNamedValueMutation(named NamedValues) bool {
-	return len(named.Values) != 0 || len(named.ValueRefs) != 0 ||
-		len(named.DropValues) != 0 || len(named.OverrideValues) != 0
 }

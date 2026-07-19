@@ -104,6 +104,9 @@ func (s *BloomFilterStore) Reserve(ctx context.Context, key string, errorRate fl
 	if err := validatePositiveInt64("BF.RESERVE", "capacity", capacity); err != nil {
 		return false, err
 	}
+	if err := validateBloomSizingV080(errorRate, capacity); err != nil {
+		return false, err
+	}
 	response, err := s.client.typedReply(ctx, "BF.RESERVE", key, errorRate, capacity)
 	return responseOK(response, err)
 }
@@ -130,6 +133,9 @@ type CuckooFilterStore struct{ client *Client }
 
 func (s *CuckooFilterStore) Reserve(ctx context.Context, key string, capacity int64) (bool, error) {
 	if err := validatePositiveInt64("CF.RESERVE", "capacity", capacity); err != nil {
+		return false, err
+	}
+	if err := validateCuckooCapacityV080(capacity); err != nil {
 		return false, err
 	}
 	response, err := s.client.typedReply(ctx, "CF.RESERVE", key, capacity)
@@ -163,6 +169,9 @@ func (s *CountMinSketchStore) InitByDim(ctx context.Context, key string, width, 
 	if err := validatePositiveInt64("CMS.INITBYDIM", "depth", depth); err != nil {
 		return false, err
 	}
+	if err := validateCMSDimensionsV080(width, depth); err != nil {
+		return false, err
+	}
 	response, err := s.client.typedReply(ctx, "CMS.INITBYDIM", key, width, depth)
 	return responseOK(response, err)
 }
@@ -179,23 +188,34 @@ func (s *CountMinSketchStore) IncrBy(ctx context.Context, key string, item any, 
 	return validateCMSIncrementResponse(value, err, 1)
 }
 
+// TopKStore exposes FerricStore's bounded TopK frequency-sketch commands.
 type TopKStore struct{ client *Client }
 
+// Reserve creates a TopK sketch with FerricStore's default width and depth.
 func (s *TopKStore) Reserve(ctx context.Context, key string, k int64) (bool, error) {
 	if err := validatePositiveInt64("TOPK.RESERVE", "k", k); err != nil {
+		return false, err
+	}
+	if err := validateTopKReserveV080(k, 8, 7); err != nil {
 		return false, err
 	}
 	response, err := s.client.typedReply(ctx, "TOPK.RESERVE", key, k)
 	return responseOK(response, err)
 }
 
+// Add increments each item by one and returns its evicted item, or nil when no
+// item was evicted.
 func (s *TopKStore) Add(ctx context.Context, key string, items ...any) ([]any, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
-	args := []any{"TOPK.ADD", key}
+	if err := validateProbabilisticBatch("TOPK.ADD", len(items)); err != nil {
+		return nil, err
+	}
+	args := make([]any, 0, 2+len(items))
+	args = append(args, "TOPK.ADD", key)
 	for _, item := range items {
-		encoded, err := s.client.encode(item)
+		encoded, err := s.client.encodeWithByteLimit("TOPK.ADD", "element", item, maxTopKElementBytesV080)
 		if err != nil {
 			return nil, err
 		}
@@ -212,6 +232,9 @@ func (s *TDigestStore) Create(ctx context.Context, key string, compression *int6
 		if err := validatePositiveInt64("TDIGEST.CREATE", "compression", *compression); err != nil {
 			return false, err
 		}
+		if err := validateTDigestCompressionV080("TDIGEST.CREATE", *compression); err != nil {
+			return false, err
+		}
 	}
 	args := []any{"TDIGEST.CREATE", key}
 	appendInt64Ptr(&args, "COMPRESSION", compression)
@@ -222,6 +245,9 @@ func (s *TDigestStore) Create(ctx context.Context, key string, compression *int6
 func (s *TDigestStore) Add(ctx context.Context, key string, values ...float64) (bool, error) {
 	if len(values) == 0 {
 		return false, fmt.Errorf("TDIGEST.ADD requires at least one value")
+	}
+	if err := validateProbabilisticBatch("TDIGEST.ADD", len(values)); err != nil {
+		return false, err
 	}
 	if err := validateFiniteValues("TDIGEST.ADD", values); err != nil {
 		return false, err

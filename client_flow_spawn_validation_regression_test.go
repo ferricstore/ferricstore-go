@@ -11,7 +11,7 @@ func TestSpawnChildrenRejectsInvalidOptionsBeforeCodecOrTransport(t *testing.T) 
 	negative := int64(-1)
 	base := func() SpawnChildrenOptions {
 		return SpawnChildrenOptions{
-			ParentID: "parent", PartitionKey: "tenant", FencingToken: &fencing,
+			ID: "parent", PartitionKey: "tenant", FencingToken: &fencing,
 			Success: "done", Failure: "failed",
 			Children: []ChildSpec{{ID: "child", Type: "order", Payload: "payload"}},
 		}
@@ -20,14 +20,14 @@ func TestSpawnChildrenRejectsInvalidOptionsBeforeCodecOrTransport(t *testing.T) 
 		name   string
 		mutate func(*SpawnChildrenOptions)
 	}{
-		{name: "missing parent", mutate: func(opt *SpawnChildrenOptions) { opt.ParentID = "" }},
+		{name: "missing parent", mutate: func(opt *SpawnChildrenOptions) { opt.ID = "" }},
 		{name: "missing partition", mutate: func(opt *SpawnChildrenOptions) { opt.PartitionKey = "" }},
 		{name: "missing fencing", mutate: func(opt *SpawnChildrenOptions) { opt.FencingToken = nil }},
 		{name: "negative fencing", mutate: func(opt *SpawnChildrenOptions) { opt.FencingToken = &negative }},
 		{name: "missing children", mutate: func(opt *SpawnChildrenOptions) { opt.Children = nil }},
 		{name: "missing child id", mutate: func(opt *SpawnChildrenOptions) { opt.Children[0].ID = "" }},
 		{name: "missing child type", mutate: func(opt *SpawnChildrenOptions) { opt.Children[0].Type = "" }},
-		{name: "child equals parent", mutate: func(opt *SpawnChildrenOptions) { opt.Children[0].ID = opt.ParentID }},
+		{name: "child equals parent", mutate: func(opt *SpawnChildrenOptions) { opt.Children[0].ID = opt.ID }},
 		{name: "duplicate child", mutate: func(opt *SpawnChildrenOptions) { opt.Children = append(opt.Children, opt.Children[0]) }},
 		{name: "reserved group", mutate: func(opt *SpawnChildrenOptions) { opt.GroupID = "__internal" }},
 		{name: "invalid wait", mutate: func(opt *SpawnChildrenOptions) { opt.Wait = "sometimes" }},
@@ -36,7 +36,7 @@ func TestSpawnChildrenRejectsInvalidOptionsBeforeCodecOrTransport(t *testing.T) 
 		{name: "missing success", mutate: func(opt *SpawnChildrenOptions) { opt.Success = "" }},
 		{name: "missing failure", mutate: func(opt *SpawnChildrenOptions) { opt.Failure = "" }},
 		{name: "negative now", mutate: func(opt *SpawnChildrenOptions) { opt.NowMS = -1 }},
-		{name: "unsupported attributes", mutate: func(opt *SpawnChildrenOptions) { opt.Children[0].Attributes = map[string]any{"tenant": "acme"} }},
+		{name: "reserved attribute", mutate: func(opt *SpawnChildrenOptions) { opt.Children[0].Attributes = map[string]any{"__tenant": "acme"} }},
 	}
 
 	for _, test := range tests {
@@ -63,7 +63,7 @@ func TestSpawnChildrenFillsParentPartitionForMixedChildren(t *testing.T) {
 	exec := &fakeExecutor{value: []byte("OK")}
 	client := NewClientWithExecutor(exec)
 	_, err := client.SpawnChildren(context.Background(), SpawnChildrenOptions{
-		ParentID: "parent", PartitionKey: "tenant:parent", FencingToken: Int64(1),
+		ID: "parent", PartitionKey: "tenant:parent", FencingToken: Int64(1),
 		Success: "done", Failure: "failed",
 		Children: []ChildSpec{
 			{ID: "child-a", Type: "order", Payload: []byte("a")},

@@ -51,7 +51,16 @@ func (t *RoutingTopology) RouteKey(key any) (RoutingRoute, error) {
 	if !isRouteKey(key) {
 		return RoutingRoute{}, fmt.Errorf("unsupported routing key type %T", key)
 	}
-	slot := routeSlotForKey(key)
+	if reservedInternalKey(key) {
+		return RoutingRoute{}, errReservedInternalKey
+	}
+	return t.routeSlot(routeSlotForKey(key))
+}
+
+func (t *RoutingTopology) routeSlot(slot int) (RoutingRoute, error) {
+	if slot < 0 || slot >= routeSlotCount {
+		return RoutingRoute{}, fmt.Errorf("invalid routing slot %d", slot)
+	}
 	route := t.slots[slot]
 	if route == nil {
 		return RoutingRoute{}, fmt.Errorf("no route for slot %d", slot)
@@ -97,15 +106,14 @@ const (
 	// CrossShardWriteReject prevents destructive commands from partially
 	// succeeding across shards. It is the default policy.
 	CrossShardWriteReject CrossShardWritePolicy = iota
-	// CrossShardWritePerShard permits independent per-shard execution (or
-	// per-slot execution when the server requires slot-local atomicity) and
+	// CrossShardWritePerShard permits independent per-shard execution and
 	// reports any mixed outcome as TopologyPartialWriteError.
 	CrossShardWritePerShard
 )
 
 // WithTopologyCrossShardWritePolicy explicitly opts into or rejects
 // per-shard execution of destructive multi-key commands such as DEL and
-// UNLINK, and per-slot execution of MSET.
+// UNLINK. Atomic commands such as MSET remain slot-local under every policy.
 func WithTopologyCrossShardWritePolicy(policy CrossShardWritePolicy) TopologyOption {
 	return func(opts *topologyNativeOptions) {
 		opts.crossShardWrites = policy
@@ -155,28 +163,27 @@ type TopologyNativeExecutor struct {
 	refreshMu sync.Mutex
 	eventWG   sync.WaitGroup
 
-	adapters              map[string]*NativeExecutor
-	retiringAdapters      map[*NativeExecutor]struct{}
-	closed                bool
-	endpointPolicy        EndpointPolicy
-	endpointValidator     func(RoutingEndpoint) bool
-	nativeOptions         []NativeOption
-	clientOptions         []ClientOption
-	seedEndpointKeys      map[string]struct{}
-	seedURLByKey          map[string]string
-	seedURLs              []string
-	lastSuccessfulURL     string
-	topologyVersion       uint64
-	refreshInFlight       *topologyRefresh
-	refreshSignals        chan struct{}
-	eventContext          context.Context
-	cancelEvents          context.CancelFunc
-	tls                   bool
-	topology              *RoutingTopology
-	trustedHosts          map[string]struct{}
-	warmConnections       bool
-	crossShardWrites      CrossShardWritePolicy
-	maxMSetPreflightBytes int
+	adapters          map[string]*NativeExecutor
+	retiringAdapters  map[*NativeExecutor]struct{}
+	closed            bool
+	endpointPolicy    EndpointPolicy
+	endpointValidator func(RoutingEndpoint) bool
+	nativeOptions     []NativeOption
+	clientOptions     []ClientOption
+	seedEndpointKeys  map[string]struct{}
+	seedURLByKey      map[string]string
+	seedURLs          []string
+	lastSuccessfulURL string
+	topologyVersion   uint64
+	refreshInFlight   *topologyRefresh
+	refreshSignals    chan struct{}
+	eventContext      context.Context
+	cancelEvents      context.CancelFunc
+	tls               bool
+	topology          *RoutingTopology
+	trustedHosts      map[string]struct{}
+	warmConnections   bool
+	crossShardWrites  CrossShardWritePolicy
 }
 
 type topologyRefresh struct {
@@ -241,22 +248,21 @@ func NewTopologyNativeExecutor(urls []string, opts ...TopologyOption) (*Topology
 		return nil, errTopologyTransportConflict
 	}
 	exec := &TopologyNativeExecutor{
-		adapters:              make(map[string]*NativeExecutor),
-		retiringAdapters:      make(map[*NativeExecutor]struct{}),
-		endpointPolicy:        options.endpointPolicy,
-		endpointValidator:     options.endpointValidator,
-		nativeOptions:         append([]NativeOption(nil), options.nativeOptions...),
-		clientOptions:         append([]ClientOption(nil), options.clientOptions...),
-		seedEndpointKeys:      seedEndpointKeys,
-		seedURLByKey:          seedURLByKey,
-		seedURLs:              seedURLs,
-		tls:                   tlsEnabled,
-		topology:              emptyRoutingTopology(),
-		trustedHosts:          normalizedStringSet(options.trustedHosts),
-		warmConnections:       options.warmConnections,
-		crossShardWrites:      options.crossShardWrites,
-		maxMSetPreflightBytes: nativeMaxFrameBytes,
-		refreshSignals:        make(chan struct{}, 1),
+		adapters:          make(map[string]*NativeExecutor),
+		retiringAdapters:  make(map[*NativeExecutor]struct{}),
+		endpointPolicy:    options.endpointPolicy,
+		endpointValidator: options.endpointValidator,
+		nativeOptions:     append([]NativeOption(nil), options.nativeOptions...),
+		clientOptions:     append([]ClientOption(nil), options.clientOptions...),
+		seedEndpointKeys:  seedEndpointKeys,
+		seedURLByKey:      seedURLByKey,
+		seedURLs:          seedURLs,
+		tls:               tlsEnabled,
+		topology:          emptyRoutingTopology(),
+		trustedHosts:      normalizedStringSet(options.trustedHosts),
+		warmConnections:   options.warmConnections,
+		crossShardWrites:  options.crossShardWrites,
+		refreshSignals:    make(chan struct{}, 1),
 	}
 	exec.eventContext, exec.cancelEvents = context.WithCancel(context.Background())
 	exec.nativeOptions = append(exec.nativeOptions, withNativeEventSubscription(
@@ -293,29 +299,37 @@ func (e *TopologyNativeExecutor) doUnlocked(ctx context.Context, args ...any) (a
 		return e.scatterCommandWithContext(ctx, name, keys, requestContext, hasRequestContext)
 	}
 	routeData, err := e.routeData(ctx, args)
-	if err == errTopologyCrossSlotMSet {
-		keys, values, requestContext, hasRequestContext, _, parseErr := topologyMSetCommand(args)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-		return e.scatterMSet(ctx, keys, values, requestContext, hasRequestContext)
-	}
 	if err != nil {
 		return nil, err
 	}
 	if routeData == nil {
 		return e.controlDo(ctx, args...)
 	}
+	var operationCtx context.Context
+	var cancel context.CancelFunc
 	for rerouteAttempt := 0; ; rerouteAttempt++ {
 		adapter, err := e.adapterForTopologyRoute(routeData.route, routeData.snapshot)
 		if err != nil {
 			return nil, err
 		}
-		value, err := adapter.doNativeCommandOnLane(ctx, routeData.command, routeData.route.LaneID)
-		if err == nil || !e.refreshAndCanRetrySafeReroute(ctx, err, rerouteAttempt) {
+		if operationCtx == nil {
+			operationCtx, cancel = nativeContextWithBudget(ctx, adapter.opts.Timeout, routeData.command.budget)
+			if cancel != nil {
+				defer cancel()
+			}
+		}
+		value, err := adapter.doNativeCommandOnLane(operationCtx, routeData.command, routeData.route.LaneID)
+		if err == nil {
 			return value, err
 		}
-		routeData, err = e.routeData(ctx, args)
+		retry, retryErr := e.refreshAndCanRetrySafeReroute(operationCtx, err, rerouteAttempt)
+		if retryErr != nil {
+			return nil, fmt.Errorf("%s retry backoff: %w", routeData.command.name, retryErr)
+		}
+		if !retry {
+			return value, err
+		}
+		routeData, err = e.routeData(operationCtx, args)
 		if err != nil {
 			return nil, err
 		}

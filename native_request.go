@@ -43,7 +43,9 @@ func (e *NativeExecutor) requestWithoutSessionGate(ctx context.Context, opcode u
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
-	for attempt := 0; ; attempt++ {
+	transportAttempts := 0
+	serverRetries := 0
+	for {
 		value, err, retryable := e.requestOnce(ctx, opcode, laneID, payload, flags, useDefaultWriteTimeout)
 		if err == nil {
 			return value, nil
@@ -52,12 +54,20 @@ func (e *NativeExecutor) requestWithoutSessionGate(ctx context.Context, opcode u
 			// GOAWAY is observed before this request is written. Waiting for the
 			// old connection to drain and resubmitting is safe and is not a
 			// transport-retry budget event.
-			attempt--
 			continue
 		}
-		if !retryable || attempt >= maxRetries || ctx.Err() != nil {
+		disposition := nativeServerRetryDisposition(err)
+		if disposition.busy && disposition.retryable && serverRetries < nativeMaxServerRetries && ctx.Err() == nil {
+			serverRetries++
+			if waitErr := waitNativeRetry(ctx, disposition.retryAfter); waitErr != nil {
+				return nil, waitErr
+			}
+			continue
+		}
+		if !retryable || transportAttempts >= maxRetries || ctx.Err() != nil {
 			return nil, err
 		}
+		transportAttempts++
 		e.mu.Lock()
 		closed := e.isClosed
 		e.mu.Unlock()

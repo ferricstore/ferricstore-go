@@ -176,57 +176,6 @@ func TestTopologyTypedKVDoesNotCacheAdapterCreatedFromStaleRoute(t *testing.T) {
 	}
 }
 
-func TestTopologyMSetPlansAllShardsFromOneSnapshot(t *testing.T) {
-	listenerA, framesA, _ := startRoutedNativeEndpoint(t, func(nativeFrame, int) any {
-		return []byte("OK")
-	})
-	listenerB, framesB, _ := startRoutedNativeEndpoint(t, func(nativeFrame, int) any {
-		return []byte("OK")
-	})
-	listenerC, framesC, _ := startRoutedNativeEndpoint(t, func(nativeFrame, int) any {
-		return []byte("OK")
-	})
-	exec, keyA, keyB := topologyExecutorForTwoEndpoints(
-		t,
-		listenerA,
-		listenerB,
-		WithTopologyCrossShardWritePolicy(CrossShardWritePerShard),
-	)
-	t.Cleanup(func() { _ = exec.Close() })
-
-	endpointC := topologyEndpointFromListener(t, listenerC)
-	var validations atomic.Int32
-	exec.endpointValidator = func(RoutingEndpoint) bool {
-		if validations.Add(1) == 2 {
-			if err := exec.installTopology(topologyForEndpoint(endpointC, 2)); err != nil {
-				t.Errorf("install replacement topology: %v", err)
-			}
-		}
-		return true
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := NewClientWithExecutor(exec).KV().MSet(ctx, map[string]any{
-		keyA: []byte("first"),
-		keyB: []byte("second"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	assertNoNativeFrame(t, framesA, "old first MSET topology endpoint")
-	assertNoNativeFrame(t, framesB, "old second MSET topology endpoint")
-	for request := 0; request < 2; request++ {
-		select {
-		case frame := <-framesC:
-			if frame.opcode != nativeOpMSet {
-				t.Fatalf("new MSET endpoint opcode = %d; want MSET", frame.opcode)
-			}
-		case <-ctx.Done():
-			t.Fatalf("new MSET endpoint received %d of 2 shard writes", request)
-		}
-	}
-}
-
 func TestTopologyRoutePlanningDoesNotRefreshForInvalidCommand(t *testing.T) {
 	exec := topologySnapshotTestExecutor(&RoutingTopology{})
 	t.Cleanup(func() { _ = exec.Close() })

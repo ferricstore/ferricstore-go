@@ -13,22 +13,19 @@ const (
 )
 
 func validatePolicyOptions(flowType string, opt PolicyOptions) error {
-	if err := validateRequiredText("flow type", flowType); err != nil {
+	if err := validatePublicFlowType("flow type", flowType); err != nil {
 		return err
+	}
+	if _, err := canonicalFlowMaxActiveMS(opt.MaxActiveMS); err != nil {
+		return err
+	}
+	for _, name := range opt.IndexedAttributes {
+		if _, err := validateFlowMetadataKey("attribute", name); err != nil {
+			return err
+		}
 	}
 	if len(opt.IndexedAttributes) > maxFlowIndexedAttrs {
 		return fmt.Errorf("flow indexed attributes support at most %d keys", maxFlowIndexedAttrs)
-	}
-	indexed := make(map[string]struct{}, len(opt.IndexedAttributes))
-	for _, name := range opt.IndexedAttributes {
-		name, err := validateFlowMetadataKey("attribute", name)
-		if err != nil {
-			return err
-		}
-		if _, exists := indexed[name]; exists {
-			return fmt.Errorf("flow indexed attribute %q is duplicated", name)
-		}
-		indexed[name] = struct{}{}
 	}
 	if opt.IndexedStateMeta != "" {
 		if _, err := validateFlowMetadataKey("state_meta", opt.IndexedStateMeta); err != nil {
@@ -44,6 +41,9 @@ func validatePolicyOptions(flowType string, opt PolicyOptions) error {
 		if err := validateRequiredText("flow state", state); err != nil {
 			return err
 		}
+		if state == "running" {
+			return errors.New("flow policy state cannot be running")
+		}
 		if _, exists := opt.StatePolicies[state]; exists {
 			return fmt.Errorf("flow state %q appears in both States and StatePolicies", state)
 		}
@@ -54,6 +54,9 @@ func validatePolicyOptions(flowType string, opt PolicyOptions) error {
 	for state, policy := range opt.StatePolicies {
 		if err := validateRequiredText("flow state", state); err != nil {
 			return err
+		}
+		if state == "running" {
+			return errors.New("flow policy state cannot be running")
 		}
 		if policy.Mode != "" {
 			if _, err := flowStateModeCommandToken(policy.Mode); err != nil {

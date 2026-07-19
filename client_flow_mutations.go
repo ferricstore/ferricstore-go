@@ -124,9 +124,6 @@ func (c *Client) Retry(ctx context.Context, opt RetryOptions) (*FlowRecord, erro
 	if opt.RunAtMS != 0 {
 		appendOpt(&args, "RUN_AT", opt.RunAtMS)
 	}
-	if err := c.appendNamedValues(&args, opt.NamedValues); err != nil {
-		return nil, err
-	}
 	appendAttributes(&args, nil, opt.AttributesMerge, opt.AttributesDelete)
 	appendStateMeta(&args, opt.StateMeta)
 	value, err := c.typedReplyOrQueue(ctx, !opt.ReturnRecord, args...)
@@ -194,7 +191,6 @@ func (c *Client) Rewind(ctx context.Context, opt RewindOptions) (*FlowRecord, er
 	if opt.RunAtMS != 0 {
 		appendOpt(&args, "RUN_AT", opt.RunAtMS)
 	}
-	appendOpt(&args, "REASON_REF", opt.ReasonRef)
 	value, err := c.typedReplyOrQueue(ctx, !opt.ReturnRecord, args...)
 	if err != nil || !opt.ReturnRecord {
 		return nil, err

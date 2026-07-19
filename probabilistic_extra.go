@@ -9,6 +9,9 @@ func (s *BloomFilterStore) MAdd(ctx context.Context, key string, elements ...any
 	if len(elements) == 0 {
 		return nil, nil
 	}
+	if err := validateProbabilisticBatch("BF.MADD", len(elements)); err != nil {
+		return nil, err
+	}
 	args := []any{"BF.MADD", key}
 	for _, element := range elements {
 		encoded, err := s.client.encode(element)
@@ -24,6 +27,9 @@ func (s *BloomFilterStore) MAdd(ctx context.Context, key string, elements ...any
 func (s *BloomFilterStore) MExists(ctx context.Context, key string, elements ...any) ([]bool, error) {
 	if len(elements) == 0 {
 		return nil, nil
+	}
+	if err := validateProbabilisticBatch("BF.MEXISTS", len(elements)); err != nil {
+		return nil, err
 	}
 	args := []any{"BF.MEXISTS", key}
 	for _, element := range elements {
@@ -72,6 +78,9 @@ func (s *CuckooFilterStore) MExists(ctx context.Context, key string, elements ..
 	if len(elements) == 0 {
 		return nil, nil
 	}
+	if err := validateProbabilisticBatch("CF.MEXISTS", len(elements)); err != nil {
+		return nil, err
+	}
 	args := []any{"CF.MEXISTS", key}
 	for _, element := range elements {
 		encoded, err := s.client.encode(element)
@@ -108,6 +117,9 @@ func (s *CountMinSketchStore) InitByProb(ctx context.Context, key string, errorR
 	if err := validateUnitInterval("CMS.INITBYPROB", "probability", probability, true); err != nil {
 		return false, err
 	}
+	if err := validateCMSProbabilityV080(errorRate, probability); err != nil {
+		return false, err
+	}
 	response, err := s.client.typedReply(ctx, "CMS.INITBYPROB", key, floatArg(errorRate), floatArg(probability))
 	return responseOK(response, err)
 }
@@ -120,6 +132,9 @@ type CMSIncrement struct {
 func (s *CountMinSketchStore) IncrByMany(ctx context.Context, key string, increments ...CMSIncrement) ([]int64, error) {
 	if len(increments) == 0 {
 		return nil, nil
+	}
+	if err := validateProbabilisticBatch("CMS.INCRBY", len(increments)); err != nil {
+		return nil, err
 	}
 	for _, increment := range increments {
 		if err := validatePositiveInt64("CMS.INCRBY", "count", increment.Count); err != nil {
@@ -141,6 +156,9 @@ func (s *CountMinSketchStore) IncrByMany(ctx context.Context, key string, increm
 func (s *CountMinSketchStore) Query(ctx context.Context, key string, items ...any) ([]int64, error) {
 	if len(items) == 0 {
 		return nil, nil
+	}
+	if err := validateProbabilisticBatch("CMS.QUERY", len(items)); err != nil {
+		return nil, err
 	}
 	args := []any{"CMS.QUERY", key}
 	for _, item := range items {
@@ -166,6 +184,9 @@ func (s *CountMinSketchStore) Merge(ctx context.Context, destination string, opt
 	if len(opt.Weights) != 0 && len(opt.Weights) != len(opt.Sources) {
 		return false, errors.New("CMS.MERGE requires one weight per source")
 	}
+	if err := validateCMSMergeSourceCountV080(len(opt.Sources)); err != nil {
+		return false, err
+	}
 	args := []any{"CMS.MERGE", destination, len(opt.Sources)}
 	for _, source := range opt.Sources {
 		args = append(args, source)
@@ -188,19 +209,22 @@ func (s *CountMinSketchStore) Info(ctx context.Context, key string) (map[string]
 	return probabilisticInfoResponse("CMS.INFO", value, cmsInfoSchema[:])
 }
 
+// TopKReserveOptions configures the optional width and depth accepted by
+// FerricStore 0.8. Width and Depth must either both be set or both be nil.
 type TopKReserveOptions struct {
+	// Width is the number of counters in each sketch row.
 	Width *int64
+	// Depth is the number of sketch rows.
 	Depth *int64
-	Decay *float64
 }
 
+// ReserveWithOptions creates a TopK sketch with an explicit width and depth.
 func (s *TopKStore) ReserveWithOptions(ctx context.Context, key string, k int64, opt TopKReserveOptions) (bool, error) {
 	if err := validatePositiveInt64("TOPK.RESERVE", "k", k); err != nil {
 		return false, err
 	}
-	customParameters := boolInt(opt.Width != nil) + boolInt(opt.Depth != nil) + boolInt(opt.Decay != nil)
-	if customParameters != 0 && customParameters != 3 {
-		return false, errors.New("TOPK.RESERVE custom width, depth, and decay must be provided together")
+	if (opt.Width == nil) != (opt.Depth == nil) {
+		return false, errors.New("TOPK.RESERVE custom width and depth must be provided together")
 	}
 	if opt.Width != nil {
 		if err := validatePositiveInt64("TOPK.RESERVE", "width", *opt.Width); err != nil {
@@ -209,37 +233,53 @@ func (s *TopKStore) ReserveWithOptions(ctx context.Context, key string, k int64,
 		if err := validatePositiveInt64("TOPK.RESERVE", "depth", *opt.Depth); err != nil {
 			return false, err
 		}
-		if err := validateUnitInterval("TOPK.RESERVE", "decay", *opt.Decay, false); err != nil {
-			return false, err
-		}
 	}
-	args := []any{"TOPK.RESERVE", key, k}
+	width, depth := int64(8), int64(7)
 	if opt.Width != nil {
-		args = append(args, *opt.Width)
-		args = append(args, *opt.Depth)
-		args = append(args, floatArg(*opt.Decay))
+		width, depth = *opt.Width, *opt.Depth
+	}
+	if err := validateTopKReserveV080(k, width, depth); err != nil {
+		return false, err
+	}
+	argumentCapacity := 3
+	if opt.Width != nil {
+		argumentCapacity = 5
+	}
+	args := make([]any, 0, argumentCapacity)
+	args = append(args, "TOPK.RESERVE", key, k)
+	if opt.Width != nil {
+		args = append(args, *opt.Width, *opt.Depth)
 	}
 	response, err := s.client.typedReply(ctx, args...)
 	return responseOK(response, err)
 }
 
+// TopKIncrement associates an item with a positive increment count.
 type TopKIncrement struct {
-	Item  any
+	// Item is encoded with the Client's configured Codec.
+	Item any
+	// Count is the positive amount added to Item's estimated frequency.
 	Count int64
 }
 
+// IncrBy applies item-specific increments and returns each evicted item, or nil
+// when that increment did not evict an item.
 func (s *TopKStore) IncrBy(ctx context.Context, key string, increments ...TopKIncrement) ([]any, error) {
 	if len(increments) == 0 {
 		return nil, nil
+	}
+	if err := validateProbabilisticBatch("TOPK.INCRBY", len(increments)); err != nil {
+		return nil, err
 	}
 	for _, increment := range increments {
 		if err := validatePositiveInt64("TOPK.INCRBY", "count", increment.Count); err != nil {
 			return nil, err
 		}
 	}
-	args := []any{"TOPK.INCRBY", key}
+	args := make([]any, 0, 2+2*len(increments))
+	args = append(args, "TOPK.INCRBY", key)
 	for _, increment := range increments {
-		encoded, err := s.client.encode(increment.Item)
+		encoded, err := s.client.encodeWithByteLimit("TOPK.INCRBY", "element", increment.Item, maxTopKElementBytesV080)
 		if err != nil {
 			return nil, err
 		}
@@ -249,13 +289,18 @@ func (s *TopKStore) IncrBy(ctx context.Context, key string, increments ...TopKIn
 	return decodeArrayExact(s.client.codec, value, err, len(increments), "TOPK.INCRBY")
 }
 
+// Query reports whether each requested item is currently tracked by the sketch.
 func (s *TopKStore) Query(ctx context.Context, key string, items ...any) ([]bool, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
-	args := []any{"TOPK.QUERY", key}
+	if err := validateProbabilisticBatch("TOPK.QUERY", len(items)); err != nil {
+		return nil, err
+	}
+	args := make([]any, 0, 2+len(items))
+	args = append(args, "TOPK.QUERY", key)
 	for _, item := range items {
-		encoded, err := s.client.encode(item)
+		encoded, err := s.client.encodeWithByteLimit("TOPK.QUERY", "element", item, maxTopKElementBytesV080)
 		if err != nil {
 			return nil, err
 		}
@@ -265,25 +310,30 @@ func (s *TopKStore) Query(ctx context.Context, key string, items ...any) ([]bool
 	return boolArrayExact(value, err, len(items), "TOPK.QUERY")
 }
 
-func (s *TopKStore) List(ctx context.Context, key string, withCount bool) (any, error) {
-	args := []any{"TOPK.LIST", key}
-	if withCount {
-		args = append(args, "WITHCOUNT")
-	}
-	value, err := s.client.typedReply(ctx, args...)
-	if withCount {
-		return decodeTopKListWithCount(s.client.codec, value, err)
-	}
-	return decodeArray(s.client.codec, value, err)
+// List returns the ranked TopK items without their estimated counts.
+func (s *TopKStore) List(ctx context.Context, key string) ([]any, error) {
+	value, err := s.client.typedReply(ctx, "TOPK.LIST", key)
+	return decodeTopKList(s.client.codec, value, err)
 }
 
+// ListWithCount returns the ranked TopK items and their estimated counts.
+func (s *TopKStore) ListWithCount(ctx context.Context, key string) ([]TopKEntry, error) {
+	value, err := s.client.typedReply(ctx, "TOPK.LIST", key, "WITHCOUNT")
+	return decodeTopKListWithCount(s.client.codec, value, err)
+}
+
+// Count returns the estimated frequency of each requested item.
 func (s *TopKStore) Count(ctx context.Context, key string, items ...any) ([]int64, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
-	args := []any{"TOPK.COUNT", key}
+	if err := validateProbabilisticBatch("TOPK.COUNT", len(items)); err != nil {
+		return nil, err
+	}
+	args := make([]any, 0, 2+len(items))
+	args = append(args, "TOPK.COUNT", key)
 	for _, item := range items {
-		encoded, err := s.client.encode(item)
+		encoded, err := s.client.encodeWithByteLimit("TOPK.COUNT", "element", item, maxTopKElementBytesV080)
 		if err != nil {
 			return nil, err
 		}
@@ -293,6 +343,7 @@ func (s *TopKStore) Count(ctx context.Context, key string, items ...any) ([]int6
 	return nonNegativeIntArrayExact(value, err, len(items), "TOPK.COUNT")
 }
 
+// Info returns the sketch's k, width, and depth fields.
 func (s *TopKStore) Info(ctx context.Context, key string) (map[string]any, error) {
 	value, err := s.client.typedReply(ctx, "TOPK.INFO", key)
 	if err != nil {
@@ -326,6 +377,9 @@ func (s *TDigestStore) ByRank(ctx context.Context, key string, ranks ...int64) (
 	if len(ranks) == 0 {
 		return nil, nil
 	}
+	if err := validateProbabilisticBatch("TDIGEST.BYRANK", len(ranks)); err != nil {
+		return nil, err
+	}
 	args := []any{"TDIGEST.BYRANK", key}
 	for _, rank := range ranks {
 		args = append(args, rank)
@@ -337,6 +391,9 @@ func (s *TDigestStore) ByRank(ctx context.Context, key string, ranks ...int64) (
 func (s *TDigestStore) ByRevRank(ctx context.Context, key string, ranks ...int64) ([]float64, error) {
 	if len(ranks) == 0 {
 		return nil, nil
+	}
+	if err := validateProbabilisticBatch("TDIGEST.BYREVRANK", len(ranks)); err != nil {
+		return nil, err
 	}
 	args := []any{"TDIGEST.BYREVRANK", key}
 	for _, rank := range ranks {
@@ -385,8 +442,14 @@ func (s *TDigestStore) Merge(ctx context.Context, destination string, opt TDiges
 	if len(opt.Sources) == 0 {
 		return false, errors.New("TDIGEST.MERGE requires at least one source")
 	}
+	if err := validateTDigestMergeSourceCountV080(len(opt.Sources)); err != nil {
+		return false, err
+	}
 	if opt.Compression != nil {
 		if err := validatePositiveInt64("TDIGEST.MERGE", "compression", *opt.Compression); err != nil {
+			return false, err
+		}
+		if err := validateTDigestCompressionV080("TDIGEST.MERGE", *opt.Compression); err != nil {
 			return false, err
 		}
 	}
@@ -406,6 +469,9 @@ func (s *TDigestStore) tdigestFloatQuery(ctx context.Context, command, key strin
 	if len(values) == 0 {
 		return nil, nil
 	}
+	if err := validateProbabilisticBatch(command, len(values)); err != nil {
+		return nil, err
+	}
 	if command == "TDIGEST.QUANTILE" {
 		if err := validateQuantiles(command, values); err != nil {
 			return nil, err
@@ -424,6 +490,9 @@ func (s *TDigestStore) tdigestFloatQuery(ctx context.Context, command, key strin
 func (s *TDigestStore) tdigestIntQuery(ctx context.Context, command, key string, values ...float64) ([]int64, error) {
 	if len(values) == 0 {
 		return nil, nil
+	}
+	if err := validateProbabilisticBatch(command, len(values)); err != nil {
+		return nil, err
 	}
 	if err := validateFiniteValues(command, values); err != nil {
 		return nil, err

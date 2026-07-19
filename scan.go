@@ -8,14 +8,25 @@ import (
 	"strings"
 )
 
+const (
+	maxScanCountV080                  = 10_000
+	maxCollectionCursorTokenBytesV080 = 87_384
+)
+
 func normalizeScanCursor(cursor any, collection bool) (any, error) {
 	switch value := cursor.(type) {
 	case string:
+		if collection && len(value) > maxCollectionCursorTokenBytesV080 {
+			return nil, errors.New("collection scan cursor exceeds FerricStore 0.8 maximum size")
+		}
 		if collection && value != "0" && !strings.HasPrefix(value, "~") {
 			return nil, errors.New("collection scan cursor must be 0 or a server cursor token")
 		}
 		return value, nil
 	case []byte:
+		if collection && len(value) > maxCollectionCursorTokenBytesV080 {
+			return nil, errors.New("collection scan cursor exceeds FerricStore 0.8 maximum size")
+		}
 		if collection && string(value) != "0" && !strings.HasPrefix(string(value), "~") {
 			return nil, errors.New("collection scan cursor must be 0 or a server cursor token")
 		}
@@ -44,8 +55,13 @@ func normalizeScanCursor(cursor any, collection bool) (any, error) {
 }
 
 func validateScanCount(count *int) error {
-	if count != nil && *count <= 0 {
-		return errors.New("scan count must be positive")
+	if count != nil {
+		if *count <= 0 {
+			return errors.New("scan count must be positive")
+		}
+		if *count > maxScanCountV080 {
+			return fmt.Errorf("scan count exceeds FerricStore 0.8 maximum of %d", maxScanCountV080)
+		}
 	}
 	return nil
 }

@@ -415,6 +415,12 @@ func validateClaimedItemResponse(item ClaimedItem) error {
 	if item.FencingToken < 0 {
 		return errors.New("decode claimed item fencing_token: value must be non-negative")
 	}
+	if item.FencingToken > maxFlowExactIntegerV080 {
+		return fmt.Errorf(
+			"decode claimed item fencing_token: exceeds FerricStore 0.8 exact integer maximum %d",
+			maxFlowExactIntegerV080,
+		)
+	}
 	return nil
 }
 

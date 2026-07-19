@@ -48,7 +48,7 @@ func validateStreamTrimOptions(opt StreamTrimOptions) error {
 		return errors.New("XTRIM MAXLEN must be non-negative")
 	}
 	if opt.MinID != "" {
-		if _, _, ok := parseStreamIDText(opt.MinID); !ok {
+		if !validStreamIDOrPartialText(opt.MinID) {
 			return fmt.Errorf("XTRIM MINID has invalid stream ID %q", opt.MinID)
 		}
 	}

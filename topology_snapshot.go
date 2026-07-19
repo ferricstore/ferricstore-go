@@ -53,7 +53,13 @@ func (e *TopologyNativeExecutor) routeInSnapshot(
 	if snapshot.topology == nil {
 		return RoutingRoute{}, errors.New("ferricstore topology is empty")
 	}
-	route, err := snapshot.topology.RouteKey(key)
+	var route RoutingRoute
+	var err error
+	if slot, ok := key.(topologyRouteSlot); ok {
+		route, err = snapshot.topology.routeSlot(int(slot))
+	} else {
+		route, err = snapshot.topology.RouteKey(key)
+	}
 	if err != nil {
 		return RoutingRoute{}, err
 	}
@@ -105,11 +111,9 @@ func (e *TopologyNativeExecutor) routeDataInSnapshot(
 	if err != nil {
 		return nil, err
 	}
+	command.budget = blockingCommandBudget(args)
 	if keys, requiresSameSlot := sameSlotCommandKeys(args); requiresSameSlot {
 		if _, sameSlot := singleShardKey(keys); !sameSlot {
-			if command.name == "MSET" {
-				return nil, errTopologyCrossSlotMSet
-			}
 			return nil, fmt.Errorf("%s requires keys in one hash slot", command.name)
 		}
 	}

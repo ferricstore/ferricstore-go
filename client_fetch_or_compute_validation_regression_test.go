@@ -20,7 +20,7 @@ func TestFetchOrComputeRejectsInvalidTTLsBeforeCodecOrTransport(t *testing.T) {
 		{
 			name: "negative result TTL",
 			call: func(client *Client) error {
-				_, err := client.FetchOrComputeResult(context.Background(), "key", "value", -1)
+				_, err := client.FetchOrComputeResult(context.Background(), "key", "token", "value", -1)
 				return err
 			},
 		},

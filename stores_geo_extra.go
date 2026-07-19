@@ -88,14 +88,14 @@ func (s *GeoStore) Search(ctx context.Context, key string, opt GeoSearchOptions)
 }
 
 func (s *GeoStore) SearchStore(ctx context.Context, destination, source string, opt GeoSearchOptions, storeDist bool) (int64, error) {
+	if storeDist {
+		return 0, errors.New("GEOSEARCHSTORE STOREDIST is unsupported by FerricStore 0.8")
+	}
 	args, err := s.geoSearchArgs("GEOSEARCHSTORE", destination, opt)
 	if err != nil {
 		return 0, err
 	}
 	args = append(args[:2], append([]any{source}, args[2:]...)...)
-	if storeDist {
-		args = append(args, "STOREDIST")
-	}
 	value, err := s.client.typedReply(ctx, args...)
 	stored, err := nonNegativeInt64Response("GEOSEARCHSTORE", value, err)
 	if err != nil {

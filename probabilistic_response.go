@@ -22,27 +22,84 @@ func validateCMSIncrementResponse(value any, err error, expected int) (any, erro
 	return value, nil
 }
 
-func decodeTopKListWithCount(codec Codec, value any, err error) (any, error) {
+// TopKEntry is one item returned by TOPK.LIST WITHCOUNT.
+type TopKEntry struct {
+	// Item is decoded with the Client's configured Codec.
+	Item any
+	// Count is the item's non-negative estimated frequency.
+	Count int64
+}
+
+func decodeTopKList(codec Codec, value any, err error) ([]any, error) {
+	if streamCodecIsRaw(codec) {
+		return topKListItems(value, err)
+	}
+	items, err := topKListItems(value, err)
 	if err != nil {
 		return nil, err
 	}
-	items, err := exactArrayItems(value, nil, -1, "TOPK.LIST")
+	return decodeArrayExactWithCodec(codec, items, nil, -1, "TOPK.LIST")
+}
+
+func topKListItems(value any, err error) ([]any, error) {
+	items, err := exactArrayItems(value, err, -1, "TOPK.LIST")
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTopKListItems(items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func validateTopKListItems(items []any) error {
+	for index, item := range items {
+		switch item.(type) {
+		case string, []byte:
+		default:
+			return fmt.Errorf("TOPK.LIST item %d is not binary", index)
+		}
+	}
+	return nil
+}
+
+func decodeTopKListWithCount(codec Codec, value any, err error) ([]TopKEntry, error) {
+	if streamCodecIsRaw(codec) {
+		return decodeTopKEntries(nil, value, err)
+	}
+	return decodeTopKEntries(codec, value, err)
+}
+
+func decodeTopKEntries(codec Codec, value any, err error) ([]TopKEntry, error) {
+	items, err := exactArrayItems(value, err, -1, "TOPK.LIST WITHCOUNT")
 	if err != nil {
 		return nil, err
 	}
 	if len(items)%2 != 0 {
 		return nil, fmt.Errorf("TOPK.LIST returned odd item/count array length %d", len(items))
 	}
-	for index := 1; index < len(items); index += 2 {
-		count, err := responseInt64(items[index], nil)
+	entries := make([]TopKEntry, len(items)/2)
+	for index := range entries {
+		item := items[index*2]
+		if err := validateStringResponse(item, nil); err != nil {
+			return nil, fmt.Errorf("TOPK.LIST item %d: %w", index, err)
+		}
+		if codec != nil {
+			item, err = decodeValue(codec, item)
+			if err != nil {
+				return nil, fmt.Errorf("decode TOPK.LIST item %d: %w", index, err)
+			}
+		}
+		count, err := responseInt64(items[index*2+1], nil)
 		if err != nil {
-			return nil, fmt.Errorf("TOPK.LIST count %d: %w", index/2, err)
+			return nil, fmt.Errorf("TOPK.LIST count %d: %w", index, err)
 		}
 		if count < 0 {
 			return nil, fmt.Errorf("TOPK.LIST returned negative count %d", count)
 		}
+		entries[index] = TopKEntry{Item: item, Count: count}
 	}
-	return decodeAlternatingCollectionValues(codec, items, nil, 0, "TOPK.LIST")
+	return entries, nil
 }
 
 func tdigestRankArray(value any, err error, expected int, command string) ([]int64, error) {

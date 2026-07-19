@@ -14,15 +14,15 @@ func TestNativeClaimDuePreservesMultipleStateFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command.opcode != nativeOpCommandExec || command.flags != 0 {
-		t.Fatalf("multiple-state CLAIM_DUE used lossy compact opcode=%d flags=%#x", command.opcode, command.flags)
+	if command.opcode != nativeOpFlowClaimDue || command.flags != 0 {
+		t.Fatalf("multiple-state CLAIM_DUE did not use typed opcode=%d flags=%#x", command.opcode, command.flags)
 	}
 	payload, ok := command.payload.(map[string]any)
 	if !ok {
-		t.Fatalf("fallback payload = %T; want command map", command.payload)
+		t.Fatalf("typed payload = %T; want command map", command.payload)
 	}
-	args, ok := payload["args"].([]any)
-	if !ok || !containsSubsequence(args, []any{"STATE", "ready", "STATE", "retry"}) {
-		t.Fatalf("fallback CLAIM_DUE args = %#v; want both state filters", payload["args"])
+	states, ok := payload["states"].([]string)
+	if !ok || len(states) != 2 || states[0] != "ready" || states[1] != "retry" {
+		t.Fatalf("typed CLAIM_DUE states = %#v; want both state filters", payload["states"])
 	}
 }

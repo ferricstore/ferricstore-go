@@ -121,7 +121,6 @@ func TestGeoCardinalityResponsesRejectImpossibleCounts(t *testing.T) {
 func TestProbabilisticCommandsRejectInvalidArgumentsBeforeCodecOrTransport(t *testing.T) {
 	zero := int64(0)
 	nan := math.NaN()
-	half := 0.5
 	tests := []struct {
 		name string
 		call func(*Client) error
@@ -167,11 +166,7 @@ func TestProbabilisticCommandsRejectInvalidArgumentsBeforeCodecOrTransport(t *te
 			return err
 		}},
 		{name: "TOPK.RESERVE width", call: func(client *Client) error {
-			_, err := client.TopK().ReserveWithOptions(context.Background(), "key", 1, TopKReserveOptions{Width: &zero, Depth: Int64(1), Decay: &half})
-			return err
-		}},
-		{name: "TOPK.RESERVE decay", call: func(client *Client) error {
-			_, err := client.TopK().ReserveWithOptions(context.Background(), "key", 1, TopKReserveOptions{Width: Int64(1), Depth: Int64(1), Decay: &nan})
+			_, err := client.TopK().ReserveWithOptions(context.Background(), "key", 1, TopKReserveOptions{Width: &zero, Depth: Int64(1)})
 			return err
 		}},
 		{name: "TOPK.INCRBY count", call: func(client *Client) error {
@@ -252,11 +247,11 @@ func TestTopKListDecodesItemsWithoutDecodingCounts(t *testing.T) {
 		[]any{payload, int64(3)},
 	}}
 	store := NewClientWithExecutor(exec, WithCodec(JSONCodec{})).TopK()
-	plain, err := store.List(context.Background(), "key", false)
+	plain, err := store.List(context.Background(), "key")
 	if err != nil {
 		t.Fatal(err)
 	}
-	withCount, err := store.List(context.Background(), "key", true)
+	withCount, err := store.ListWithCount(context.Background(), "key")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +259,7 @@ func TestTopKListDecodesItemsWithoutDecodingCounts(t *testing.T) {
 	if !reflect.DeepEqual(plain, []any{decoded}) {
 		t.Fatalf("TOPK.LIST = %#v", plain)
 	}
-	if !reflect.DeepEqual(withCount, []any{decoded, int64(3)}) {
+	if !reflect.DeepEqual(withCount, []TopKEntry{{Item: decoded, Count: 3}}) {
 		t.Fatalf("TOPK.LIST WITHCOUNT = %#v", withCount)
 	}
 }

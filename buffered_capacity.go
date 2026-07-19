@@ -2,10 +2,10 @@ package ferricstore
 
 import "reflect"
 
-// bufferedCommandRetainedSize conservatively estimates memory retained by a
-// snapshotted command. The snapshotter has already rejected cycles, so this
-// pass needs no visited map and does not allocate for common scalar/byte
-// commands. Conservative container overhead keeps the byte limit fail-closed.
+// bufferedCommandRetainedSize conservatively estimates memory a command
+// snapshot would retain before that snapshot allocates. The depth bound keeps
+// cyclic inputs finite, and the snapshotter subsequently rejects those inputs.
+// Conservative container overhead keeps the byte limit fail-closed.
 func bufferedCommandRetainedSize(args []any, limit int) (int, bool) {
 	if limit <= 0 {
 		return 0, false

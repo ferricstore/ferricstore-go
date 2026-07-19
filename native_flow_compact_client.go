@@ -170,13 +170,15 @@ func createManyCompactEligible(opt CreateManyOptions) bool {
 	return opt.Priority == nil &&
 		opt.Idempotent == nil &&
 		opt.RetentionTTLMS == nil &&
+		opt.MaxActiveMS == nil &&
 		len(opt.Values) == 0 &&
 		len(opt.ValueRefs) == 0 &&
 		len(opt.Attributes) == 0 &&
 		!anyCreateItemAttributes(opt.Items) &&
 		len(opt.StateMeta) == 0 &&
 		!anyCreateItemStateMeta(opt.Items) &&
-		!anyCreateItemValues(opt.Items)
+		!anyCreateItemValues(opt.Items) &&
+		!anyCreateItemMaxActive(opt.Items)
 }
 
 func claimDueCompactEligible(opt ClaimDueOptions) bool {
@@ -185,8 +187,7 @@ func claimDueCompactEligible(opt ClaimDueOptions) bool {
 		len(opt.States) == 0 &&
 		opt.Payload == nil &&
 		opt.PayloadMaxBytes == nil &&
-		len(opt.Values) == 0 &&
-		opt.ValueMaxBytes == nil
+		len(opt.Values) == 0
 }
 
 func nativeBlockingMillisecondsBudget(blockMS int64) nativeRequestBudget {

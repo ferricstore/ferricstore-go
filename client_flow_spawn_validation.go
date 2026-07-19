@@ -24,8 +24,10 @@ func normalizeSpawnChildrenOptions(opt SpawnChildrenOptions) SpawnChildrenOption
 }
 
 func validateSpawnChildrenOptions(opt SpawnChildrenOptions) error {
+	if err := validatePublicFlowID("flow parent id", opt.ID); err != nil {
+		return err
+	}
 	for _, field := range []struct{ name, value string }{
-		{name: "flow parent id", value: opt.ParentID},
 		{name: "flow partition key", value: opt.PartitionKey},
 		{name: "flow group id", value: opt.GroupID},
 		{name: "flow child success state", value: opt.Success},
@@ -38,11 +40,17 @@ func validateSpawnChildrenOptions(opt SpawnChildrenOptions) error {
 	if strings.HasPrefix(opt.GroupID, "__") {
 		return errors.New("flow group id is reserved")
 	}
-	if opt.FencingToken == nil || *opt.FencingToken < 0 {
+	if opt.FencingToken == nil {
 		return errors.New("flow fencing token must be a non-negative integer")
 	}
-	if opt.NowMS < 0 {
-		return errors.New("flow now milliseconds must be non-negative")
+	if err := validateFlowExactNonNegative("flow fencing token", *opt.FencingToken); err != nil {
+		return err
+	}
+	if err := validateFlowExactNonNegative("flow now milliseconds", opt.NowMS); err != nil {
+		return err
+	}
+	if _, err := canonicalFlowMaxActiveMS(opt.MaxActiveMS); err != nil {
+		return err
 	}
 	if len(opt.Children) == 0 {
 		return errors.New("flow children must be a non-empty list")
@@ -66,23 +74,26 @@ func validateSpawnChildrenOptions(opt SpawnChildrenOptions) error {
 	}
 	seen := make(map[string]struct{}, len(opt.Children))
 	for _, child := range opt.Children {
-		if err := validateFlowMutationText("flow child id", child.ID); err != nil {
+		if err := validatePublicFlowID("flow child id", child.ID); err != nil {
 			return err
 		}
-		if err := validateFlowMutationText("flow child type", child.Type); err != nil {
+		if err := validatePublicFlowType("flow child type", child.Type); err != nil {
 			return err
 		}
-		if child.ID == opt.ParentID {
+		if child.ID == opt.ID {
 			return errors.New("flow child id must differ from parent id")
 		}
 		if _, exists := seen[child.ID]; exists {
 			return errors.New("flow duplicate id in batch")
 		}
 		seen[child.ID] = struct{}{}
-		if len(child.Attributes) != 0 {
-			return errors.New("SpawnChildren does not support per-child attributes")
+		if _, err := canonicalFlowMaxActiveMS(child.MaxActiveMS); err != nil {
+			return err
 		}
 		if err := validateNamedValues(NamedValues{Values: child.Values, ValueRefs: child.ValueRefs}); err != nil {
+			return err
+		}
+		if err := validateFlowMetadata(child.Attributes, nil, nil, child.StateMeta); err != nil {
 			return err
 		}
 	}

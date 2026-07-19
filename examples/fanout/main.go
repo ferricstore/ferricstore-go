@@ -41,7 +41,7 @@ func main() {
 
 	job := jobs[0]
 	_, err = client.SpawnChildren(ctx, ferricstore.SpawnChildrenOptions{
-		ParentID:     job.ID,
+		ID:           job.ID,
 		PartitionKey: job.PartitionKey,
 		LeaseToken:   job.LeaseToken,
 		FencingToken: ferricstore.Int64(job.FencingToken),

@@ -3,7 +3,6 @@ package ferricstore
 import (
 	"errors"
 	"fmt"
-	"strconv"
 )
 
 func mapResult(value any, err error) (map[string]any, error) {
@@ -18,48 +17,14 @@ func statsCount(stats map[string]any) (int64, error) {
 	if !ok {
 		return 0, errors.New("FLOW.STATS response missing count")
 	}
-	switch v := value.(type) {
-	case int64:
-		return v, nil
-	case int:
-		return int64(v), nil
-	case int32:
-		return int64(v), nil
-	case int16:
-		return int64(v), nil
-	case int8:
-		return int64(v), nil
-	case uint64:
-		if v > uint64(^uint64(0)>>1) {
-			return 0, errors.New("FLOW.STATS response count overflows int64")
-		}
-		return int64(v), nil
-	case uint:
-		if uint64(v) > uint64(^uint64(0)>>1) {
-			return 0, errors.New("FLOW.STATS response count overflows int64")
-		}
-		return int64(v), nil
-	case uint32:
-		return int64(v), nil
-	case uint16:
-		return int64(v), nil
-	case uint8:
-		return int64(v), nil
-	case string:
-		count, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return 0, errors.New("FLOW.STATS response count is not numeric")
-		}
-		return count, nil
-	case []byte:
-		count, err := strconv.ParseInt(string(v), 10, 64)
-		if err != nil {
-			return 0, errors.New("FLOW.STATS response count is not numeric")
-		}
-		return count, nil
-	default:
+	count, err := responseInt64(value, nil)
+	if err != nil {
 		return 0, errors.New("FLOW.STATS response count is not numeric")
 	}
+	if count < 0 {
+		return 0, fmt.Errorf("FLOW.STATS response count must be non-negative, got %d", count)
+	}
+	return count, nil
 }
 
 func mapList(value any, err error) ([]map[string]any, error) {
@@ -118,21 +83,6 @@ func adminString(m map[string]any, field string) (string, error) {
 		return "", fmt.Errorf("decode admin field %s: %w", field, err)
 	}
 	return parsed, nil
-}
-
-func adminStringOrInt(m map[string]any, field string) (string, error) {
-	value, exists := m[field]
-	if !exists || value == nil {
-		return "", nil
-	}
-	if parsed, err := responseString(value, nil); err == nil {
-		return parsed, nil
-	}
-	parsed, err := responseInt64(value, nil)
-	if err != nil {
-		return "", fmt.Errorf("decode admin field %s: expected string or integer response", field)
-	}
-	return strconv.FormatInt(parsed, 10), nil
 }
 
 func adminStringList(value any, field string) ([]string, error) {

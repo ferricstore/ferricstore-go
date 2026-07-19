@@ -96,6 +96,11 @@ func putFlowPolicyOption(payload, policy, retry, retention map[string]any, token
 			return errors.New("ERR flow indexed_state_meta is type-level only")
 		}
 		payload["indexed_state_meta"] = value
+	case "MAX_ACTIVE_MS":
+		if stateScoped {
+			return errors.New("ERR flow max_active_ms is type-level only")
+		}
+		payload["max_active_ms"] = value
 	case "MODE":
 		if !stateScoped {
 			return errors.New("ERR flow state mode is state-level only")
@@ -175,6 +180,13 @@ func appendFlowAdminOptions(payload map[string]any, args []any) (bool, error) {
 			}
 			field := flowAdminListField(token)
 			payload[field] = appendNativeListValue(payload[field], asString(args[idx+1]))
+			idx += 2
+			continue
+		case "IF_STATE":
+			if idx+1 >= len(args) {
+				return false, errors.New("FLOW.SIGNAL IF_STATE requires a state")
+			}
+			payload["if_state"] = appendNativeListValue(payload["if_state"], asString(args[idx+1]))
 			idx += 2
 			continue
 		}
@@ -260,13 +272,15 @@ func flowAdminNativeField(token string) (string, bool) {
 		return "result", true
 	case "STATES":
 		return "states", true
+	case "SIGNAL":
+		return "signal", true
 	case "STEPS":
 		return "steps", true
 	case "ITEMS":
 		return "items", true
-	case "PARENT_FLOW_ID", "PARENT_ID":
+	case "PARENT_FLOW_ID":
 		return "parent_flow_id", true
-	case "ROOT_FLOW_ID", "ROOT_ID":
+	case "ROOT_FLOW_ID":
 		return "root_flow_id", true
 	case "CORRELATION_ID":
 		return "correlation_id", true
@@ -280,6 +294,8 @@ func flowAdminNativeField(token string) (string, bool) {
 		return "independent", true
 	case "RETENTION_TTL_MS":
 		return "retention_ttl_ms", true
+	case "MAX_ACTIVE_MS":
+		return "max_active_ms", true
 	case "INDEXED_ATTRIBUTES":
 		return "indexed_attributes", true
 	case "INDEXED_STATE_META":
@@ -290,6 +306,20 @@ func flowAdminNativeField(token string) (string, bool) {
 		return "from_ms", true
 	case "TO_MS":
 		return "to_ms", true
+	case "FROM_EVENT":
+		return "from_event", true
+	case "FROM_VERSION":
+		return "from_version", true
+	case "TO_VERSION":
+		return "to_version", true
+	case "EVENT":
+		return "event", true
+	case "VALUES":
+		return "values", true
+	case "PAYLOAD_MAX_BYTES", "MAXBYTES":
+		return "payload_max_bytes", true
+	case "OLDER_THAN", "OLDER_THAN_MS":
+		return "older_than_ms", true
 	case "REV":
 		return "rev", true
 	case "TERMINAL_ONLY":
@@ -298,6 +328,16 @@ func flowAdminNativeField(token string) (string, bool) {
 		return "include_cold", true
 	case "CONSISTENT_PROJECTION":
 		return "consistent_projection", true
+	case "RECLAIM_EXPIRED":
+		return "reclaim_expired", true
+	case "RECLAIM_RATIO":
+		return "reclaim_ratio", true
+	case "BLOCK", "BLOCK_MS":
+		return "block_ms", true
+	case "RETURN":
+		return "return", true
+	case "FULL":
+		return "full", true
 	case "PARTITION":
 		return "partition_key", true
 	case "LEASE_TOKEN":
@@ -310,8 +350,10 @@ func flowAdminNativeField(token string) (string, bool) {
 		return "effect_type", true
 	case "OPERATION_DIGEST":
 		return "operation_digest", true
-	case "IDEMPOTENCY_KEY":
+	case "IDEMPOTENCY", "IDEMPOTENCY_KEY":
 		return "idempotency_key", true
+	case "TRANSITION_TO":
+		return "transition_to", true
 	case "GOVERNANCE_SCOPE":
 		return "governance_scope", true
 	case "EXTERNAL_ID":
@@ -376,6 +418,16 @@ func flowAdminNativeField(token string) (string, bool) {
 		return "shard_id", true
 	case "TTL_MS":
 		return "ttl_ms", true
+	case "TTL":
+		return "ttl_ms", true
+	case "RETENTION_TTL":
+		return "retention_ttl_ms", true
+	case "TO_EVENT":
+		return "to_event", true
+	case "EXPECT_STATE":
+		return "expect_state", true
+	case "REASON_REF":
+		return "reason_ref", true
 	case "GROUP":
 		return "group_id", true
 	case "WAIT":
@@ -403,7 +455,8 @@ func flowAdminNativeField(token string) (string, bool) {
 
 func flowAdminNativeValue(key string, value any) (any, bool) {
 	switch key {
-	case "rev", "terminal_only", "include_cold", "consistent_projection", "idempotent", "independent", "override":
+	case "rev", "terminal_only", "include_cold", "consistent_projection", "idempotent", "independent", "override",
+		"full", "values", "reclaim_expired":
 		if value == nil {
 			return nil, false
 		}

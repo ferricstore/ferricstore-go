@@ -70,14 +70,16 @@ func TestFlowManyMutationsRejectInvalidItemsBeforeCodecOrTransport(t *testing.T)
 			_, err := client.TransitionMany(context.Background(), TransitionManyOptions{PartitionKey: "tenant", FromState: "queued", ToState: "ready", Items: items, Payload: "payload"})
 			return err
 		}},
+		{name: "transition missing lease", call: func(client *Client) error {
+			items := fenced()
+			items[0].LeaseToken = ""
+			_, err := client.TransitionMany(context.Background(), TransitionManyOptions{PartitionKey: "tenant", FromState: "queued", ToState: "ready", Items: items, Payload: "payload"})
+			return err
+		}},
 		{name: "retry missing lease", call: func(client *Client) error {
 			items := claimed()
 			items[0].LeaseToken = ""
 			_, err := client.RetryMany(context.Background(), RetryManyOptions{PartitionKey: "tenant", Items: items, Payload: "payload"})
-			return err
-		}},
-		{name: "retry unsupported named values", call: func(client *Client) error {
-			_, err := client.RetryMany(context.Background(), RetryManyOptions{PartitionKey: "tenant", Items: claimed(), Payload: "payload", NamedValues: NamedValues{Values: map[string]any{"v": "payload"}}})
 			return err
 		}},
 		{name: "fail negative now", call: func(client *Client) error {
@@ -115,11 +117,8 @@ func TestFlowManyMutationsRejectInvalidItemsBeforeCodecOrTransport(t *testing.T)
 	}
 }
 
-func TestCreateManyRejectsServerBatchLimitBeforeTransport(t *testing.T) {
-	items := make([]CreateItem, 1001)
-	for index := range items {
-		items[index] = CreateItem{ID: string(rune(index + 1))}
-	}
+func TestCreateManyRejectsServerHardBatchCeilingBeforeTransport(t *testing.T) {
+	items := make([]CreateItem, maxFlowMutationBatchItemsV080+1)
 	exec := &fakeExecutor{value: []byte("OK")}
 	_, err := NewClientWithExecutor(exec).CreateMany(context.Background(), CreateManyOptions{Type: "order", Items: items})
 	if err == nil {

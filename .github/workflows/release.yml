@@ -58,7 +58,7 @@ jobs:
     name: Released Server Integration
     runs-on: ubuntu-latest
     env:
-      FERRICSTORE_IMAGE: ghcr.io/ferricstore/ferricstore:0.7.5
+      FERRICSTORE_IMAGE: ghcr.io/ferricstore/ferricstore:0.8.0
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6

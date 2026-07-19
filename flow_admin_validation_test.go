@@ -168,10 +168,6 @@ func TestGovernanceCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 			_, err := c.ApprovalList(ctx, ApprovalListOptions{Scope: "  "})
 			return err
 		}},
-		{name: "approval list conflicting scope filters", call: func(c *Client) error {
-			_, err := c.ApprovalList(ctx, ApprovalListOptions{Scope: "scope", PartitionKey: "partition"})
-			return err
-		}},
 		{name: "overview non-positive limit", call: func(c *Client) error {
 			_, err := c.GovernanceOverview(ctx, ApprovalListOptions{Limit: Int(0)})
 			return err
@@ -208,10 +204,6 @@ func TestGovernanceCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 			_, err := c.BudgetList(ctx, "  ", "", nil)
 			return err
 		}},
-		{name: "budget list conflicting scope filters", call: func(c *Client) error {
-			_, err := c.BudgetList(ctx, "scope", "partition", nil)
-			return err
-		}},
 		{name: "limit negative shard", call: func(c *Client) error {
 			_, err := c.LimitLease(ctx, "scope", -1, 1, 1, nil, nil)
 			return err
@@ -228,8 +220,8 @@ func TestGovernanceCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 			_, err := c.LimitLease(ctx, "scope", 0, 1, 2, nil, Int64(math.MaxInt64))
 			return err
 		}},
-		{name: "limit release zero amount", call: func(c *Client) error {
-			_, err := c.LimitRelease(ctx, "scope", 0, 0)
+		{name: "limit release empty reservation ids", call: func(c *Client) error {
+			_, err := c.LimitRelease(ctx, "scope", LimitReleaseOptions{ShardID: 0})
 			return err
 		}},
 		{name: "limit get empty scope", call: func(c *Client) error {
@@ -242,10 +234,6 @@ func TestGovernanceCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 		}},
 		{name: "limit list blank partition", call: func(c *Client) error {
 			_, err := c.LimitList(ctx, "", "  ", nil, nil)
-			return err
-		}},
-		{name: "limit list conflicting scope filters", call: func(c *Client) error {
-			_, err := c.LimitList(ctx, "scope", "partition", nil, nil)
 			return err
 		}},
 	}
@@ -262,9 +250,9 @@ func TestFlowAdminReadCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T
 		{name: "stats invalid count", call: func(c *Client) error { _, err := c.Stats(ctx, "type", ReadOptions{Count: Int(0)}); return err }},
 		{name: "count empty state", call: func(c *Client) error { _, err := c.CountByState(ctx, "type", "", ReadOptions{}); return err }},
 		{name: "attribute empty name", call: func(c *Client) error { _, err := c.AttributeValues(ctx, "type", "", ReadOptions{}); return err }},
-		{name: "ledger empty id", call: func(c *Client) error { _, err := c.GovernanceLedger(ctx, "", ReadOptions{}); return err }},
+		{name: "ledger empty id", call: func(c *Client) error { _, err := c.GovernanceLedger(ctx, "", GovernanceLedgerOptions{}); return err }},
 		{name: "ledger negative time", call: func(c *Client) error {
-			_, err := c.GovernanceLedger(ctx, "flow", ReadOptions{FromMS: Int64(-1)})
+			_, err := c.GovernanceLedger(ctx, "flow", GovernanceLedgerOptions{FromMS: Int64(-1)})
 			return err
 		}},
 	}

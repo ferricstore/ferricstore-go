@@ -20,14 +20,20 @@ func TestIntegrationSecurityBootstrap(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client := NewClient(integrationAddress(), WithNativeOptions(WithNativeHeartbeat(0, 0)))
-	defer client.Close()
+	bootstrap := NewClient(integrationAddress(), WithNativeOptions(WithNativeHeartbeat(0, 0)))
+	setAdminErr := bootstrap.ACLSetUser(ctx, "default", "on", ">"+securityAdminPassword(t), "+@all", "~*")
+	_ = bootstrap.Close()
 
+	client := NewClient(integrationAddress(), WithNativeOptions(
+		WithNativeCredentials("default", securityAdminPassword(t)),
+		WithNativeHeartbeat(0, 0),
+	))
+	defer client.Close()
+	if _, err := client.Ping(ctx); err != nil {
+		t.Fatalf("authenticate after default-user bootstrap (SETUSER error %v): %v", setAdminErr, err)
+	}
 	if err := client.ACLSetUser(ctx, securityReaderUser(t),
 		"on", ">"+securityReaderPassword(t), "-@all", "+PING", "+GET", "+SET", "~secure:allowed:*"); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.ACLSetUser(ctx, "default", "on", ">"+securityAdminPassword(t), "+@all", "~*"); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.ACLSave(ctx); err != nil {

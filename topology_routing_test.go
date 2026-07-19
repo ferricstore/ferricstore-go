@@ -25,7 +25,7 @@ func TestTopologyRoutingKeyMatchesLatestSDKs(t *testing.T) {
 	if key, ok := routingKeyForCommand([]any{"FLOW.SEARCH", "TYPE", "order"}); ok || key != nil {
 		t.Fatalf("unpartitioned FLOW.SEARCH should stay on control, got key=%#v ok=%v", key, ok)
 	}
-	if key, ok := routingKeyForCommand([]any{"FLOW.SEARCH", "TYPE", "order", "PARTITION", "tenant:1"}); !ok || asString(key) != testFlowPartitionRouteKey("tenant:1") {
+	if key, ok := routingKeyForCommand([]any{"FLOW.SEARCH", "TYPE", "order", "PARTITION", "tenant:1"}); !ok || key != testFlowPartitionRouteSlot("tenant:1") {
 		t.Fatalf("partitioned FLOW.SEARCH should route by partition, got key=%#v ok=%v", key, ok)
 	}
 
@@ -92,22 +92,24 @@ func BenchmarkTopologyRouteGrouping1000(b *testing.B) {
 	}
 }
 
-func TestTopologyFlowRoutingMatchesServerStorageKeys(t *testing.T) {
+func TestTopologyFlowRoutingMatchesServerStorageSlots(t *testing.T) {
 	tests := []struct {
 		name string
 		args []any
-		want string
+		want any
 		ok   bool
 	}{
-		{name: "state id", args: []any{"FLOW.GET", "job-1"}, want: testFlowAutoIDRouteKey("job-1"), ok: true},
-		{name: "explicit partition", args: []any{"FLOW.COMPLETE", "job-1", "lease-1", "PARTITION", "tenant:1"}, want: testFlowPartitionRouteKey("tenant:1"), ok: true},
-		{name: "many explicit partition", args: []any{"FLOW.CREATE_MANY", "tenant:1", "TYPE", "email", "ITEMS"}, want: testFlowPartitionRouteKey("tenant:1"), ok: true},
-		{name: "claim global", args: []any{"FLOW.CLAIM_DUE", "email", "PARTITION", "GLOBAL"}, want: "f:{f}:route", ok: true},
+		{name: "state id", args: []any{"FLOW.GET", "job-1"}, want: testFlowAutoIDRouteSlot("job-1"), ok: true},
+		{name: "explicit partition", args: []any{"FLOW.COMPLETE", "job-1", "lease-1", "PARTITION", "tenant:1"}, want: testFlowPartitionRouteSlot("tenant:1"), ok: true},
+		{name: "effect id", args: []any{"FLOW.EFFECT.GET", "job-1", "EFFECT_KEY", "email"}, want: testFlowAutoIDRouteSlot("job-1"), ok: true},
+		{name: "effect explicit partition", args: []any{"FLOW.EFFECT.GET", "job-1", "EFFECT_KEY", "email", "PARTITION", "tenant:1"}, want: testFlowPartitionRouteSlot("tenant:1"), ok: true},
+		{name: "many explicit partition", args: []any{"FLOW.CREATE_MANY", "tenant:1", "TYPE", "email", "ITEMS"}, want: testFlowPartitionRouteSlot("tenant:1"), ok: true},
+		{name: "claim global", args: []any{"FLOW.CLAIM_DUE", "email", "PARTITION", "GLOBAL"}, want: testFlowTagRouteSlot("f"), ok: true},
 		{name: "claim auto", args: []any{"FLOW.CLAIM_DUE", "email", "PARTITION", "AUTO"}},
 		{name: "claim any", args: []any{"FLOW.CLAIM_DUE", "email", "PARTITION", "ANY"}},
-		{name: "approval id", args: []any{"FLOW.APPROVAL.GET", "approval-1"}, want: testFlowPartitionRouteKey("approval-1"), ok: true},
-		{name: "governance scope", args: []any{"FLOW.BUDGET.GET", "tenant:acme"}, want: testFlowPartitionRouteKey("tenant:acme"), ok: true},
-		{name: "value owner id", args: []any{"FLOW.VALUE.PUT", []byte("value"), "OWNER_FLOW_ID", "job-1", "NAME", "result"}, want: testFlowAutoIDRouteKey("job-1"), ok: true},
+		{name: "approval id", args: []any{"FLOW.APPROVAL.GET", "approval-1"}, want: testFlowPartitionRouteSlot("approval-1"), ok: true},
+		{name: "governance scope", args: []any{"FLOW.BUDGET.GET", "tenant:acme"}, want: testFlowPartitionRouteSlot("tenant:acme"), ok: true},
+		{name: "value owner id", args: []any{"FLOW.VALUE.PUT", []byte("value"), "OWNER_FLOW_ID", "job-1", "NAME", "result"}, want: testFlowAutoIDRouteSlot("job-1"), ok: true},
 		{name: "value refs", args: []any{"FLOW.VALUE.MGET", "f:{fa:1}:v:a", "f:{fa:1}:v:b", "MAX_BYTES", 10}, want: "f:{fa:1}:v:a", ok: true},
 		{name: "schedule get", args: []any{"FLOW.SCHEDULE.GET", "schedule-1"}},
 		{name: "schedule create", args: []any{"FLOW.SCHEDULE.CREATE", "schedule-1", "KIND", "interval"}},
@@ -117,8 +119,8 @@ func TestTopologyFlowRoutingMatchesServerStorageKeys(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			key, ok := routingKeyForCommand(tc.args)
-			if ok != tc.ok || (tc.ok && asString(key) != tc.want) || (!tc.ok && key != nil) {
-				t.Fatalf("routing key = %#v, ok=%v; want %q, ok=%v", key, ok, tc.want, tc.ok)
+			if ok != tc.ok || (tc.ok && key != tc.want) || (!tc.ok && key != nil) {
+				t.Fatalf("routing target = %#v, ok=%v; want %#v, ok=%v", key, ok, tc.want, tc.ok)
 			}
 		})
 	}
@@ -149,14 +151,18 @@ func TestTopologyRoutingRejectsOverflowingCountsWithoutPanicking(t *testing.T) {
 	}
 }
 
-func testFlowPartitionRouteKey(partition string) string {
+func testFlowPartitionRouteSlot(partition string) topologyRouteSlot {
 	digest := sha256.Sum256([]byte(partition))
-	return "f:{f:" + base64.RawURLEncoding.EncodeToString(digest[:]) + "}:route"
+	return testFlowTagRouteSlot("f:" + base64.RawURLEncoding.EncodeToString(digest[:]))
 }
 
-func testFlowAutoIDRouteKey(id string) string {
+func testFlowAutoIDRouteSlot(id string) topologyRouteSlot {
 	bucket := crc32.ChecksumIEEE([]byte(id)) & 0xff
-	return "f:{fa:" + strconv.FormatUint(uint64(bucket), 10) + "}:route"
+	return testFlowTagRouteSlot("fa:" + strconv.FormatUint(uint64(bucket), 10))
+}
+
+func testFlowTagRouteSlot(tag string) topologyRouteSlot {
+	return topologyRouteSlot(int(routeCRC32(tag)) & routeSlotMask)
 }
 
 func TestTopologyRoutingKeyCoversPublicNestedAndFallbackCommands(t *testing.T) {

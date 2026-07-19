@@ -24,6 +24,9 @@ func (c *Client) Watch(ctx context.Context, keys ...string) error {
 	if len(keys) == 0 {
 		return errors.New("WATCH requires at least one key")
 	}
+	if err := validatePublicStringKeys(keys); err != nil {
+		return err
+	}
 	if err := c.legacyGate.lock(ctx); err != nil {
 		return err
 	}
@@ -279,6 +282,9 @@ func (c *Client) TransactionForKeys(ctx context.Context, keys ...string) (*Trans
 	if len(keys) == 0 {
 		return nil, errors.New("TransactionForKeys requires at least one key")
 	}
+	if err := validatePublicStringKeys(keys); err != nil {
+		return nil, err
+	}
 	keyArgs := make([]any, len(keys))
 	for index, key := range keys {
 		keyArgs[index] = key
@@ -295,6 +301,10 @@ func (c *Client) transactionForKeys(ctx context.Context, keys []any) (*Transacti
 	if c.legacy != nil && c.legacyMulti {
 		c.legacyMu.Unlock()
 		return nil, errors.New("cannot start an explicit transaction while legacy MULTI is active")
+	}
+	if c.legacy != nil && len(keys) > 0 {
+		c.legacyMu.Unlock()
+		return nil, errors.New("TransactionForKeys cannot replace an active WATCH session; use Transaction")
 	}
 	session := c.legacy
 	c.setLegacySessionLocked(nil)
@@ -376,6 +386,9 @@ func (t *Transaction) Command(ctx context.Context, args ...any) (any, error) {
 	if name, mutates := connectionStateMutationCommand(args); mutates {
 		return nil, fmt.Errorf("%s is connection-local and cannot be queued inside a transaction", name)
 	}
+	if err := validateV080TransactionCommand(args); err != nil {
+		return nil, err
+	}
 	if err := t.opMu.LockContext(ctx); err != nil {
 		return nil, err
 	}
@@ -386,6 +399,10 @@ func (t *Transaction) Command(ctx context.Context, args ...any) (any, error) {
 	payload := affineCommandArgs(args)
 	value, err := t.session.Do(ctx, payload...)
 	if err != nil {
+		var routeErr *topologyTransactionRouteError
+		if errors.As(err, &routeErr) {
+			return nil, err
+		}
 		t.abort(err)
 		return nil, err
 	}
