@@ -1,0 +1,31 @@
+diff --git a/apidiff/compatibility.go b/apidiff/compatibility.go
+index e83fdc3..8908cb2 100644
+--- a/apidiff/compatibility.go
++++ b/apidiff/compatibility.go
+@@ -6,0 +7 @@ import (
++	"sort"
+@@ -246 +247,2 @@ func (d *differ) checkCompatibleObjectSets(obj objectWithSide, old, new map[stri
+-	for name, oldo := range old {
++	for _, name := range sortedObjectNames(old) {
++		oldo := old[name]
+@@ -254 +256 @@ func (d *differ) checkCompatibleObjectSets(obj objectWithSide, old, new map[stri
+-	for name := range new {
++	for _, name := range sortedObjectNames(new) {
+@@ -292 +294,2 @@ func (d *differ) checkMethodSet(otn *types.TypeName, oldt, newt types.Type, addc
+-	for name, oldMethod := range oldMethodSet {
++	for _, name := range sortedObjectNames(oldMethodSet) {
++		oldMethod := oldMethodSet[name]
+@@ -322 +325,2 @@ func (d *differ) checkMethodSet(otn *types.TypeName, oldt, newt types.Type, addc
+-	for name, newMethod := range newMethodSet {
++	for _, name := range sortedObjectNames(newMethodSet) {
++		newMethod := newMethodSet[name]
+@@ -345,0 +350,9 @@ func exportedMethods(t types.Type) map[string]types.Object {
++func sortedObjectNames(objects map[string]types.Object) []string {
++	names := make([]string, 0, len(objects))
++	for name := range objects {
++		names = append(names, name)
++	}
++	sort.Strings(names)
++	return names
++}
++
