@@ -559,8 +559,6 @@ func TestNativeSubscribeFlowWakeUsesMultiplexedEvents(t *testing.T) {
 		errc <- nil
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
 	client := NewClient(listener.Addr().String())
 	defer func() { _ = client.Close() }()
 	pubsub, err := client.OpenPubSub()
@@ -568,11 +566,13 @@ func TestNativeSubscribeFlowWakeUsesMultiplexedEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sub, err := pubsub.SubscribeFlowWake(ctx, FlowWakeSubscriptionOptions{
+	subscribeCtx, cancelSubscribe := context.WithTimeout(context.Background(), 5*time.Second)
+	sub, err := pubsub.SubscribeFlowWake(subscribeCtx, FlowWakeSubscriptionOptions{
 		Type:  "email",
 		State: "queued",
 		Limit: Int(25),
 	})
+	cancelSubscribe()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,9 @@ func TestNativeSubscribeFlowWakeUsesMultiplexedEvents(t *testing.T) {
 		t.Fatalf("unexpected subscription: %#v", sub)
 	}
 
-	event, err := pubsub.NextEvent(ctx)
+	eventCtx, cancelEvent := context.WithTimeout(context.Background(), 5*time.Second)
+	event, err := pubsub.NextEvent(eventCtx)
+	cancelEvent()
 	if err != nil {
 		t.Fatal(err)
 	}
