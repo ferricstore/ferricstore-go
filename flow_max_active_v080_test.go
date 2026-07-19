@@ -33,7 +33,8 @@ func TestV080FlowMutationsCarryMaxActiveMS(t *testing.T) {
 			},
 		},
 		{
-			name: "type policy",
+			name:     "type policy",
+			response: policySnapshotResponse("order", 1, map[string]any{"max_active_ms": int64(900)}),
 			call: func(client *Client) error {
 				_, err := client.SetPolicy(context.Background(), "order", PolicyOptions{
 					MaxActiveMS: int64(900),
@@ -212,7 +213,7 @@ func TestV080MaxActiveMSAcceptsNamedInfinityString(t *testing.T) {
 }
 
 func TestV080PolicyInfinityRejectsStructuredResponseThatOmitsMaxActiveMS(t *testing.T) {
-	exec := &fakeExecutor{value: map[string]any{"type": "order"}}
+	exec := &fakeExecutor{value: map[string]any{"type": "order", "generation": int64(1)}}
 	_, err := NewClientWithExecutor(exec).SetPolicy(context.Background(), "order", PolicyOptions{
 		MaxActiveMS: FlowMaxActiveInfinity,
 	})

@@ -322,6 +322,10 @@ func (e *TopologyNativeExecutor) doUnlocked(ctx context.Context, args ...any) (a
 		if err == nil {
 			return value, err
 		}
+		if routeData.command.replayPolicy == nativeReplayNever {
+			e.refreshRouteWithoutReplay(operationCtx, err, rerouteAttempt)
+			return value, err
+		}
 		retry, retryErr := e.refreshAndCanRetrySafeReroute(operationCtx, err, rerouteAttempt)
 		if retryErr != nil {
 			return nil, fmt.Errorf("%s retry backoff: %w", routeData.command.name, retryErr)

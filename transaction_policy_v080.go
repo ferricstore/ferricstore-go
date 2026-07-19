@@ -10,7 +10,7 @@ import (
 // are rejected by the server. Mirror that stable contract before touching the
 // affine connection so a local mistake does not poison the active MULTI.
 func validateV080TransactionCommand(args []any) error {
-	args = topologyCommandArgs(args)
+	args = canonicalCommandArgs(args)
 	if len(args) == 0 {
 		return fmt.Errorf("empty command is not supported inside FerricStore 0.8 transactions")
 	}

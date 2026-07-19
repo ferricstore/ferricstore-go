@@ -74,7 +74,9 @@ func TestWorkflowWorkerRejectsDuplicateStatesBeforeClaiming(t *testing.T) {
 
 func TestWorkflowRemembersInstalledFIFOPoliciesForWorkerValidation(t *testing.T) {
 	exec := &fakeExecutor{values: []any{
-		[]byte("OK"),
+		policySnapshotResponse("order", 1, map[string]any{"states": map[string]any{
+			"ready": map[string]any{"mode": "fifo"},
+		}}),
 		[]any{map[string]any{
 			"id": "flow-1", "type": "order", "state": "created",
 			"partition_key": "tenant:1", "lease_token": "lease-1", "fencing_token": int64(9),
@@ -119,7 +121,9 @@ func TestWorkflowInstallPolicyRejectsConflictingStatePolicySources(t *testing.T)
 }
 
 func TestWorkflowInstallPolicyAllowsEquivalentStatePolicySources(t *testing.T) {
-	exec := &fakeExecutor{value: []byte("OK")}
+	exec := &fakeExecutor{value: policySnapshotResponse("order", 1, map[string]any{"states": map[string]any{
+		"ready": map[string]any{"mode": "fifo", "retry": map[string]any{"max_retries": int64(2)}},
+	}})}
 	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "ready")
 	policy := FlowStatePolicy{Mode: FlowStateModeFIFO, Retry: &RetryPolicy{MaxRetries: 2}}
 	workflow.State("ready", func(context.Context, WorkflowContext) (Outcome, error) {
@@ -173,7 +177,9 @@ func TestWorkflowRejectsMultiplePoliciesForOneStateBeforeIO(t *testing.T) {
 }
 
 func TestWorkflowSnapshotsRegisteredStatePolicy(t *testing.T) {
-	exec := &fakeExecutor{value: []byte("OK")}
+	exec := &fakeExecutor{value: policySnapshotResponse("order", 1, map[string]any{"states": map[string]any{
+		"ready": map[string]any{"mode": "fifo", "retry": map[string]any{"max_retries": int64(2)}},
+	}})}
 	retry := &RetryPolicy{MaxRetries: 2}
 	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "ready")
 	workflow.State("ready", func(context.Context, WorkflowContext) (Outcome, error) {
@@ -190,7 +196,9 @@ func TestWorkflowSnapshotsRegisteredStatePolicy(t *testing.T) {
 }
 
 func TestWorkflowSnapshotsSuccessfullyInstalledPolicy(t *testing.T) {
-	exec := &fakeExecutor{value: []byte("OK")}
+	exec := &fakeExecutor{value: policySnapshotResponse("order", 1, map[string]any{"states": map[string]any{
+		"ready": map[string]any{"mode": "fifo", "retry": map[string]any{"max_retries": int64(2)}},
+	}})}
 	retry := &RetryPolicy{MaxRetries: 2}
 	workflow := NewWorkflowClient(NewClientWithExecutor(exec)).Workflow("order", "ready")
 	if _, err := workflow.InstallPolicy(context.Background(), PolicyOptions{

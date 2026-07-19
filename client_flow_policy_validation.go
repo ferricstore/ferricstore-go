@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	maxFlowPolicyRetries = 1_000
-	maxFlowRetryDelayMS  = int64(2_592_000_000)
-	maxFlowIndexedAttrs  = 3
+	maxFlowPolicyRetries    = 1_000
+	maxFlowRetryDelayMS     = int64(2_592_000_000)
+	maxFlowIndexedAttrs     = 3
+	maxFlowPolicyGeneration = int64(9_007_199_254_740_991)
 )
 
 func validatePolicyOptions(flowType string, opt PolicyOptions) error {
@@ -18,6 +19,13 @@ func validatePolicyOptions(flowType string, opt PolicyOptions) error {
 	}
 	if _, err := canonicalFlowMaxActiveMS(opt.MaxActiveMS); err != nil {
 		return err
+	}
+	if opt.ExpectedGeneration != nil &&
+		(*opt.ExpectedGeneration < 0 || *opt.ExpectedGeneration > maxFlowPolicyGeneration) {
+		return fmt.Errorf(
+			"flow policy expected_generation must be between 0 and %d",
+			maxFlowPolicyGeneration,
+		)
 	}
 	for _, name := range opt.IndexedAttributes {
 		if _, err := validateFlowMetadataKey("attribute", name); err != nil {

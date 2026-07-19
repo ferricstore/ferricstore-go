@@ -148,9 +148,9 @@ func (w *Workflow) recordConfigurationError(err error) {
 	}
 }
 
-func (w *Workflow) InstallPolicy(ctx context.Context, opt PolicyOptions) (any, error) {
+func (w *Workflow) InstallPolicy(ctx context.Context, opt PolicyOptions) (PolicySnapshot, error) {
 	if w.configurationErr != nil {
-		return nil, w.configurationErr
+		return PolicySnapshot{}, w.configurationErr
 	}
 	statePolicies := make(map[string]FlowStatePolicy, len(opt.StatePolicies)+len(w.statePolicies))
 	for state, policy := range opt.StatePolicies {
@@ -158,17 +158,20 @@ func (w *Workflow) InstallPolicy(ctx context.Context, opt PolicyOptions) (any, e
 	}
 	for state, policy := range w.statePolicies {
 		if _, exists := opt.States[state]; exists {
-			return nil, fmt.Errorf("flow state %q appears in both States and workflow state policies", state)
+			return PolicySnapshot{}, fmt.Errorf("flow state %q appears in both States and workflow state policies", state)
 		}
 		if existing, exists := statePolicies[state]; exists && !equivalentFlowStatePolicy(existing, policy) {
-			return nil, fmt.Errorf("flow state %q has conflicting PolicyOptions and workflow state policies", state)
+			return PolicySnapshot{}, fmt.Errorf("flow state %q has conflicting PolicyOptions and workflow state policies", state)
 		}
 		statePolicies[state] = policy
 	}
 	opt.StatePolicies = statePolicies
+	if opt.Replace == nil {
+		opt.Replace = Bool(true)
+	}
 	value, err := w.client.SetPolicy(ctx, w.Type, opt)
 	if err != nil {
-		return nil, err
+		return PolicySnapshot{}, err
 	}
 	// Keep the successfully installed snapshot so worker-side checks use the
 	// same FIFO/PARALLEL policy that was sent to the server.
@@ -203,6 +206,14 @@ func equivalentFlowStatePolicy(left, right FlowStatePolicy) bool {
 func (w *Workflow) Start(ctx context.Context, id string, payload any, opt CreateOptions) (*FlowRecord, error) {
 	if w.configurationErr != nil {
 		return nil, w.configurationErr
+	}
+	if isFIFOStatePolicy(w.statePolicies[w.InitialState]) {
+		if opt.PartitionKey == "" {
+			return nil, errors.New("partition key is required for fifo state")
+		}
+		if opt.Priority != nil {
+			return nil, errors.New("priority is not supported for fifo state")
+		}
 	}
 	opt.ID = id
 	opt.Type = w.Type
@@ -357,8 +368,13 @@ func (w *WorkflowWorker) apply(
 	}
 	switch value := outcome.(type) {
 	case TransitionResult:
-		if value.Priority != nil && isFIFOStatePolicy(w.workflow.statePolicies[value.ToState]) {
-			return errors.New("priority is not supported for fifo state")
+		if isFIFOStatePolicy(w.workflow.statePolicies[value.ToState]) {
+			if job.PartitionKey == "" {
+				return errors.New("partition key is required for fifo state")
+			}
+			if value.Priority != nil {
+				return errors.New("priority is not supported for fifo state")
+			}
 		}
 		_, err = w.workflow.client.Transition(ctx, TransitionOptions{
 			ID:           job.ID,

@@ -50,6 +50,16 @@ func (e *TopologyNativeExecutor) refreshAndCanRetrySafeReroute(ctx context.Conte
 	return safeToRetry, nil
 }
 
+func (e *TopologyNativeExecutor) refreshRouteWithoutReplay(ctx context.Context, err error, attempt int) {
+	refresh, _ := topologyRouteErrorDisposition(err)
+	if !refresh || attempt != 0 {
+		return
+	}
+	// Preserve the original unknown/stale mutation outcome while refreshing
+	// routing state for later independent requests.
+	_ = e.RefreshTopology(ctx)
+}
+
 func (e *TopologyNativeExecutor) doNativeCommandWithSafeReroute(
 	ctx context.Context,
 	key any,
@@ -72,6 +82,10 @@ func (e *TopologyNativeExecutor) doNativeCommandWithSafeReroute(
 		}
 		value, err := adapter.doNativeCommandOnLane(operationCtx, command, route.LaneID)
 		if err == nil {
+			return value, err
+		}
+		if command.replayPolicy == nativeReplayNever {
+			e.refreshRouteWithoutReplay(operationCtx, err, rerouteAttempt)
 			return value, err
 		}
 		retry, retryErr := e.refreshAndCanRetrySafeReroute(operationCtx, err, rerouteAttempt)

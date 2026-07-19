@@ -175,7 +175,14 @@ func TestQueueWorkerRejectsInvalidExecutionOptionsBeforeClaim(t *testing.T) {
 }
 
 func TestQueuePolicyHelpersUseQueueType(t *testing.T) {
-	exec := &fakeExecutor{values: []any{[]byte("OK"), []byte("OK")}}
+	exec := &fakeExecutor{values: []any{
+		policySnapshotResponse("email", 1, map[string]any{"states": map[string]any{
+			"queued": map[string]any{"mode": "fifo"},
+		}}),
+		policySnapshotResponse("sms", 1, map[string]any{
+			"retry": map[string]any{"max_retries": int64(2)},
+		}),
+	}}
 	client := NewClientWithExecutor(exec)
 	queueClient := NewQueueClient(client)
 	queue := queueClient.Queue("email")

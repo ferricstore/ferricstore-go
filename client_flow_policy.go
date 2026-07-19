@@ -8,22 +8,24 @@ import (
 	"strings"
 )
 
-func (c *Client) InstallPolicy(ctx context.Context, flowType string, opt PolicyOptions) (any, error) {
+func (c *Client) InstallPolicy(ctx context.Context, flowType string, opt PolicyOptions) (PolicySnapshot, error) {
 	return c.SetPolicy(ctx, flowType, opt)
 }
 
-func (c *Client) InstallRetryPolicy(ctx context.Context, flowType string, retry *RetryPolicy, states map[string]RetryPolicy) (any, error) {
+func (c *Client) InstallRetryPolicy(ctx context.Context, flowType string, retry *RetryPolicy, states map[string]RetryPolicy) (PolicySnapshot, error) {
 	return c.SetPolicy(ctx, flowType, PolicyOptions{Retry: retry, States: states})
 }
 
-func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptions) (any, error) {
+func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptions) (PolicySnapshot, error) {
 	opt = canonicalizePolicyMetadataKeys(opt)
 	if err := validatePolicyOptions(flowType, opt); err != nil {
-		return nil, err
+		return PolicySnapshot{}, err
 	}
 	args := []any{"FLOW.POLICY.SET", flowType}
+	appendBoolPtr(&args, "REPLACE", opt.Replace)
+	appendInt64Ptr(&args, "EXPECTED_GENERATION", opt.ExpectedGeneration)
 	if err := appendFlowMaxActiveMS(&args, opt.MaxActiveMS); err != nil {
-		return nil, err
+		return PolicySnapshot{}, err
 	}
 	if opt.IndexedAttributes != nil {
 		appendOpt(&args, "INDEXED_ATTRIBUTES", opt.IndexedAttributes)
@@ -45,7 +47,7 @@ func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptio
 		if policy.Mode != "" {
 			mode, err := flowStateModeCommandToken(policy.Mode)
 			if err != nil {
-				return nil, err
+				return PolicySnapshot{}, err
 			}
 			appendOpt(&args, "MODE", mode)
 		}
@@ -55,12 +57,16 @@ func (c *Client) SetPolicy(ctx context.Context, flowType string, opt PolicyOptio
 	}
 	value, err := c.typedReply(ctx, args...)
 	if err != nil {
-		return nil, err
+		return PolicySnapshot{}, policySetError(flowType, opt.ExpectedGeneration, err)
 	}
-	if err := validateAppliedPolicy(value, opt); err != nil {
-		return nil, err
+	snapshot, err := decodePolicySnapshot(value, flowType, "")
+	if err != nil {
+		return PolicySnapshot{}, err
 	}
-	return value, nil
+	if err := validateAppliedPolicy(snapshot.Raw, opt); err != nil {
+		return PolicySnapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func canonicalizePolicyMetadataKeys(opt PolicyOptions) PolicyOptions {
@@ -81,23 +87,9 @@ func canonicalizePolicyMetadataKeys(opt PolicyOptions) PolicyOptions {
 	return opt
 }
 
-func validateAppliedPolicy(value any, opt PolicyOptions) error {
+func validateAppliedPolicy(policy map[string]any, opt PolicyOptions) error {
 	if opt.MaxActiveMS == nil && opt.Retry == nil && len(opt.States) == 0 && len(opt.StatePolicies) == 0 && opt.IndexedAttributes == nil && opt.IndexedStateMeta == "" && !opt.IndexedStateMetaSet {
 		return nil
-	}
-	normalized, normalizeErr := normalizeAdminResponse(value)
-	if normalizeErr != nil {
-		return normalizeErr
-	}
-	policy, err := nativeMap(normalized)
-	if err != nil {
-		// Some compatible executors return only an acknowledgement. Accept that
-		// compatibility shape only when it is the protocol's exact OK response;
-		// arbitrary scalars contain no state and must fail closed.
-		if _, ackErr := responseOK(normalized, nil); ackErr == nil {
-			return nil
-		}
-		return fmt.Errorf("FLOW.POLICY.SET expected a policy map or OK acknowledgement: %w", err)
 	}
 	if opt.IndexedAttributes != nil {
 		raw, exists := policy["indexed_attributes"]
@@ -137,7 +129,7 @@ func validateAppliedPolicy(value any, opt PolicyOptions) error {
 	if !exists || statesValue == nil {
 		return errors.New("FLOW.POLICY.SET response omitted state policy updates")
 	}
-	states, err := nativeMap(statesValue)
+	states, err := appliedPolicyMap(statesValue)
 	if err != nil {
 		return fmt.Errorf("FLOW.POLICY.SET returned invalid state policies: %w", err)
 	}
@@ -146,7 +138,7 @@ func validateAppliedPolicy(value any, opt PolicyOptions) error {
 		if !exists {
 			return fmt.Errorf("FLOW.POLICY.SET response omitted state policy %q", state)
 		}
-		statePolicy, err := nativeMap(stateValue)
+		statePolicy, err := appliedPolicyMap(stateValue)
 		if err != nil {
 			return fmt.Errorf("FLOW.POLICY.SET returned invalid state policy %q: %w", state, err)
 		}
@@ -159,7 +151,7 @@ func validateAppliedPolicy(value any, opt PolicyOptions) error {
 		if !exists {
 			return fmt.Errorf("FLOW.POLICY.SET response omitted state policy %q", state)
 		}
-		statePolicy, err := nativeMap(stateValue)
+		statePolicy, err := appliedPolicyMap(stateValue)
 		if err != nil {
 			return fmt.Errorf("FLOW.POLICY.SET returned invalid state policy %q: %w", state, err)
 		}
@@ -173,6 +165,16 @@ func validateAppliedPolicy(value any, opt PolicyOptions) error {
 		}
 	}
 	return nil
+}
+
+// decodePolicySnapshot already normalizes native maps. The fallback retains
+// compatibility with pair-array nested maps without copying the common map
+// representation a second time.
+func appliedPolicyMap(value any) (map[string]any, error) {
+	if mapping, ok := value.(map[string]any); ok {
+		return mapping, nil
+	}
+	return nativeMap(value)
 }
 
 func validateAppliedMaxActiveMS(actual, expected any) error {
@@ -197,7 +199,7 @@ func validateAppliedRetryPolicy(value any, expected RetryPolicy, scope string) e
 	if expected.MaxRetries == 0 && !expected.MaxRetriesSet && expected.Backoff == "" && expected.BaseMS == 0 && !expected.BaseMSSet && expected.MaxMS == 0 && !expected.MaxMSSet && expected.JitterPct == 0 && !expected.JitterPctSet && expected.ExhaustedTo == "" {
 		return nil
 	}
-	retry, err := nativeMap(value)
+	retry, err := appliedPolicyMap(value)
 	if err != nil {
 		return fmt.Errorf("FLOW.POLICY.SET response omitted %s retry policy: %w", scope, err)
 	}
@@ -212,7 +214,7 @@ func validateAppliedRetryPolicy(value any, expected RetryPolicy, scope string) e
 	if expected.Backoff == "" && expected.BaseMS == 0 && !expected.BaseMSSet && expected.MaxMS == 0 && !expected.MaxMSSet && expected.JitterPct == 0 && !expected.JitterPctSet {
 		return nil
 	}
-	backoff, err := nativeMap(retry["backoff"])
+	backoff, err := appliedPolicyMap(retry["backoff"])
 	if err != nil {
 		return fmt.Errorf("FLOW.POLICY.SET response omitted %s retry backoff: %w", scope, err)
 	}
@@ -245,17 +247,17 @@ func validateAppliedPolicyInteger(values map[string]any, field string, expected 
 	return nil
 }
 
-func (c *Client) PolicyGet(ctx context.Context, flowType, state string) (map[string]any, error) {
+func (c *Client) PolicyGet(ctx context.Context, flowType, state string) (PolicySnapshot, error) {
 	if err := validatePublicFlowType("flow type", flowType); err != nil {
-		return nil, err
+		return PolicySnapshot{}, err
 	}
 	args := []any{"FLOW.POLICY.GET", flowType}
 	appendOpt(&args, "STATE", state)
 	value, err := c.typedReply(ctx, args...)
 	if err != nil {
-		return nil, err
+		return PolicySnapshot{}, err
 	}
-	return normalizedAdminMap(value)
+	return decodePolicySnapshot(value, flowType, state)
 }
 
 func (c *Client) RetentionCleanup(ctx context.Context, opt RetentionCleanupOptions) (map[string]any, error) {

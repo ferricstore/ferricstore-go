@@ -17,14 +17,42 @@ func (e *NativeExecutor) request(ctx context.Context, opcode uint16, laneID uint
 }
 
 func (e *NativeExecutor) requestWithBudget(ctx context.Context, opcode uint16, laneID uint32, payload any, flags byte, budget nativeRequestBudget) (any, error) {
+	return e.requestWithReplayPolicy(ctx, opcode, laneID, payload, flags, budget, nativeReplayDefault)
+}
+
+func (e *NativeExecutor) requestWithReplayPolicy(
+	ctx context.Context,
+	opcode uint16,
+	laneID uint32,
+	payload any,
+	flags byte,
+	budget nativeRequestBudget,
+	replayPolicy nativeReplayPolicy,
+) (any, error) {
 	if err := e.sessionGate.readLock(ctx); err != nil {
 		return nil, err
 	}
 	defer e.sessionGate.readUnlock()
-	return e.requestWithoutSessionGate(ctx, opcode, laneID, payload, flags, budget)
+	return e.requestWithoutSessionGateWithReplayPolicy(
+		ctx, opcode, laneID, payload, flags, budget, replayPolicy,
+	)
 }
 
 func (e *NativeExecutor) requestWithoutSessionGate(ctx context.Context, opcode uint16, laneID uint32, payload any, flags byte, budget nativeRequestBudget) (any, error) {
+	return e.requestWithoutSessionGateWithReplayPolicy(
+		ctx, opcode, laneID, payload, flags, budget, nativeReplayDefault,
+	)
+}
+
+func (e *NativeExecutor) requestWithoutSessionGateWithReplayPolicy(
+	ctx context.Context,
+	opcode uint16,
+	laneID uint32,
+	payload any,
+	flags byte,
+	budget nativeRequestBudget,
+	replayPolicy nativeReplayPolicy,
+) (any, error) {
 	if err := e.beginRequest(); err != nil {
 		return nil, err
 	}
@@ -51,21 +79,21 @@ func (e *NativeExecutor) requestWithoutSessionGate(ctx context.Context, opcode u
 		if err == nil {
 			return value, nil
 		}
-		if errors.Is(err, errNativeGoAway) && ctx.Err() == nil {
+		if replayPolicy != nativeReplayNever && errors.Is(err, errNativeGoAway) && ctx.Err() == nil {
 			// GOAWAY is observed before this request is written. Waiting for the
 			// old connection to drain and resubmitting is safe and is not a
 			// transport-retry budget event.
 			continue
 		}
 		disposition := nativeServerRetryDisposition(err)
-		if disposition.busy && disposition.retryable && serverRetries < nativeMaxServerRetries && ctx.Err() == nil {
+		if replayPolicy != nativeReplayNever && disposition.busy && disposition.retryable && serverRetries < nativeMaxServerRetries && ctx.Err() == nil {
 			serverRetries++
 			if waitErr := waitNativeRetry(ctx, disposition.retryAfter); waitErr != nil {
 				return nil, waitErr
 			}
 			continue
 		}
-		if !retryable || transportAttempts >= maxRetries || ctx.Err() != nil {
+		if replayPolicy == nativeReplayNever || !retryable || transportAttempts >= maxRetries || ctx.Err() != nil {
 			return nil, err
 		}
 		transportAttempts++
@@ -330,7 +358,6 @@ func (s *nativeCommandSession) Do(ctx context.Context, args ...any) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	command.budget = blockingCommandBudget(args)
 	if command.laneID != 0 {
 		command.laneID = s.lane
 	}

@@ -111,7 +111,6 @@ func (e *TopologyNativeExecutor) routeDataInSnapshot(
 	if err != nil {
 		return nil, err
 	}
-	command.budget = blockingCommandBudget(args)
 	if keys, requiresSameSlot := sameSlotCommandKeys(args); requiresSameSlot {
 		if _, sameSlot := singleShardKey(keys); !sameSlot {
 			return nil, fmt.Errorf("%s requires keys in one hash slot", command.name)

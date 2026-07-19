@@ -123,6 +123,9 @@ func parseNativeHelloContract(value any, configuredMaxResponseBytes int) (native
 	if err := validateNativeProtocolVersions(capabilities["protocol_versions"]); err != nil {
 		return nativeHelloContract{}, err
 	}
+	if err := validateNativeFlowPolicyCapabilities(capabilities); err != nil {
+		return nativeHelloContract{}, err
+	}
 	limits, err := requiredNativeCapabilityMap(capabilities, "limits")
 	if err != nil {
 		return nativeHelloContract{}, err

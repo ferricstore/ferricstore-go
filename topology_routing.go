@@ -25,7 +25,7 @@ func routingKeyForCommand(args []any) (any, bool) {
 }
 
 func routingKeyForBuiltCommand(args []any, command nativeCommand) (any, bool) {
-	routeArgs := topologyCommandArgs(args)
+	routeArgs := canonicalCommandArgs(args)
 	name := commandName(routeArgs)
 	if command.opcode < nativeOpCommandExec || name == "CLUSTER.KEYSLOT" || name == "SHARDS" || name == "ROUTE" {
 		return nil, false
@@ -67,17 +67,6 @@ func routingKeyForBuiltCommand(args []any, command nativeCommand) (any, bool) {
 	return nil, false
 }
 
-// topologyCommandArgs returns the command shape that key discovery and scatter
-// policy must inspect. COMMAND_EXEC transport metadata is not part of the
-// wrapped command's argument grammar and must never be interpreted as a key.
-func topologyCommandArgs(args []any) []any {
-	for len(args) > 1 && commandPart(args[0]) == "COMMAND_EXEC" {
-		args = args[1:]
-	}
-	payload, _, _ := splitNativeRequestContext(args)
-	return payload
-}
-
 func topologyRequestContext(args []any) (any, bool) {
 	if len(args) < 3 || commandPart(args[0]) != "COMMAND_EXEC" {
 		return nil, false
@@ -98,7 +87,7 @@ func routingKeyFromArgs(name string, args []any) (any, bool) {
 }
 
 func sameSlotCommandKeys(args []any) ([]any, bool) {
-	args = topologyCommandArgs(args)
+	args = canonicalCommandArgs(args)
 	if len(args) == 0 {
 		return nil, false
 	}

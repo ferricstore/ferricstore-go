@@ -1,0 +1,9 @@
+- (*Client).InstallPolicy: changed from func(context.Context, string, PolicyOptions) (any, error) to func(context.Context, string, PolicyOptions) (PolicySnapshot, error)
+- (*Client).InstallRetryPolicy: changed from func(context.Context, string, *RetryPolicy, map[string]RetryPolicy) (any, error) to func(context.Context, string, *RetryPolicy, map[string]RetryPolicy) (PolicySnapshot, error)
+- (*Client).PolicyGet: changed from func(context.Context, string, string) (map[string]any, error) to func(context.Context, string, string) (PolicySnapshot, error)
+- (*Client).SetPolicy: changed from func(context.Context, string, PolicyOptions) (any, error) to func(context.Context, string, PolicyOptions) (PolicySnapshot, error)
+- (*Queue).InstallPolicy: changed from func(context.Context, PolicyOptions) (any, error) to func(context.Context, PolicyOptions) (PolicySnapshot, error)
+- (*QueueClient).InstallPolicy: changed from func(context.Context, string, PolicyOptions) (any, error) to func(context.Context, string, PolicyOptions) (PolicySnapshot, error)
+- (*Workflow).InstallPolicy: changed from func(context.Context, PolicyOptions) (any, error) to func(context.Context, PolicyOptions) (PolicySnapshot, error)
+- MinimumServerVersion: value changed from "0.8.0" to "0.9.1"
+- SDKVersion: value changed from "0.8.2" to "0.9.0"

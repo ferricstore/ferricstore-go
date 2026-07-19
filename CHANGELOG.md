@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0 - 2026-07-19
+
+- Target FerricStore 0.9.1 while retaining native wire protocol v1 and require HELLO to advertise Flow policy replacement and generation-CAS fields.
+- Add `Replace` and `ExpectedGeneration` policy options with safe-integer validation, deep-patch direct updates, and full-replacement workflow installs.
+- Return typed `PolicySnapshot` values with monotonic generations and expose stale generation conflicts through `StalePolicyGenerationError` without replaying CAS mutations.
+- Preserve worker concurrency while enforcing FIFO entry partition and priority constraints, with cross-partition FIFO, patch, replacement, and CAS integration coverage.
+- Preserve timeout and no-replay metadata through `COMMAND_EXEC` and native pipelines, including generation-CAS and blocking commands.
+- Isolate blocking calls from automatic batches, remove redundant policy-response normalization, and enforce runtime and allocation ceilings in CI.
+
 ## 0.8.2 - 2026-07-19
 
 - Make the Linux TLS integration bind mount traversable by FerricStore's non-root container while keeping CA and client private keys owner-only.

@@ -20,12 +20,12 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.8.0`, by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.9.1`, by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
-The Go package contract is v0.8.2 and requires FerricStore 0.8.0 or newer. This is a breaking beta API update; the native wire protocol remains v1.
+The Go package contract is v0.9.0 and requires FerricStore 0.9.1 or newer. This is a breaking beta API update; the native wire protocol remains v1.
 
 ## Client
 
@@ -186,6 +186,35 @@ _, err := workflow.InstallPolicy(ctx, ferricstore.PolicyOptions{})
 
 FIFO states require `PartitionKey`; priority is for parallel states.
 
+Direct policy updates deep-patch the stored snapshot. Workflow installation
+replaces the declaration snapshot by default; pass `Replace: ferricstore.Bool(false)`
+to request a patch explicitly. Policy reads and writes return a typed snapshot:
+
+```go
+previous, err := client.PolicyGet(ctx, "order", "")
+if err != nil {
+	return err
+}
+
+updated, err := client.SetPolicy(ctx, "order", ferricstore.PolicyOptions{
+	ExpectedGeneration: ferricstore.Int64(previous.Generation),
+	StatePolicies: map[string]ferricstore.FlowStatePolicy{
+		"charge": {Mode: ferricstore.FlowStateModeFIFO},
+	},
+})
+if errors.Is(err, ferricstore.ErrStalePolicyGeneration) {
+	// Reload the policy and resolve the concurrent edit; CAS writes are not retried.
+}
+if err != nil {
+	return err
+}
+fmt.Printf("installed policy generation %d\n", updated.Generation)
+```
+
+Generations must be in `0..9_007_199_254_740_991`. FIFO ordering is enforced
+by FerricStore per `(type, state, partition_key)`, so worker concurrency can
+remain greater than one to process independent partitions concurrently.
+
 ## Native Events and Flow Wake Signals
 
 FerricStore can send native protocol events over the same multiplexed client connection. Use this for wake hints, then still claim work through FerricFlow so leases and fencing stay correct.
@@ -218,7 +247,7 @@ Use `OpenPubSub` when you want events on the existing native multiplexed connect
 
 Shared native events are delivered through a bounded client buffer. If the buffer is full, the SDK drops new events instead of blocking normal command responses. Check `client.DroppedEvents()` or `pubsub.DroppedEvents()` if wake/event loss matters to your worker loop.
 
-Reconnect is enabled by default with one conservative retry. The SDK reconnects when the socket is already closed or HELLO/connection setup failed before the command was accepted. FerricStore 0.8.0 `busy` and `reroute` errors are replayed at most once only when the response supplies both `retryable: true` and `safe_to_retry: true`; `retry_after_ms` is honored. Context cancellation and transport failures after a mutation may have reached the server, so those unknown outcomes are never replayed. Disable reconnect with `ferricstore.WithNativeReconnect(0)`.
+Reconnect is enabled by default with one conservative retry. The SDK reconnects when the socket is already closed or HELLO/connection setup failed before the command was accepted. FerricStore `busy` and `reroute` errors are replayed at most once only when the response supplies both `retryable: true` and `safe_to_retry: true`; `retry_after_ms` is honored. Generation-CAS mutations are never replayed. Context cancellation and transport failures after a mutation may have reached the server, so those unknown outcomes are never replayed. Disable reconnect with `ferricstore.WithNativeReconnect(0)`.
 
 ```go
 client := ferricstore.NewClient(
@@ -372,7 +401,7 @@ approval, err := client.ApprovalRequest(ctx, "approval-1", ferricstore.ApprovalR
 budget, err := client.BudgetReserve(ctx, "llm:tenant:acme", 100, ferricstore.Int64(10_000), ferricstore.Int64(60_000), "reservation-1", nil)
 ```
 
-FerricStore 0.8.0 releases distributed-limit credits only by the exact
+FerricStore releases distributed-limit credits only by the exact
 reservation IDs returned from `LimitSpend`:
 
 ```go
@@ -382,7 +411,7 @@ released, err := client.LimitRelease(ctx, "api:tenant:acme", ferricstore.LimitRe
 })
 ```
 
-The v0.8 SDK has no amount-only release fallback.
+The SDK has no amount-only release fallback.
 
 Circuit breakers are cheap reads in the normal path and explicit writes when the circuit changes:
 
@@ -431,7 +460,7 @@ Before release, run the compatibility, fuzz, stress/performance, and three Docke
 ./scripts/integration-cluster-docker.sh
 ```
 
-`api-compat.sh` compares the exported API with the release named in `.api-baseline`; any removal or incompatible signature change fails the gate. The security suite covers protected mode, ACLs, TLS verification, and mTLS. The cluster suite starts three real nodes and exercises learned routing and failover.
+`api-compat.sh` compares the exported API with the release named in `.api-baseline`. For the breaking v0.9 beta transition, `.api-allowed-breaks` pins the exact audited signature and version changes; any additional incompatibility fails the gate. The security suite covers protected mode, ACLs, TLS verification, and mTLS. The cluster suite starts three real nodes and exercises learned routing and failover.
 
 For release gating against a server image that should support every current command,
 enable strict command coverage:

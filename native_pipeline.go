@@ -13,7 +13,9 @@ type nativePipelineBodyProvider interface {
 }
 
 func (e *NativeExecutor) pipelineChunkWithoutGate(ctx context.Context, commands [][]any, laneID uint32, maxFrameBytes int) ([]pipelineItemResult, error) {
-	payload, flags, err := nativePipelinePayload(commands, laneID, maxFrameBytes)
+	payload, flags, policy, err := nativePipelinePayloadWithExecutionPolicy(
+		commands, laneID, maxFrameBytes,
+	)
 	if err != nil {
 		var limitErr nativeEncodeLimitError
 		if !errors.As(err, &limitErr) {
@@ -21,8 +23,9 @@ func (e *NativeExecutor) pipelineChunkWithoutGate(ctx context.Context, commands 
 		}
 		return e.splitOversizedPipelineChunk(ctx, commands, laneID, maxFrameBytes)
 	}
-	budget := pipelineBlockingBudget(commands)
-	value, err := e.requestWithoutSessionGate(ctx, nativeOpPipeline, laneID, payload, flags, budget)
+	value, err := e.requestWithoutSessionGateWithReplayPolicy(
+		ctx, nativeOpPipeline, laneID, payload, flags, policy.budget, policy.replayPolicy,
+	)
 	if err != nil {
 		var limitErr nativeEncodeLimitError
 		if errors.As(err, &limitErr) {
@@ -37,11 +40,13 @@ func (e *NativeExecutor) pipelineChunkWithoutGate(ctx context.Context, commands 
 	if err != nil {
 		return nil, err
 	}
-	if delay, retry := retryableBusyPipeline(items); retry {
+	if delay, retry := retryableBusyPipeline(items); retry && policy.replayPolicy != nativeReplayNever {
 		if err := waitNativeRetry(ctx, delay); err != nil {
 			return nil, err
 		}
-		value, err = e.requestWithoutSessionGate(ctx, nativeOpPipeline, laneID, payload, flags, budget)
+		value, err = e.requestWithoutSessionGateWithReplayPolicy(
+			ctx, nativeOpPipeline, laneID, payload, flags, policy.budget, policy.replayPolicy,
+		)
 		if err != nil {
 			return nil, &pipelineChunkExecutionError{
 				cause:    fmt.Errorf("PIPELINE: %w", err),

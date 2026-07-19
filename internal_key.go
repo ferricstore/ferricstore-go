@@ -21,7 +21,7 @@ var internalCompoundKeyPrefixes = [...]string{
 }
 
 func validatePublicCommandKeys(args []any) error {
-	args = topologyCommandArgs(args)
+	args = canonicalCommandArgs(args)
 	if len(args) == 0 {
 		return nil
 	}
@@ -62,7 +62,7 @@ func v080ValidatesStringCommandKeys(name string) bool {
 
 func publicIntrospectionKeys(name string, args []any) ([]any, bool) {
 	for name == "COMMAND" && len(args) > 2 && commandPart(args[1]) == "GETKEYS" {
-		args = topologyCommandArgs(args[2:])
+		args = canonicalCommandArgs(args[2:])
 		if len(args) == 0 {
 			return nil, false
 		}

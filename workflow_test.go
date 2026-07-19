@@ -151,7 +151,9 @@ func TestWorkflowWorkerAppliesFailPolicyToHandlerPanic(t *testing.T) {
 
 func TestWorkflowInstallsFIFOStatePolicyAndRejectsPriorityTransition(t *testing.T) {
 	exec := &fakeExecutor{values: []any{
-		[]byte("OK"),
+		policySnapshotResponse("order", 1, map[string]any{"states": map[string]any{
+			"ready": map[string]any{"mode": "fifo"},
+		}}),
 		[]any{map[string]any{
 			"id":            "flow-1",
 			"type":          "order",
@@ -173,7 +175,7 @@ func TestWorkflowInstallsFIFOStatePolicyAndRejectsPriorityTransition(t *testing.
 	if _, err := workflow.InstallPolicy(context.Background(), PolicyOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(exec.calls[0], []any{"FLOW.POLICY.SET", "order", "STATE", "ready", "MODE", "FIFO"}) {
+	if !reflect.DeepEqual(exec.calls[0], []any{"FLOW.POLICY.SET", "order", "REPLACE", "true", "STATE", "ready", "MODE", "FIFO"}) {
 		t.Fatalf("unexpected workflow policy call: %#v", exec.calls[0])
 	}
 

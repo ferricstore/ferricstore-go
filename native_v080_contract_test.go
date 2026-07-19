@@ -29,6 +29,14 @@ func nativeHelloForTestWithLimits(overrides map[string]any) map[string]any {
 		"capabilities": map[string]any{
 			"protocol_versions": []any{int64(NativeProtocolVersion)},
 			"limits":            limits,
+			"schemas": map[string]any{
+				"FLOW.POLICY.SET": map[string]any{
+					"required": []any{"type"},
+					"fields": []any{
+						"type", "replace", "expected_generation", "states",
+					},
+				},
+			},
 			"multiplexing": map[string]any{
 				"max_lanes_per_connection": int64(1),
 			},
@@ -68,6 +76,12 @@ func TestV080HelloNegotiatesResponseLimitAndCompactOpcodes(t *testing.T) {
 		"auth_required": false,
 		"capabilities": map[string]any{
 			"protocol_versions": []any{int64(1)},
+			"schemas": map[string]any{
+				"FLOW.POLICY.SET": map[string]any{
+					"required": []any{"type"},
+					"fields":   []any{"type", "replace", "expected_generation"},
+				},
+			},
 			"limits": map[string]any{
 				"max_frame_bytes":       int64(4096),
 				"max_response_bytes":    int64(64),

@@ -48,6 +48,34 @@ func (e *AutoBatchExecutor) submitWithQueuePolicy(
 	return request.result, nil
 }
 
+// Blocking commands must not enter the shared autobatch pipeline. A server-side
+// wait would otherwise consume the sole pipeline slot, delay unrelated work,
+// and inherit FlushTimeout instead of the command's own blocking budget.
+func (e *AutoBatchExecutor) executeBlockingCommandDirect(
+	ctx context.Context,
+	allowQueued bool,
+	args []any,
+) (any, bool, error) {
+	if e == nil || e.client == nil {
+		return nil, false, errors.New("ferricstore autobatch executor requires a client")
+	}
+	if e.isClosed.Load() {
+		return nil, false, errAutoBatchClosed
+	}
+	prepared, err := materializeDeferredCodecValuesForExecutor(
+		args,
+		e.client.exec,
+		&e.codecMu,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode autobatch blocking command: %w", err)
+	}
+	if e.isClosed.Load() {
+		return nil, false, errAutoBatchClosed
+	}
+	return e.client.commandWithoutLegacyWithQueuePolicy(ctx, allowQueued, prepared...)
+}
+
 func (e *AutoBatchExecutor) reserveQueueSlot(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -129,6 +157,9 @@ func (e *AutoBatchExecutor) pipelineDetailed(ctx context.Context, commands [][]a
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if pipelineContainsBlockingCommand(commands) {
+		return e.executeBlockingPipelineDirect(ctx, commands)
+	}
 	results := make([]pipelineItemResult, len(commands))
 	if err := e.reserveQueueSlot(ctx); err != nil {
 		results[0].err = err
@@ -184,6 +215,63 @@ func (e *AutoBatchExecutor) pipelineDetailed(ctx context.Context, commands [][]a
 		for index := range results[:accepted] {
 			results[index].err = ctx.Err()
 		}
+	}
+	return results, nil
+}
+
+func pipelineContainsBlockingCommand(commands [][]any) bool {
+	for _, command := range commands {
+		if isBlockingCommand(command) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *AutoBatchExecutor) executeBlockingPipelineDirect(
+	ctx context.Context,
+	commands [][]any,
+) ([]pipelineItemResult, error) {
+	results := make([]pipelineItemResult, len(commands))
+	if e.isClosed.Load() {
+		results[0].err = errAutoBatchClosed
+		markPipelineNotExecuted(results[1:], errAutoBatchClosed)
+		return results, nil
+	}
+
+	prepared := make([][]any, len(commands))
+	accepted := len(commands)
+	var prepareErr error
+	for index, command := range commands {
+		prepared[index], prepareErr = materializeDeferredCodecValuesForExecutor(
+			command,
+			e.client.exec,
+			&e.codecMu,
+		)
+		if prepareErr != nil {
+			accepted = index
+			prepareErr = fmt.Errorf("encode autobatch command %d: %w", index, prepareErr)
+			break
+		}
+	}
+
+	if accepted > 0 {
+		direct, err := e.client.pipelineDetailedWithQueuePolicy(
+			ctx,
+			prepared[:accepted],
+			nil,
+		)
+		if err != nil {
+			for index := range results[:accepted] {
+				results[index].err = err
+			}
+		} else {
+			copy(results[:accepted], direct)
+		}
+	}
+	if prepareErr != nil {
+		results[accepted].err = prepareErr
+		markPipelineNotExecuted(results[accepted+1:], prepareErr)
 	}
 	return results, nil
 }

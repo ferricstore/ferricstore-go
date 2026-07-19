@@ -13,7 +13,7 @@ type setCommandOptions struct {
 }
 
 func validateSETCommandArgs(args []any) error {
-	args = topologyCommandArgs(args)
+	args = canonicalCommandArgs(args)
 	if len(args) == 0 || commandName(args) != "SET" {
 		return nil
 	}

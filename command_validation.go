@@ -28,7 +28,7 @@ func validateCommandArgs(args []any) error {
 }
 
 func validateV080FlowSignalArgs(args []any) error {
-	args = topologyCommandArgs(args)
+	args = canonicalCommandArgs(args)
 	if len(args) == 0 || commandName(args) != "FLOW.SIGNAL" {
 		return nil
 	}
@@ -61,7 +61,7 @@ func validateV080FlowSignalArgs(args []any) error {
 }
 
 func validateAtomicMSetSlots(args []any) error {
-	args = topologyCommandArgs(args)
+	args = canonicalCommandArgs(args)
 	if len(args) == 0 {
 		return nil
 	}

@@ -43,15 +43,21 @@ func writeNativeTestResponse(writer *bufio.Writer, request nativeFrame, status u
 }
 
 // normalizedNativeHelloForTest upgrades terse transport-test fixtures to the
-// mandatory FerricStore 0.8 HELLO envelope while preserving their limit
+// mandatory FerricStore 0.9 HELLO envelope while preserving their limit
 // overrides. Contract-rejection tests call parseNativeHelloContract directly.
 func normalizedNativeHelloForTest(value any) any {
 	mapping, err := nativeMap(value)
 	if err != nil {
 		return value
 	}
-	if _, exists := mapping["capabilities"]; exists {
-		return value
+	if rawCapabilities, exists := mapping["capabilities"]; exists {
+		if capabilities, mapErr := nativeMap(rawCapabilities); mapErr == nil {
+			if _, hasSchemas := capabilities["schemas"]; !hasSchemas {
+				capabilities["schemas"] = nativeHelloForTest()["capabilities"].(map[string]any)["schemas"]
+				mapping["capabilities"] = capabilities
+			}
+		}
+		return mapping
 	}
 	hello := nativeHelloForTest()
 	limits := hello["capabilities"].(map[string]any)["limits"].(map[string]any)

@@ -19,7 +19,6 @@ func (e *TopologyNativeExecutor) doForKey(ctx context.Context, key any, args ...
 	if err != nil {
 		return nil, err
 	}
-	command.budget = blockingCommandBudget(args)
 	route, snapshot, err := e.routeWithRefreshSnapshot(ctx, key)
 	if err != nil {
 		return nil, err

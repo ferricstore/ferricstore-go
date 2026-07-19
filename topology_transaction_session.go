@@ -31,7 +31,7 @@ func validateTopologyTransactionRoute(slot int, args []any) error {
 	if _, stateful := connectionStateCommand(args); stateful {
 		return nil
 	}
-	routeArgs := topologyCommandArgs(args)
+	routeArgs := canonicalCommandArgs(args)
 	if len(routeArgs) == 0 {
 		return fmt.Errorf("topology transaction pinned to slot %d received an empty command", slot)
 	}

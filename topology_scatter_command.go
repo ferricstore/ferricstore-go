@@ -104,7 +104,6 @@ func (e *TopologyNativeExecutor) executeScatterCommandGroup(
 	if err != nil {
 		return failedScatterGroup(destructive, group, err)
 	}
-	command.budget = blockingCommandBudget(args)
 	groupCtx, cancel := nativeContextWithBudget(ctx, adapter.opts.Timeout, command.budget)
 	if cancel != nil {
 		defer cancel()

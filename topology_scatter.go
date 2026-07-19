@@ -44,9 +44,10 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 		}
 	}
 	type pipelineGroup struct {
-		route    RoutingRoute
-		commands [][]any
-		indices  []int
+		route        RoutingRoute
+		commands     [][]any
+		indices      []int
+		replayPolicy nativeReplayPolicy
 	}
 	type pipelineCommand struct {
 		args  []any
@@ -71,6 +72,9 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 			if group == nil {
 				group = &pipelineGroup{route: routeData.route}
 				rebuilt[key] = group
+			}
+			if routeData.command.replayPolicy == nativeReplayNever {
+				group.replayPolicy = nativeReplayNever
 			}
 			group.commands = append(group.commands, pending.args)
 			group.indices = append(group.indices, pending.index)
@@ -131,14 +135,15 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 				}
 				items, err := adapter.pipelineDetailedOnLane(groupCtx, group.commands, group.route.LaneID)
 				routeErr, safeToRetryAll := topologyPipelineRouteDisposition(items)
+				allowReplay := group.replayPolicy != nativeReplayNever
 				retry := false
 				var retryErr error
 				switch {
-				case err != nil && singleRouteWave:
+				case err != nil && singleRouteWave && allowReplay:
 					retry, retryErr = e.refreshAndCanRetrySafeReroute(groupCtx, err, 0)
 				case err != nil && isRetryableRouteError(err):
 					_ = e.RefreshTopology(groupCtx)
-				case routeErr != nil && singleRouteWave && safeToRetryAll:
+				case routeErr != nil && singleRouteWave && safeToRetryAll && allowReplay:
 					retry, retryErr = e.refreshAndCanRetrySafeReroute(groupCtx, routeErr, 0)
 				case routeErr != nil:
 					_ = e.RefreshTopology(groupCtx)
@@ -250,6 +255,9 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 			group = &pipelineGroup{route: routeData.route}
 			groups[key] = group
 		}
+		if routeData.command.replayPolicy == nativeReplayNever {
+			group.replayPolicy = nativeReplayNever
+		}
 		group.commands = append(group.commands, args)
 		group.indices = append(group.indices, index)
 		waveCommands = append(waveCommands, pipelineCommand{args: args, index: index})
@@ -259,7 +267,7 @@ func (e *TopologyNativeExecutor) pipelineDetailedUnlocked(ctx context.Context, c
 }
 
 func safeScatterCommand(args []any) (string, []any, bool) {
-	args = topologyCommandArgs(args)
+	args = canonicalCommandArgs(args)
 	if len(args) == 0 {
 		return "", nil, false
 	}

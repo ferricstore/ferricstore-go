@@ -80,12 +80,30 @@ func buildFlowPolicySetNative(args []any) (nativeCommand, bool, error) {
 	if len(states) > 0 {
 		payload["states"] = states
 	}
-	return nativeCommand{name: "FLOW.POLICY.SET", opcode: nativeOpFlowPolicySet, laneID: 1, payload: payload}, true, nil
+	command := nativeCommand{name: "FLOW.POLICY.SET", opcode: nativeOpFlowPolicySet, laneID: 1, payload: payload}
+	if _, cas := payload["expected_generation"]; cas {
+		command.replayPolicy = nativeReplayNever
+	}
+	return command, true, nil
 }
 
 func putFlowPolicyOption(payload, policy, retry, retention map[string]any, tokenValue, value any, stateScoped bool) error {
 	token := strings.ToUpper(asString(tokenValue))
 	switch token {
+	case "REPLACE":
+		if stateScoped {
+			return errors.New("ERR flow replace is type-level only")
+		}
+		replace, err := nativeFlowBool(value)
+		if err != nil {
+			return err
+		}
+		payload["replace"] = replace
+	case "EXPECTED_GENERATION":
+		if stateScoped {
+			return errors.New("ERR flow expected_generation is type-level only")
+		}
+		payload["expected_generation"] = value
 	case "INDEXED_ATTRIBUTES":
 		if stateScoped {
 			return errors.New("ERR flow indexed_attributes is type-level only")

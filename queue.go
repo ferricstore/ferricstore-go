@@ -47,11 +47,11 @@ func (q *Queue) EnqueueMany(ctx context.Context, items []CreateItem, opt CreateM
 	return q.client.EnqueueMany(ctx, opt)
 }
 
-func (q *Queue) InstallPolicy(ctx context.Context, opt PolicyOptions) (any, error) {
+func (q *Queue) InstallPolicy(ctx context.Context, opt PolicyOptions) (PolicySnapshot, error) {
 	return q.client.SetPolicy(ctx, q.Type, opt)
 }
 
-func (c *QueueClient) InstallPolicy(ctx context.Context, flowType string, opt PolicyOptions) (any, error) {
+func (c *QueueClient) InstallPolicy(ctx context.Context, flowType string, opt PolicyOptions) (PolicySnapshot, error) {
 	return c.client.SetPolicy(ctx, flowType, opt)
 }
 

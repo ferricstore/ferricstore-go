@@ -21,3 +21,4 @@ run_go() {
 run_go test -race . -run "$stress_pattern" -count "$stress_count" -timeout 10m
 run_go test . -run 'Allocation|BoundedAllocation|ResourceBound' -count 1
 run_go test . -run '^$' -bench '.' -benchmem -benchtime "$benchmark_time" -count 1
+./scripts/benchmark-gate.sh

@@ -133,6 +133,9 @@ func (e *AutoBatchExecutor) doTypedWithState(
 	if err := validateCommandArgs(args); err != nil {
 		return nil, false, err
 	}
+	if isBlockingCommand(args) {
+		return e.executeBlockingCommandDirect(ctx, allowQueued, args)
+	}
 	result, err := e.submitWithQueuePolicy(ctx, args, allowQueued)
 	if err != nil {
 		return nil, false, err

@@ -74,6 +74,11 @@ type PolicyOptions struct {
 	MaxActiveMS any
 	Retry       *RetryPolicy
 	States      map[string]RetryPolicy
+	// Replace requests a complete policy replacement. Nil keeps the server's
+	// default deep-patch behavior.
+	Replace *bool
+	// ExpectedGeneration enables compare-and-swap against a policy snapshot.
+	ExpectedGeneration *int64
 	// StatePolicies configures full state policies. Use this for FIFO/PARALLEL mode.
 	StatePolicies map[string]FlowStatePolicy
 	// IndexedAttributes is omitted when nil; a non-nil empty slice clears the index.

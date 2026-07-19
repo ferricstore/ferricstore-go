@@ -12,12 +12,13 @@ import (
 )
 
 type nativeCommand struct {
-	name    string
-	opcode  uint16
-	laneID  uint32
-	payload any
-	flags   byte
-	budget  nativeRequestBudget
+	name         string
+	opcode       uint16
+	laneID       uint32
+	payload      any
+	flags        byte
+	budget       nativeRequestBudget
+	replayPolicy nativeReplayPolicy
 }
 
 type nativeJSONCommandArg struct{ value any }
@@ -175,6 +176,18 @@ func buildNativeCommand(args []any) (nativeCommand, error) {
 	if err := validateCommandArgs(args); err != nil {
 		return nativeCommand{}, err
 	}
+	command, err := buildNativeTransportCommand(args)
+	if err != nil {
+		return nativeCommand{}, err
+	}
+	command.budget = blockingCommandBudget(args)
+	if command.replayPolicy == nativeReplayDefault {
+		command.replayPolicy = wrappedNativeReplayPolicy(args)
+	}
+	return command, nil
+}
+
+func buildNativeTransportCommand(args []any) (nativeCommand, error) {
 	commandName, _ := validatedCommandName(args[0])
 	command := strings.ToUpper(commandName)
 	if built, ok, err := buildBasicNativeCommand(command, args[1:]); ok || err != nil {
@@ -202,6 +215,7 @@ type nativeRequestBudget struct {
 }
 
 func blockingCommandBudget(args []any) nativeRequestBudget {
+	args = canonicalCommandArgs(args)
 	if len(args) == 0 {
 		return nativeRequestBudget{}
 	}

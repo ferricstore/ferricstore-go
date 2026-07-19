@@ -2,7 +2,6 @@ package ferricstore
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -94,10 +93,10 @@ func TestFlowPolicyCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 }
 
 func TestSetPolicyCanonicalizesIndexedMetadataKeys(t *testing.T) {
-	exec := &fakeExecutor{value: map[string]any{
+	exec := &fakeExecutor{value: policySnapshotResponse("type", 1, map[string]any{
 		"indexed_attributes": []any{"tenant"},
 		"indexed_state_meta": "attempt",
-	}}
+	})}
 	_, err := NewClientWithExecutor(exec).SetPolicy(context.Background(), "type", PolicyOptions{
 		IndexedAttributes:   []string{" tenant "},
 		IndexedStateMeta:    " attempt ",
@@ -112,7 +111,9 @@ func TestSetPolicyCanonicalizesIndexedMetadataKeys(t *testing.T) {
 }
 
 func TestV080SetPolicyDeduplicatesIndexedMetadataLikeServer(t *testing.T) {
-	exec := &fakeExecutor{value: map[string]any{"indexed_attributes": []any{"tenant"}}}
+	exec := &fakeExecutor{value: policySnapshotResponse("type", 1, map[string]any{
+		"indexed_attributes": []any{"tenant"},
+	})}
 	_, err := NewClientWithExecutor(exec).SetPolicy(context.Background(), "type", PolicyOptions{
 		IndexedAttributes: []string{" tenant ", "tenant", " tenant "},
 	})
@@ -145,7 +146,14 @@ func TestSetPolicyEmitsStateMapsDeterministically(t *testing.T) {
 	}
 
 	for iteration := 0; iteration < 32; iteration++ {
-		exec := &fakeExecutor{value: []byte("OK")}
+		exec := &fakeExecutor{value: policySnapshotResponse("type", 1, map[string]any{
+			"states": map[string]any{
+				"alpha": map[string]any{"mode": "parallel", "retry": map[string]any{"max_retries": int64(2)}},
+				"zeta":  map[string]any{"mode": "parallel", "retry": map[string]any{"max_retries": int64(1)}},
+				"beta":  map[string]any{"mode": "parallel"},
+				"theta": map[string]any{"mode": "fifo"},
+			},
+		})}
 		if _, err := NewClientWithExecutor(exec).SetPolicy(ctx, "type", opt); err != nil {
 			t.Fatal(err)
 		}
@@ -153,13 +161,12 @@ func TestSetPolicyEmitsStateMapsDeterministically(t *testing.T) {
 	}
 }
 
-func TestSetPolicyAcceptsOnlyExactAcknowledgementOrVerifiableMap(t *testing.T) {
+func TestV090SetPolicyRequiresTypedSnapshot(t *testing.T) {
 	opt := PolicyOptions{Retry: &RetryPolicy{MaxRetries: 1}}
 	accepted := []any{
-		[]byte("OK"),
-		"ok",
-		nativeCompactOKCount(1),
-		map[string]any{"retry": map[string]any{"max_retries": int64(1)}},
+		policySnapshotResponse("type", 1, map[string]any{
+			"retry": map[string]any{"max_retries": int64(1)},
+		}),
 	}
 	for _, value := range accepted {
 		exec := &fakeExecutor{value: value}
@@ -170,6 +177,10 @@ func TestSetPolicyAcceptsOnlyExactAcknowledgementOrVerifiableMap(t *testing.T) {
 
 	rejected := []any{
 		nil,
+		[]byte("OK"),
+		"ok",
+		nativeCompactOKCount(1),
+		map[string]any{"retry": map[string]any{"max_retries": int64(1)}},
 		"garbage",
 		[]byte("QUEUED"),
 		int64(1),
@@ -178,9 +189,42 @@ func TestSetPolicyAcceptsOnlyExactAcknowledgementOrVerifiableMap(t *testing.T) {
 	for _, value := range rejected {
 		exec := &fakeExecutor{value: value}
 		_, err := NewClientWithExecutor(exec).SetPolicy(context.Background(), "type", opt)
-		if err == nil || !strings.Contains(err.Error(), "policy map or OK") {
-			t.Fatalf("response %#v error = %v, want policy-map-or-OK rejection", value, err)
+		if err == nil {
+			t.Fatalf("response %#v was accepted", value)
 		}
+	}
+}
+
+func TestV090SetPolicyValidatesPairArrayNestedPolicyMaps(t *testing.T) {
+	retry := RetryPolicy{
+		MaxRetries: 3,
+		Backoff:    "fixed",
+		BaseMS:     10,
+	}
+	exec := &fakeExecutor{value: policySnapshotResponse("type", 2, map[string]any{
+		"retry": []any{
+			"max_retries", int64(3),
+			"backoff", []any{"kind", "fixed", "base_ms", int64(10)},
+		},
+		"states": []any{
+			"queued", []any{
+				"mode", "fifo",
+				"retry", []any{
+					"max_retries", int64(3),
+					"backoff", []any{"kind", "fixed", "base_ms", int64(10)},
+				},
+			},
+		},
+	})}
+
+	_, err := NewClientWithExecutor(exec).SetPolicy(context.Background(), "type", PolicyOptions{
+		Retry: &retry,
+		StatePolicies: map[string]FlowStatePolicy{
+			"queued": {Mode: FlowStateModeFIFO, Retry: &retry},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -194,7 +238,7 @@ func TestV080SetPolicyClearsRequireFieldsInStructuredResponse(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			exec := &fakeExecutor{value: map[string]any{"type": "order"}}
+			exec := &fakeExecutor{value: map[string]any{"type": "order", "generation": int64(1)}}
 			if _, err := NewClientWithExecutor(exec).SetPolicy(
 				context.Background(), "order", test.opt,
 			); err == nil {

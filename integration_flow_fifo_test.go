@@ -3,7 +3,6 @@
 package ferricstore
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -46,15 +45,18 @@ func TestIntegrationFlowFIFOStatePolicy(t *testing.T) {
 	}))
 	requireLen(t, parallelClaims, 2)
 
-	requireValue(t, must[any](t)(client.SetPolicy(ctx, typeName, PolicyOptions{
+	installed := must[PolicySnapshot](t)(client.SetPolicy(ctx, typeName, PolicyOptions{
 		StatePolicies: map[string]FlowStatePolicy{
 			"queued":    {Mode: FlowStateModeFIFO},
 			"ready":     {Mode: FlowStateModeParallel},
 			"fifo_gate": {Mode: FlowStateModeFIFO},
 		},
-	})))
-	queuedPolicy := must[map[string]any](t)(client.PolicyGet(ctx, typeName, "queued"))
-	if strings.ToLower(asString(queuedPolicy["mode"])) != "fifo" {
+	}))
+	if installed.Generation <= 0 {
+		t.Fatalf("installed FIFO policy generation = %d", installed.Generation)
+	}
+	queuedPolicy := must[PolicySnapshot](t)(client.PolicyGet(ctx, typeName, "queued"))
+	if queuedPolicy.Mode != FlowStateModeFIFO {
 		t.Fatalf("expected queued state to be fifo, got %#v", queuedPolicy)
 	}
 

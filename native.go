@@ -237,7 +237,6 @@ func (e *NativeExecutor) command(ctx context.Context, args ...any) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	command.budget = blockingCommandBudget(args)
 	if command.laneID != 0 {
 		command.laneID = nativeAutoLaneID
 	}
@@ -275,7 +274,10 @@ func (e *NativeExecutor) rememberConnectionState(args []any, command nativeComma
 }
 
 func (e *NativeExecutor) doNativeCommand(ctx context.Context, command nativeCommand) (any, error) {
-	value, err := e.requestWithBudget(ctx, command.opcode, command.laneID, command.payload, command.flags, command.budget)
+	value, err := e.requestWithReplayPolicy(
+		ctx, command.opcode, command.laneID, command.payload, command.flags,
+		command.budget, command.replayPolicy,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", command.name, err)
 	}
@@ -384,15 +386,37 @@ func (e *NativeExecutor) pipelineDetailedOnLane(ctx context.Context, commands []
 }
 
 func nativePipelinePayload(commands [][]any, laneID uint32, maxFrameBytes int) (any, byte, error) {
+	payload, flags, _, err := nativePipelinePayloadWithExecutionPolicy(commands, laneID, maxFrameBytes)
+	return payload, flags, err
+}
+
+func nativePipelinePayloadWithReplayPolicy(
+	commands [][]any,
+	laneID uint32,
+	maxFrameBytes int,
+) (any, byte, nativeReplayPolicy, error) {
+	payload, flags, policy, err := nativePipelinePayloadWithExecutionPolicy(
+		commands, laneID, maxFrameBytes,
+	)
+	return payload, flags, policy.replayPolicy, err
+}
+
+func nativePipelinePayloadWithExecutionPolicy(
+	commands [][]any,
+	laneID uint32,
+	maxFrameBytes int,
+) (any, byte, nativeCommandExecutionPolicy, error) {
 	if payload, ok, err := compactPipelinePlanWithLimit(commands, maxFrameBytes); ok || err != nil {
-		return payload, nativeFlagCustomPayload, err
+		return payload, nativeFlagCustomPayload, nativeCommandExecutionPolicy{}, err
 	}
 	items := make([]any, 0, len(commands))
+	var policy nativeCommandExecutionPolicy
 	for idx, args := range commands {
 		command, err := buildNativeCommand(args)
 		if err != nil {
-			return nil, 0, &pipelineCommandBuildError{index: idx, cause: err}
+			return nil, 0, nativeCommandExecutionPolicy{}, &pipelineCommandBuildError{index: idx, cause: err}
 		}
+		policy.add(command)
 		if command.flags != 0 {
 			if provider, ok := command.payload.(nativePipelineBodyProvider); ok {
 				command.payload, err = provider.nativePipelineBody()
@@ -403,7 +427,7 @@ func nativePipelinePayload(commands [][]any, laneID uint32, maxFrameBytes int) (
 				command, err = commandExecNativeCommand(commandPart(args[0]), args[1:])
 			}
 			if err != nil {
-				return nil, 0, &pipelineCommandBuildError{index: idx, cause: err}
+				return nil, 0, nativeCommandExecutionPolicy{}, &pipelineCommandBuildError{index: idx, cause: err}
 			}
 		}
 		items = append(items, map[string]any{
@@ -417,7 +441,7 @@ func nativePipelinePayload(commands [][]any, laneID uint32, maxFrameBytes int) (
 		"atomicity": "none",
 		"commands":  items,
 		"return":    "compact",
-	}, 0, nil
+	}, 0, policy, nil
 }
 
 func pipelineBlockingBudget(commands [][]any) nativeRequestBudget {
@@ -444,8 +468,10 @@ func (e *NativeExecutor) pipelineSequentialWithoutGate(ctx context.Context, comm
 			continue
 		}
 		command.laneID = laneID
-		command.budget = blockingCommandBudget(args)
-		value, err := e.requestWithoutSessionGate(ctx, command.opcode, command.laneID, command.payload, command.flags, command.budget)
+		value, err := e.requestWithoutSessionGateWithReplayPolicy(
+			ctx, command.opcode, command.laneID, command.payload, command.flags,
+			command.budget, command.replayPolicy,
+		)
 		results[index] = pipelineItemResult{value: value, err: err}
 		if ctx != nil && ctx.Err() != nil {
 			markPipelineNotExecuted(results[index+1:], ctx.Err())

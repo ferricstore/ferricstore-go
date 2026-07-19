@@ -45,8 +45,14 @@ func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 			"queued": {MaxRetries: 1, Backoff: "fixed", BaseMS: 10, MaxMS: 100},
 		},
 	}
-	requireValue(t, must[any](t)(client.SetPolicy(ctx, typeName, policy)))
-	requireMap(t, must[map[string]any](t)(client.PolicyGet(ctx, typeName, "")))
+	installedPolicy := must[PolicySnapshot](t)(client.SetPolicy(ctx, typeName, policy))
+	if installedPolicy.Type != typeName || installedPolicy.Generation <= 0 {
+		t.Fatalf("installed policy snapshot = %+v", installedPolicy)
+	}
+	readPolicy := must[PolicySnapshot](t)(client.PolicyGet(ctx, typeName, ""))
+	if readPolicy.Type != typeName || readPolicy.Generation != installedPolicy.Generation {
+		t.Fatalf("read policy snapshot = %+v, installed = %+v", readPolicy, installedPolicy)
+	}
 	_ = must[*FlowRecord](t)(client.Create(ctx, CreateOptions{ID: signalID, Type: typeName, State: "created", PartitionKey: signalPartition, Payload: map[string]any{"step": "created"}, Idempotent: Bool(true)}))
 	namedValue := must[any](t)(client.PutValue(ctx, "result", map[string]any{"named": true}, ValuePutOptions{
 		OwnerFlowID: signalID, PartitionKey: signalPartition,
