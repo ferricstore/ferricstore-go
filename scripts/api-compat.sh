@@ -68,7 +68,7 @@ old_dir="$("${go_cmd[@]}" list -m -f '{{.Dir}}' "${module}@${baseline}")"
 incompatible="$("$tmp_dir/bin/apidiff" -incompatible "$tmp_dir/old.api" "$tmp_dir/new.api")"
 if [[ -f "$allowed_breaks_file" ]]; then
   if ! diff -u "$allowed_breaks_file" <(printf '%s\n' "$incompatible"); then
-    echo "exported API break set differs from the audited v0.8 transition:" >&2
+    echo "exported API break set differs from the audited allowance file:" >&2
     exit 1
   fi
   exit 0

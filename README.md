@@ -431,7 +431,7 @@ Before release, run the compatibility, fuzz, stress/performance, and three Docke
 ./scripts/integration-cluster-docker.sh
 ```
 
-`api-compat.sh` compares the exported API with the release named in `.api-baseline`. During the breaking v0.8 transition, `.api-allowed-breaks` pins the exact audited incompatibility set; any additional removal or signature change still fails the gate. The security suite covers protected mode, ACLs, TLS verification, and mTLS. The cluster suite starts three real nodes and exercises learned routing and failover.
+`api-compat.sh` compares the exported API with the release named in `.api-baseline`; any removal or incompatible signature change fails the gate. The security suite covers protected mode, ACLs, TLS verification, and mTLS. The cluster suite starts three real nodes and exercises learned routing and failover.
 
 For release gating against a server image that should support every current command,
 enable strict command coverage:
