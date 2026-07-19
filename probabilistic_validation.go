@@ -31,7 +31,7 @@ func validateProbabilisticBatch(command string, count int) error {
 }
 
 func validateBloomSizingV080(errorRate float64, capacity int64) error {
-	bitsPerItem := -math.Log(errorRate) / (math.Ln2 * math.Ln2)
+	bitsPerItem := -bloomSizingLog(errorRate) / (math.Ln2 * math.Ln2)
 	maxCapacity := math.Floor(float64(maxBloomBitsV080) / bitsPerItem)
 	if math.IsNaN(maxCapacity) || float64(capacity) > maxCapacity {
 		return fmt.Errorf("BF.RESERVE computed bits exceed FerricStore 0.8 maximum of %d", int64(maxBloomBitsV080))
@@ -42,6 +42,18 @@ func validateBloomSizingV080(errorRate float64, capacity int64) error {
 		return errorsBloomSizingV080(numBits, numHashes)
 	}
 	return nil
+}
+
+// bloomSizingLog keeps Bloom limit validation stable on architectures whose
+// optimized math.Log implementation loses precision for subnormal inputs.
+// Frexp extracts the subnormal exponent exactly; math.Log then only sees a
+// normal mantissa in [0.5, 1), matching the server's sizing calculation.
+func bloomSizingLog(value float64) float64 {
+	if math.Float64bits(value)&0x7ff0000000000000 != 0 {
+		return math.Log(value)
+	}
+	mantissa, exponent := math.Frexp(value)
+	return math.Log(mantissa) + float64(exponent)*math.Ln2
 }
 
 func errorsBloomSizingV080(numBits, numHashes float64) error {

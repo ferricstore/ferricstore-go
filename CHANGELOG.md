@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1 - 2026-07-19
+
+- Make Bloom sizing validation deterministic for subnormal error rates across supported architectures.
+- Complete idempotent PubSub state replay across connection resets without weakening the SDK's unknown-outcome mutation policy.
+- Decouple live Flow command coverage from unrelated cold-projection shard health while retaining strict history and rewind wire coverage.
+
 ## 0.8.0 - 2026-07-19
 
 - Adopt the breaking FerricStore 0.8.0 beta contract while retaining native wire protocol v1 and declaring FerricStore 0.8.0 as the minimum server.

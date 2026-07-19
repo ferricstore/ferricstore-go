@@ -253,7 +253,10 @@ func (p *PubSub) replayTrackedState(
 		for _, channel := range channels {
 			args = append(args, channel)
 		}
-		if _, err := exec.command(ctx, args...); err != nil {
+		if err := replayTrackedRequest(ctx, exec, func() error {
+			_, err := exec.command(ctx, args...)
+			return err
+		}); err != nil {
 			return err
 		}
 	}
@@ -263,16 +266,39 @@ func (p *PubSub) replayTrackedState(
 		for _, pattern := range patterns {
 			args = append(args, pattern)
 		}
-		if _, err := exec.command(ctx, args...); err != nil {
+		if err := replayTrackedRequest(ctx, exec, func() error {
+			_, err := exec.command(ctx, args...)
+			return err
+		}); err != nil {
 			return err
 		}
 	}
 	for _, replay := range replays {
-		if _, err := exec.request(ctx, replay.opcode, 0, replay.payload, 0); err != nil {
+		if err := replayTrackedRequest(ctx, exec, func() error {
+			_, err := exec.request(ctx, replay.opcode, 0, replay.payload, 0)
+			return err
+		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// replayTrackedRequest may retry because subscriptions describe idempotent
+// desired state. Ordinary mutation requests deliberately do not use this path:
+// a disconnect after sending them still has an unknown outcome.
+func replayTrackedRequest(ctx context.Context, exec *NativeExecutor, request func() error) error {
+	retries := max(0, exec.opts.ReconnectMaxRetries)
+	for {
+		err := request()
+		if err == nil {
+			return nil
+		}
+		if retries == 0 || !isNativeReconnectableTransportError(err) || ctx != nil && ctx.Err() != nil {
+			return err
+		}
+		retries--
+	}
 }
 
 func (p *PubSub) replayAfterExternalReconnect(ctx context.Context) error {

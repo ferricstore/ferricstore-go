@@ -492,5 +492,12 @@ func nativeWriteContextError(ctx context.Context, err error) error {
 	if contextErr := ctx.Err(); contextErr != nil {
 		return contextErr
 	}
+	// A socket deadline and its context timer share the same absolute deadline,
+	// but the kernel can report the write timeout before the timer goroutine has
+	// published ctx.Err(). Preserve the caller-visible context contract in that
+	// small notification window.
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
 	return err
 }

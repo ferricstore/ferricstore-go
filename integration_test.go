@@ -9,9 +9,10 @@ import (
 )
 
 type claimedFlow struct {
-	id           string
-	partitionKey string
-	job          ClaimedItem
+	id             string
+	partitionKey   string
+	createdEventID string
+	job            ClaimedItem
 }
 
 func assertStringCommands(t *testing.T, ctx context.Context, client *Client, prefix string) {
@@ -502,11 +503,9 @@ func assertRepairIndexAndRewindCommands(t *testing.T, ctx context.Context, clien
 	_ = must[[]FlowRecord](t)(client.ByCorrelation(ctx, "corr:"+runID, ReadOptions{Count: Int(20)}))
 
 	rewind := createAndClaim(t, ctx, client, typeName, runID, "rewind", "queued", now, 30_000)
-	history := must[[]any](t)(client.History(ctx, HistoryOptions{ID: rewind.id, PartitionKey: rewind.partitionKey, Count: 10}))
-	requireLenAtLeast(t, history, 1)
-	createdEventID := eventID(history[0])
+	flushHistoryProjectorForRewind(t, ctx, client, rewind)
 	_ = must[*FlowRecord](t)(client.Complete(ctx, CompleteOptions{ID: rewind.id, LeaseToken: rewind.job.LeaseToken, FencingToken: rewind.job.FencingToken, PartitionKey: rewind.partitionKey}))
-	if rewound := must[*FlowRecord](t)(client.Rewind(ctx, RewindOptions{ID: rewind.id, PartitionKey: rewind.partitionKey, ExpectState: "completed", ToEvent: createdEventID, ReturnRecord: true})); rewound == nil || rewound.State != "queued" {
+	if rewound := must[*FlowRecord](t)(client.Rewind(ctx, RewindOptions{ID: rewind.id, PartitionKey: rewind.partitionKey, ExpectState: "completed", ToEvent: rewind.createdEventID, ReturnRecord: true})); rewound == nil || rewound.State != "queued" {
 		t.Fatalf("FLOW.REWIND = %#v", rewound)
 	}
 }

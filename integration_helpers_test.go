@@ -15,8 +15,38 @@ func createAndClaim(t *testing.T, ctx context.Context, client *Client, typeName,
 	t.Helper()
 	id := "go-sdk:" + name + ":" + runID
 	partition := id + ":partition"
-	_ = must[*FlowRecord](t)(client.Create(ctx, CreateOptions{ID: id, Type: typeName, State: state, PartitionKey: partition, Payload: map[string]any{"name": name}, RunAtMS: now, NowMS: now, Idempotent: Bool(true)}))
-	return claimedFlow{id: id, partitionKey: partition, job: claimOne(t, ctx, client, typeName, state, partition, "go-sdk-"+name+"-worker", now, leaseMS)}
+	created := must[*FlowRecord](t)(client.Create(ctx, CreateOptions{ID: id, Type: typeName, State: state, PartitionKey: partition, Payload: map[string]any{"name": name}, RunAtMS: now, NowMS: now, Idempotent: Bool(true), ReturnRecord: true}))
+	if created == nil {
+		t.Fatal("FLOW.CREATE did not return the requested record")
+	}
+	createdAtMS := asInt64(created.Raw["updated_at_ms"])
+	if createdAtMS <= 0 || created.Version <= 0 {
+		t.Fatalf("FLOW.CREATE event identity is incomplete: %#v", created.Raw)
+	}
+	return claimedFlow{
+		id:             id,
+		partitionKey:   partition,
+		createdEventID: fmt.Sprintf("%d-%d", createdAtMS, created.Version),
+		job:            claimOne(t, ctx, client, typeName, state, partition, "go-sdk-"+name+"-worker", now, leaseMS),
+	}
+}
+
+func flushHistoryProjectorForRewind(t *testing.T, ctx context.Context, client *Client, flow claimedFlow) {
+	t.Helper()
+	history, err := client.History(ctx, HistoryOptions{
+		ID:                   flow.id,
+		PartitionKey:         flow.partitionKey,
+		Count:                10,
+		IncludeCold:          Bool(true),
+		ConsistentProjection: Bool(true),
+	})
+	if err == nil {
+		requireLenAtLeast(t, history, 1)
+		return
+	}
+	if !strings.Contains(err.Error(), "flow LMDB projection unavailable") {
+		t.Fatalf("FLOW.HISTORY projector flush: %v", err)
+	}
 }
 
 func claimOne(t *testing.T, ctx context.Context, client *Client, typeName, state, partition, worker string, now, leaseMS int64) ClaimedItem {
@@ -39,17 +69,6 @@ func fencedItems(items []ClaimedItem) []FencedItem {
 		out = append(out, FencedItem{ID: item.ID, LeaseToken: item.LeaseToken, FencingToken: item.FencingToken, PartitionKey: item.PartitionKey})
 	}
 	return out
-}
-
-func eventID(event any) string {
-	if items, ok := event.([]any); ok && len(items) > 0 {
-		return asString(items[0])
-	}
-	id := responseField(event, "event_id")
-	if id == nil {
-		id = responseField(event, "id")
-	}
-	return asString(id)
 }
 
 func responseField(value any, name string) any {

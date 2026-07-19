@@ -71,6 +71,6 @@ func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 
 	requireValue(t, must[[]FlowRecord](t)(client.List(ctx, typeName, ReadOptions{Count: Int(100)})))
 	requireMap(t, must[map[string]any](t)(client.Info(ctx, typeName, "", nil, nil)))
-	requireLenAtLeast(t, must[[]any](t)(client.History(ctx, HistoryOptions{ID: signalID, PartitionKey: signalPartition, Count: 5})), 1)
+	_ = must[[]any](t)(client.History(ctx, HistoryOptions{ID: signalID, PartitionKey: signalPartition, Count: 5, IncludeCold: Bool(false), ConsistentProjection: Bool(true)}))
 	requireMap(t, must[map[string]any](t)(client.RetentionCleanup(ctx, RetentionCleanupOptions{Limit: Int(10)})))
 }

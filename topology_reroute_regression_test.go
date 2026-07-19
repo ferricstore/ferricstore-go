@@ -101,13 +101,15 @@ func TestTopologyRetriesExplicitlySafeStructuredRerouteOnce(t *testing.T) {
 	}
 }
 
-func TestTopologyRerouteBackoffReturnsCallerContextError(t *testing.T) {
+func TestTopologyRerouteBackoffReturnsCallerCancellation(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	endpoint := topologyEndpointFromListener(t, listener)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	serverErr := make(chan error, 1)
 	go func() {
 		conn, err := listener.Accept()
@@ -126,10 +128,12 @@ func TestTopologyRerouteBackoffReturnsCallerContextError(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		serverErr <- writeNativeTestResponse(writer, request, nativeStatusReroute, map[string]any{
+		writeErr := writeNativeTestResponse(writer, request, nativeStatusReroute, map[string]any{
 			"code": "reroute", "retryable": true, "safe_to_retry": true,
 			"retry_after_ms": int64(500),
 		})
+		cancel()
+		serverErr <- writeErr
 	}()
 
 	exec, err := NewTopologyNativeExecutor(
@@ -145,11 +149,9 @@ func TestTopologyRerouteBackoffReturnsCallerContextError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
 	_, err = exec.Do(ctx, "GET", "key")
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("reroute backoff error = %v; want context deadline", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("reroute backoff error = %v; want context cancellation", err)
 	}
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)

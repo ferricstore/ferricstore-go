@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -383,5 +384,8 @@ func isNativeReconnectableTransportError(err error) bool {
 		errors.Is(err, errNativeGoAway) ||
 		errors.Is(err, net.ErrClosed) ||
 		errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF)
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE)
 }
