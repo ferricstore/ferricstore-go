@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2 - 2026-07-19
+
+- Make the Linux TLS integration bind mount traversable by FerricStore's non-root container while keeping CA and client private keys owner-only.
+
 ## 0.8.1 - 2026-07-19
 
 - Make Bloom sizing validation deterministic for subnormal error rates across supported architectures.

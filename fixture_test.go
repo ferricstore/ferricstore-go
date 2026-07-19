@@ -32,6 +32,26 @@ func TestV080IntegrationCommandCoverageFailsClosed(t *testing.T) {
 	}
 }
 
+func TestSecurityIntegrationTLSMountPermissions(t *testing.T) {
+	body, err := os.ReadFile("scripts/integration-security-docker.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(body)
+	for _, required := range []string{
+		`chmod 0755 "$cert_dir"`,
+		`chmod 0600 "$cert_dir/ca-key.pem" "$cert_dir/client-key.pem"`,
+		`chmod 0644 "$cert_dir/ca-cert.pem" "$cert_dir/server-cert.pem" "$cert_dir/server-key.pem" "$cert_dir/client-cert.pem"`,
+	} {
+		if !strings.Contains(contents, required) {
+			t.Fatalf("security integration must contain %q", required)
+		}
+	}
+	if strings.Contains(contents, `chmod 0644 "$cert_dir"/*.pem`) {
+		t.Fatal("security integration must not expose CA and client private keys to the server container")
+	}
+}
+
 func TestDockerComposeDefaultsToSupportedFerricStoreVersion(t *testing.T) {
 	body, err := os.ReadFile("docker-compose.yml")
 	if err != nil {

@@ -25,7 +25,7 @@ Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want 
 
 ## Compatibility
 
-The Go package contract is v0.8.1 and requires FerricStore 0.8.0 or newer. This is a breaking beta API update; the native wire protocol remains v1.
+The Go package contract is v0.8.2 and requires FerricStore 0.8.0 or newer. This is a breaking beta API update; the native wire protocol remains v1.
 
 ## Client
 

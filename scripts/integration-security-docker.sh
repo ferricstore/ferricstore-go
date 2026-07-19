@@ -62,7 +62,9 @@ openssl x509 -req -sha256 -days 2 \
   -in "$cert_dir/client.csr" -CA "$cert_dir/ca-cert.pem" -CAkey "$cert_dir/ca-key.pem" -CAcreateserial \
   -out "$cert_dir/client-cert.pem" \
   -extfile <(printf '%s\n' 'basicConstraints=CA:FALSE' 'keyUsage=digitalSignature,keyEncipherment' 'extendedKeyUsage=clientAuth') >/dev/null 2>&1
-chmod 0644 "$cert_dir"/*.pem
+chmod 0755 "$cert_dir"
+chmod 0600 "$cert_dir/ca-key.pem" "$cert_dir/client-key.pem"
+chmod 0644 "$cert_dir/ca-cert.pem" "$cert_dir/server-cert.pem" "$cert_dir/server-key.pem" "$cert_dir/client-cert.pem"
 
 docker volume create "$volume_name" >/dev/null
 docker run -d \
