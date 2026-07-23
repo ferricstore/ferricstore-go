@@ -1,7 +1,5 @@
 package ferricstore
 
-import "strings"
-
 func appendAttributes(args *[]any, attributes, attributesMerge map[string]any, attributesDelete []string) {
 	for name, value := range attributes {
 		*args = append(*args, "ATTRIBUTE", canonicalFlowMetadataKey(name), value)
@@ -17,14 +15,6 @@ func appendAttributes(args *[]any, attributes, attributesMerge map[string]any, a
 func appendStateMeta(args *[]any, stateMeta map[string]any) {
 	for name, value := range stateMeta {
 		*args = append(*args, "STATE_META", canonicalFlowMetadataKey(name), value)
-	}
-}
-
-func appendSearchStateMeta(args *[]any, stateMeta map[string]map[string]any) {
-	for state, meta := range stateMeta {
-		for name, value := range meta {
-			*args = append(*args, "STATE_META", strings.TrimSpace(state), canonicalFlowMetadataKey(name), value)
-		}
 	}
 }
 

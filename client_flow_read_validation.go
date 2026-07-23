@@ -15,27 +15,6 @@ func validateFlowGet(id string, values []string) error {
 	return nil
 }
 
-func validateFlowReadKey(name, value string, opt ReadOptions) error {
-	if err := validateRequiredText(name, value); err != nil {
-		return err
-	}
-	return validateFlowReadOptions(opt)
-}
-
-func validateFlowTypeRead(flowType string, opt ReadOptions) error {
-	if err := validatePublicFlowType("flow type", flowType); err != nil {
-		return err
-	}
-	return validateFlowReadOptions(opt)
-}
-
-func validateFlowIDRead(name, id string, opt ReadOptions) error {
-	if err := validatePublicFlowID(name, id); err != nil {
-		return err
-	}
-	return validateFlowReadOptions(opt)
-}
-
 func validateFlowSearch(opt SearchOptions) error {
 	if opt.Type != "" {
 		if err := validatePublicFlowType("flow type", opt.Type); err != nil {
