@@ -52,6 +52,20 @@ func TestSecurityIntegrationTLSMountPermissions(t *testing.T) {
 	}
 }
 
+func TestSecurityIntegrationStopsBootstrapBeforeReusingDurableVolume(t *testing.T) {
+	body, err := os.ReadFile("scripts/integration-security-docker.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(body)
+	stop := strings.Index(contents, `docker stop --time 30 "$bootstrap_name"`)
+	remove := strings.Index(contents, `docker rm "$bootstrap_name"`)
+	restart := strings.Index(contents, `--name "$server_name"`)
+	if stop < 0 || remove < 0 || restart < 0 || stop > remove || remove > restart {
+		t.Fatal("security integration must gracefully stop and remove bootstrap before reusing its durable volume")
+	}
+}
+
 func TestSecurityIntegrationGrantsIndependentQueryExplainPermission(t *testing.T) {
 	body, err := os.ReadFile("integration_security_test.go")
 	if err != nil {

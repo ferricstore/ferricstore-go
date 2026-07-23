@@ -90,7 +90,8 @@ export FERRICSTORE_SECURITY_READER_PASSWORD="sdk-reader-$suffix"
 wait_for_test '^TestIntegrationSecurityBootstrap$'
 unset FERRICSTORE_SECURITY_BOOTSTRAP
 
-docker rm -f "$bootstrap_name" >/dev/null
+docker stop --time 30 "$bootstrap_name" >/dev/null
+docker rm "$bootstrap_name" >/dev/null
 docker run -d \
   --name "$server_name" \
   --hostname "$node_hostname" \

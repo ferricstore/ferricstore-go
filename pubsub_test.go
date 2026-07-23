@@ -173,12 +173,13 @@ func TestPubSubReconnectsAndReplaysSubscriptions(t *testing.T) {
 
 	pubsub := NewPubSub(listener.Addr().String(), WithNativeTimeout(500*time.Millisecond), WithNativeHeartbeat(0, 0))
 	defer func() { _ = pubsub.Close() }()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err := pubsub.Subscribe(ctx, "jobs"); err != nil {
+	subscribeCtx, cancelSubscribe := context.WithTimeout(context.Background(), time.Second)
+	if _, err := pubsub.Subscribe(subscribeCtx, "jobs"); err != nil {
+		cancelSubscribe()
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
+	cancelSubscribe()
+	deadline := time.Now().Add(2 * time.Second)
 	for {
 		pubsub.exec.mu.Lock()
 		disconnected := pubsub.exec.conn == nil
@@ -191,10 +192,12 @@ func TestPubSubReconnectsAndReplaysSubscriptions(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if got, err := pubsub.exec.command(ctx, "PING"); err != nil || asString(got) != "PONG" {
+	reconnectCtx, cancelReconnect := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelReconnect()
+	if got, err := pubsub.exec.command(reconnectCtx, "PING"); err != nil || asString(got) != "PONG" {
 		t.Fatalf("ordinary reconnecting command = %#v, %v", got, err)
 	}
-	message, err := pubsub.Next(ctx)
+	message, err := pubsub.Next(reconnectCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
