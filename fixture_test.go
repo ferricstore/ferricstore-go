@@ -2,22 +2,39 @@ package ferricstore
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-func TestIntegrationDockerScriptDefaultsToFerricStore0101(t *testing.T) {
+const pinnedIntegrationServerVersion = "0.10.2"
+
+func TestIntegrationDockerScriptDefaultsToPinnedFerricStore(t *testing.T) {
+	compose, err := os.ReadFile("docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imagePattern := regexp.MustCompile(
+		`ghcr\.io/ferricstore/ferricstore:` + regexp.QuoteMeta(pinnedIntegrationServerVersion) + `@sha256:[0-9a-f]{64}`,
+	)
+	pinnedImage := imagePattern.FindString(string(compose))
+	if pinnedImage == "" {
+		t.Fatalf("docker-compose.yml should pin an immutable FerricStore %s image", pinnedIntegrationServerVersion)
+	}
+
 	for _, path := range []string{
 		"scripts/integration-docker.sh",
 		"scripts/integration-security-docker.sh",
 		"scripts/integration-cluster-docker.sh",
+		".github/workflows/test.yml",
+		".github/workflows/release.yml",
 	} {
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(body), "ghcr.io/ferricstore/ferricstore:0.10.1") {
-			t.Fatalf("%s should default to FerricStore 0.10.1", path)
+		if !strings.Contains(string(body), pinnedImage) {
+			t.Fatalf("%s should use the pinned integration image %s", path, pinnedImage)
 		}
 	}
 }
@@ -66,13 +83,16 @@ func TestSecurityIntegrationStopsBootstrapBeforeReusingDurableVolume(t *testing.
 	}
 }
 
-func TestSecurityIntegrationGrantsIndependentQueryExplainPermission(t *testing.T) {
+func TestSecurityIntegrationGrantsNativeBootstrapAndQueryPermissions(t *testing.T) {
 	body, err := os.ReadFile("integration_security_test.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), `"+FLOW.QUERY.EXPLAIN"`) {
-		t.Fatal("query ACL fixture must grant FLOW.QUERY.EXPLAIN before exercising EXPLAIN")
+	contents := string(body)
+	for _, command := range []string{"SHARDS", "SUBSCRIBE_EVENTS", "FLOW.QUERY", "FLOW.QUERY.EXPLAIN"} {
+		if !strings.Contains(contents, `"+`+command+`"`) {
+			t.Fatalf("query ACL fixture must grant %s", command)
+		}
 	}
 }
 
@@ -82,7 +102,7 @@ func TestDockerComposeDefaultsToSupportedFerricStoreVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := string(body)
-	if !strings.Contains(contents, "ghcr.io/ferricstore/ferricstore:0.10.1") {
+	if !strings.Contains(contents, "ghcr.io/ferricstore/ferricstore:"+pinnedIntegrationServerVersion) {
 		t.Fatal("docker compose should default to the SDK's pinned supported server version")
 	}
 	if strings.Contains(contents, "ferricstore:latest") {

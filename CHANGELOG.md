@@ -7,7 +7,7 @@
 - Compile `List`, `Search`, `Terminals`, `Failures`, `Stuck`, and lineage convenience reads into bounded FQL instead of sending the removed collection commands; collection helpers now require an explicit partition and reject unsupported cold or synchronous-projection options.
 - Rename the unrelated management telemetry helper to `TelemetryFlowQuery`, the release's single audited pre-1.0 source break, so `FlowQuery` names the durable query surface.
 - Keep FQL text opaque in topology-aware clients so the server's prepared-command contract remains the sole parser, ACL key discoverer, and shard router; validate query and index bounds before transport and preserve structured native errors through wrapped value or pointer transports.
-- Add live pagination, count, explain/analyze, index-status, eventual-projection, convenience, and scoped ACL integration coverage against the pinned FerricStore 0.10.1 image.
+- Add live pagination, count, explain/analyze, index-status, eventual-projection, convenience, and scoped ACL integration coverage against the pinned FerricStore 0.10.2 image.
 - Reject incompatible index-status contracts during HELLO, validate FQL text and names as UTF-8 before I/O, enforce explain fingerprints, and preserve Flow metadata normalization in query conveniences.
 - Reject collection shapes that cannot select a bounded index before transport; `FlowQueryIndexes(ctx)` lists the catalog while its optional single non-empty ID selects one index.
 - Reject malformed UTF-8 query response text and quality labels over 64 bytes without converting invalid byte slices into retained strings.

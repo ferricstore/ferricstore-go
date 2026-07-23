@@ -34,7 +34,8 @@ func TestIntegrationSecurityBootstrap(t *testing.T) {
 	}
 	if err := client.ACLSetUser(ctx, securityReaderUser(t),
 		"on", ">"+securityReaderPassword(t), "-@all", "+PING", "+GET", "+SET",
-		"+FLOW.QUERY", "+FLOW.QUERY.EXPLAIN", "~secure:allowed:*"); err != nil {
+		"+SHARDS", "+SUBSCRIBE_EVENTS", "+FLOW.QUERY", "+FLOW.QUERY.EXPLAIN",
+		"~secure:allowed:*"); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.ACLSave(ctx); err != nil {
