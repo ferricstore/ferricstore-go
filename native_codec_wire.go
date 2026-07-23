@@ -380,10 +380,15 @@ func writeNativeInt(buf *nativeEncodeBuffer, value int64) error {
 }
 
 func writeNativeUint(buf *nativeEncodeBuffer, value uint64) error {
-	if value > math.MaxInt64 {
-		return fmt.Errorf("ferricstore native integer overflows int64: %d", value)
+	if value <= math.MaxInt64 {
+		return writeNativeInt(buf, int64(value))
 	}
-	return writeNativeInt(buf, int64(value))
+	if err := buf.writeByte(8); err != nil {
+		return err
+	}
+	var raw [8]byte
+	binary.BigEndian.PutUint64(raw[:], value)
+	return buf.write(raw[:])
 }
 
 func writeNativeFloat(buf *nativeEncodeBuffer, value float64) error {

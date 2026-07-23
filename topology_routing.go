@@ -255,20 +255,15 @@ var typeScopedFlowCommands = map[string]bool{
 	"FLOW.ATTRIBUTE_VALUES":    true,
 	"FLOW.ATTRIBUTES":          true,
 	"FLOW.BUDGET.LIST":         true,
-	"FLOW.FAILURES":            true,
 	"FLOW.GOVERNANCE.OVERVIEW": true,
 	"FLOW.INFO":                true,
 	"FLOW.LIMIT.LIST":          true,
-	"FLOW.LIST":                true,
 	"FLOW.POLICY.GET":          true,
 	"FLOW.POLICY.SET":          true,
 	"FLOW.RETENTION_CLEANUP":   true,
 	"FLOW.SCHEDULE.FIRE_DUE":   true,
 	"FLOW.SCHEDULE.LIST":       true,
-	"FLOW.SEARCH":              true,
 	"FLOW.STATS":               true,
-	"FLOW.STUCK":               true,
-	"FLOW.TERMINALS":           true,
 }
 
 var flowScheduleCommands = map[string]bool{

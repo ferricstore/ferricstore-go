@@ -1,0 +1,1 @@
+- (*Client).FlowQuery: changed from func(context.Context, map[string]any) ([]any, error) to func(context.Context, string, map[string]any) (*FlowQueryResult, error)

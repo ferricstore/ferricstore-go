@@ -290,7 +290,7 @@ func TestManagementHelpersBuildNarrowCommands(t *testing.T) {
 	if _, err := client.NamespaceUsage(ctx, "tenant:a:"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.FlowQuery(ctx, map[string]any{"type": "order", "state": "queued"}); err != nil {
+	if _, err := client.TelemetryFlowQuery(ctx, map[string]any{"type": "order", "state": "queued"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.FlowHistory(ctx, "flow-1", map[string]any{"max_events": 10}); err != nil {

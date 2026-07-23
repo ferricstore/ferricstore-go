@@ -28,7 +28,7 @@ func TestAdminArrayResponsesRejectMalformedNestedMaps(t *testing.T) {
 	client := NewClientWithExecutor(&fakeExecutor{value: []any{
 		map[interface{}]interface{}{true: "value"},
 	}})
-	if _, err := client.FlowQuery(context.Background(), nil); err == nil {
+	if _, err := client.TelemetryFlowQuery(context.Background(), nil); err == nil {
 		t.Fatal("admin array accepted a malformed nested map")
 	}
 }

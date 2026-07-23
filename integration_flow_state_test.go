@@ -75,7 +75,13 @@ func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 	assertManyMutationCommands(t, ctx, client, typeName, runID, now)
 	assertRepairIndexAndRewindCommands(t, ctx, client, typeName, runID, now)
 
-	requireValue(t, must[[]FlowRecord](t)(client.List(ctx, typeName, ReadOptions{Count: Int(100)})))
+	requireValue(t, waitForFlowQueryRecord(t, ctx, signalID, func() ([]FlowRecord, error) {
+		return client.List(ctx, typeName, ReadOptions{
+			PartitionKey: signalPartition,
+			State:        "shipped",
+			Count:        Int(100),
+		})
+	}))
 	requireMap(t, must[map[string]any](t)(client.Info(ctx, typeName, "", nil, nil)))
 	_ = must[[]any](t)(client.History(ctx, HistoryOptions{ID: signalID, PartitionKey: signalPartition, Count: 5, IncludeCold: Bool(false), ConsistentProjection: Bool(true)}))
 	requireMap(t, must[map[string]any](t)(client.RetentionCleanup(ctx, RetentionCleanupOptions{Limit: Int(10)})))

@@ -53,22 +53,8 @@ func buildFlowNativeCommand(name string, args []any) (nativeCommand, bool, error
 		return buildFlowClaimDueAnyNative(args)
 	case "FLOW.RECLAIM":
 		return buildFlowQueryNative(name, nativeOpFlowReclaim, args, nativeFlowQueryShape{leadingFields: []string{"type"}, repeatedStates: true})
-	case "FLOW.LIST":
-		return buildFlowQueryNative(name, nativeOpFlowList, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
-	case "FLOW.TERMINALS":
-		return buildFlowQueryNative(name, nativeOpFlowTerminals, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
-	case "FLOW.FAILURES":
-		return buildFlowQueryNative(name, nativeOpFlowFailures, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
-	case "FLOW.BY_PARENT":
-		return buildFlowQueryNative(name, nativeOpFlowByParent, args, nativeFlowQueryShape{leadingFields: []string{"parent_id"}})
-	case "FLOW.BY_ROOT":
-		return buildFlowQueryNative(name, nativeOpFlowByRoot, args, nativeFlowQueryShape{leadingFields: []string{"root_id"}})
-	case "FLOW.BY_CORRELATION":
-		return buildFlowQueryNative(name, nativeOpFlowByCorrelation, args, nativeFlowQueryShape{leadingFields: []string{"correlation_id"}})
 	case "FLOW.INFO":
 		return buildFlowQueryNative(name, nativeOpFlowInfo, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
-	case "FLOW.STUCK":
-		return buildFlowQueryNative(name, nativeOpFlowStuck, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
 	case "FLOW.RETENTION_CLEANUP":
 		return buildFlowQueryNative(name, nativeOpFlowRetentionCleanup, args, nativeFlowQueryShape{})
 	case "FLOW.STATS":
@@ -77,8 +63,8 @@ func buildFlowNativeCommand(name string, args []any) (nativeCommand, bool, error
 		return buildFlowQueryNative(name, nativeOpFlowAttributes, args, nativeFlowQueryShape{leadingFields: []string{"type"}})
 	case "FLOW.ATTRIBUTE_VALUES":
 		return buildFlowQueryNative(name, nativeOpFlowAttributeValues, args, nativeFlowQueryShape{leadingFields: []string{"type", "attribute"}})
-	case "FLOW.SEARCH":
-		return buildFlowQueryNative(name, nativeOpFlowSearch, args, nativeFlowQueryShape{nestedStateMeta: true})
+	case "FLOW.QUERY":
+		return buildFlowQueryRequestNative(args)
 	case "FLOW.COMPLETE_MANY":
 		return buildFlowCompleteManyAnyNative(args)
 	case "FLOW.TRANSITION_MANY":

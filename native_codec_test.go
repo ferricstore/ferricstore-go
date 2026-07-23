@@ -568,36 +568,6 @@ func TestNativeFlowRunStepsManyBuilder(t *testing.T) {
 	}
 }
 
-func TestNativeFlowSearchUsesTypedSchema(t *testing.T) {
-	command, err := buildNativeCommand([]any{
-		"FLOW.SEARCH",
-		"TYPE", "order",
-		"STATE", "completed",
-		"PARTITION", "tenant:1",
-		"COUNT", 10,
-		"REV", true,
-		"CONSISTENT_PROJECTION", true,
-		"ATTRIBUTE", "tenant", "acme",
-		"STATE_META", "completed", "version", 3,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if command.opcode != nativeOpFlowSearch || command.laneID != 1 {
-		t.Fatalf("expected typed flow search opcode, got %#v", command)
-	}
-	payload := command.payload.(map[string]any)
-	want := map[string]any{
-		"type": "order", "state": "completed", "partition_key": "tenant:1",
-		"count": 10, "rev": true, "consistent_projection": true,
-		"attributes": map[string]any{"tenant": "acme"},
-		"state_meta": map[string]map[string]any{"completed": {"version": 3}},
-	}
-	if !reflect.DeepEqual(payload, want) {
-		t.Fatalf("unexpected typed flow search payload: %#v", payload)
-	}
-}
-
 func TestNativeFlowPolicySetBuilderIncludesIndexes(t *testing.T) {
 	command, err := buildNativeCommand([]any{
 		"FLOW.POLICY.SET", "order",

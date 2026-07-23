@@ -22,11 +22,10 @@ func TestTopologyRoutingKeyMatchesLatestSDKs(t *testing.T) {
 	if key, ok := routingKeyForCommand([]any{"KEY_INFO", "account:1"}); !ok || asString(key) != "account:1" {
 		t.Fatalf("KEY_INFO should route by its key, got key=%#v ok=%v", key, ok)
 	}
-	if key, ok := routingKeyForCommand([]any{"FLOW.SEARCH", "TYPE", "order"}); ok || key != nil {
-		t.Fatalf("unpartitioned FLOW.SEARCH should stay on control, got key=%#v ok=%v", key, ok)
-	}
-	if key, ok := routingKeyForCommand([]any{"FLOW.SEARCH", "TYPE", "order", "PARTITION", "tenant:1"}); !ok || key != testFlowPartitionRouteSlot("tenant:1") {
-		t.Fatalf("partitioned FLOW.SEARCH should route by partition, got key=%#v ok=%v", key, ok)
+	query := "FROM runs WHERE partition_key = @victim AND type = @type ORDER BY updated_at_ms ASC LIMIT 10 RETURN RECORDS"
+	queryArgs := []any{"FLOW.QUERY", "FQL1", query, "type", "PARTITION", "victim", "tenant:1"}
+	if key, ok := routingKeyForCommand(queryArgs); ok || key != nil {
+		t.Fatalf("FLOW.QUERY must stay opaque for server-side prepared routing, got key=%#v ok=%v", key, ok)
 	}
 
 	taggedA := "acct:{42}:a"

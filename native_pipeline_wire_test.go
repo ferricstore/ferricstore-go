@@ -15,22 +15,7 @@ import (
 )
 
 func nativePipelineHelloForTest() map[string]any {
-	return map[string]any{
-		"protocol": "ferricstore-native",
-		"version":  int64(NativeProtocolVersion),
-		"capabilities": map[string]any{
-			"protocol_versions": []any{int64(NativeProtocolVersion)},
-			"limits": map[string]any{
-				"max_response_bytes": int64(nativeDefaultResponseBytes),
-			},
-			"response_codecs": map[string]any{
-				"typed_value": true,
-				"compact_response_opcodes": map[string]any{
-					"pipeline_v1": []any{int64(nativeOpPipeline)},
-				},
-			},
-		},
-	}
+	return nativeHelloForTest()
 }
 
 func TestNativeExecutorPipelineWire(t *testing.T) {

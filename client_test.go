@@ -443,27 +443,25 @@ func TestRunStepsManyRequiresStatesOrSteps(t *testing.T) {
 	}
 }
 
-func TestSearchBuildsCommand(t *testing.T) {
-	exec := &fakeExecutor{value: []any{map[string]any{"id": "f1", "type": "order", "state": "completed"}}}
+func TestSearchBuildsFQLCommand(t *testing.T) {
+	exec := &fakeExecutor{value: flowQueryPageResponse([]any{
+		map[string]any{"id": "f1", "type": "order", "state": "completed", "partition_key": "tenant:1"},
+	}, false, nil)}
 	client := NewClientWithExecutor(exec)
-	consistent := true
-	includeCold := true
 	rev := true
 	terminalOnly := true
 
 	records, err := client.Search(context.Background(), SearchOptions{
-		Type:                 "order",
-		State:                "completed",
-		PartitionKey:         "tenant:1",
-		Count:                Int(10),
-		FromMS:               Int64(100),
-		ToMS:                 Int64(200),
-		Rev:                  &rev,
-		TerminalOnly:         &terminalOnly,
-		IncludeCold:          &includeCold,
-		ConsistentProjection: &consistent,
-		Attributes:           map[string]any{"tenant": "acme"},
-		StateMeta:            map[string]map[string]any{"completed": {"version": 3}},
+		Type:         "order",
+		State:        "completed",
+		PartitionKey: "tenant:1",
+		Count:        Int(10),
+		FromMS:       Int64(100),
+		ToMS:         Int64(200),
+		Rev:          &rev,
+		TerminalOnly: &terminalOnly,
+		Attributes:   map[string]any{"tenant": "acme"},
+		StateMeta:    map[string]map[string]any{"completed": {"version": 3}},
 	})
 
 	if err != nil {
@@ -472,20 +470,11 @@ func TestSearchBuildsCommand(t *testing.T) {
 	if len(records) != 1 || records[0].ID != "f1" {
 		t.Fatalf("unexpected search records: %#v", records)
 	}
+	query := "FROM runs WHERE partition_key = @partition_key AND type = @type AND state = @state AND attribute['tenant'] = @attribute_0 AND state_meta['completed']['version'] = @state_meta_0 AND updated_at_ms BETWEEN @from_ms AND @to_ms ORDER BY updated_at_ms DESC LIMIT 10 RETURN RECORDS"
 	want := []any{
-		"FLOW.SEARCH",
-		"TYPE", "order",
-		"STATE", "completed",
-		"COUNT", 10,
-		"PARTITION", "tenant:1",
-		"FROM_MS", int64(100),
-		"TO_MS", int64(200),
-		"REV", "true",
-		"TERMINAL_ONLY", "true",
-		"INCLUDE_COLD", "true",
-		"CONSISTENT_PROJECTION", "true",
-		"ATTRIBUTE", "tenant", "acme",
-		"STATE_META", "completed", "version", 3,
+		"FLOW.QUERY", "FQL1", query,
+		"attribute_0", "acme", "from_ms", int64(100), "partition_key", "tenant:1",
+		"state", "completed", "state_meta_0", int64(3), "to_ms", int64(200), "type", "order",
 	}
 	assertCall(t, exec, want)
 }

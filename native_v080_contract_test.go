@@ -29,12 +29,17 @@ func nativeHelloForTestWithLimits(overrides map[string]any) map[string]any {
 		"capabilities": map[string]any{
 			"protocol_versions": []any{int64(NativeProtocolVersion)},
 			"limits":            limits,
+			"flow_query":        nativeFlowQueryCapabilitiesForTest(),
 			"schemas": map[string]any{
 				"FLOW.POLICY.SET": map[string]any{
 					"required": []any{"type"},
 					"fields": []any{
 						"type", "replace", "expected_generation", "states",
 					},
+				},
+				"FLOW.QUERY": map[string]any{
+					"required": []any{"version", "query"},
+					"fields":   []any{"version", "query", "params", "deadline_ms"},
 				},
 			},
 			"multiplexing": map[string]any{
@@ -58,6 +63,34 @@ func nativeHelloForTestWithLimits(overrides map[string]any) map[string]any {
 	}
 }
 
+func nativeFlowQueryCapabilitiesForTest() map[string]any {
+	return map[string]any{
+		"request_contract":      flowQueryRequestContract,
+		"result_contract":       flowQueryResultContract,
+		"explain_contract":      flowExplainContract,
+		"index_status_contract": flowQueryIndexesContract,
+		"capabilities": []any{
+			"flow_query_v1", "flow_explain_v1", "flow_explain_analyze_v1",
+			"flow_composite_index_v1", "flow_query_index_status_v1",
+		},
+		"language_versions": []any{flowQueryLanguageVersion},
+		"shapes": []any{
+			"runs_by_run_id_record",
+			"runs_by_partition_and_run_id_record",
+			"runs_by_partition_predicates_ordered_records",
+			"runs_by_partition_type_state_ordered_records",
+			"runs_by_partition_type_terminals_ordered_records",
+			"runs_by_partition_metadata_ordered_records",
+			"runs_by_partition_type_running_lease_deadline_ordered_records",
+			"runs_by_partition_parent_ordered_records",
+			"runs_by_partition_root_ordered_records",
+			"runs_by_partition_correlation_ordered_records",
+			"runs_by_partition_predicates_count",
+			"events_by_run_id_ordered_records",
+		},
+	}
+}
+
 func nativeHelloForTestWithEvents(events ...string) map[string]any {
 	hello := nativeHelloForTest()
 	items := make([]any, len(events))
@@ -76,10 +109,15 @@ func TestV080HelloNegotiatesResponseLimitAndCompactOpcodes(t *testing.T) {
 		"auth_required": false,
 		"capabilities": map[string]any{
 			"protocol_versions": []any{int64(1)},
+			"flow_query":        nativeFlowQueryCapabilitiesForTest(),
 			"schemas": map[string]any{
 				"FLOW.POLICY.SET": map[string]any{
 					"required": []any{"type"},
 					"fields":   []any{"type", "replace", "expected_generation"},
+				},
+				"FLOW.QUERY": map[string]any{
+					"required": []any{"version", "query"},
+					"fields":   []any{"version", "query", "params", "deadline_ms"},
 				},
 			},
 			"limits": map[string]any{

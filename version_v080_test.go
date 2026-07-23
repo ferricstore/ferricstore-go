@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-func TestV090PackageAndServerContractVersions(t *testing.T) {
-	if SDKVersion != "0.9.0" {
+func TestV010PackageAndServerContractVersions(t *testing.T) {
+	if SDKVersion != "0.10.0" {
 		t.Fatalf("SDKVersion = %q", SDKVersion)
 	}
-	if MinimumServerVersion != "0.9.1" {
+	if MinimumServerVersion != "0.10.0" {
 		t.Fatalf("MinimumServerVersion = %q", MinimumServerVersion)
 	}
 	if NativeProtocolVersion != 1 || nativeRequestVersion != 1 {
@@ -18,32 +18,32 @@ func TestV090PackageAndServerContractVersions(t *testing.T) {
 	}
 }
 
-func TestV090ChangelogHasReleaseHeading(t *testing.T) {
+func TestV010ChangelogHasReleaseHeading(t *testing.T) {
 	contents, err := os.ReadFile("CHANGELOG.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(contents), "## 0.9.0 - ") {
-		t.Fatal("CHANGELOG.md does not identify the 0.9.0 release")
+	if !strings.Contains(string(contents), "## 0.10.0 - ") {
+		t.Fatal("CHANGELOG.md does not identify the 0.10.0 release")
 	}
 }
 
-func TestV090ReleaseGuideUsesCurrentTag(t *testing.T) {
+func TestV010ReleaseGuideUsesCurrentTag(t *testing.T) {
 	contents, err := os.ReadFile("RELEASE.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(contents)
-	if !strings.Contains(text, "git tag v0.9.0") ||
-		!strings.Contains(text, "ferricstore-go@v0.9.0") {
-		t.Fatal("RELEASE.md does not use the v0.9.0 tag")
+	if !strings.Contains(text, "git tag v0.10.0") ||
+		!strings.Contains(text, "ferricstore-go@v0.10.0") {
+		t.Fatal("RELEASE.md does not use the v0.10.0 tag")
 	}
 	if strings.Contains(text, "v0.1.0") {
 		t.Fatal("RELEASE.md still contains the stale v0.1.0 tag")
 	}
 }
 
-func TestV090KeepsNativeWireProtocolV1Constants(t *testing.T) {
+func TestV010KeepsNativeWireProtocolV1Constants(t *testing.T) {
 	if nativeMagic != "FSNP" || nativeHeaderLen != 24 ||
 		nativeRequestVersion != 0x01 || nativeResponseVersion != 0x81 {
 		t.Fatalf(
@@ -60,6 +60,7 @@ func TestV090KeepsNativeWireProtocolV1Constants(t *testing.T) {
 		"FLOW.VALUE.MGET":  {nativeOpFlowValueMGet, 0x020C},
 		"FLOW.SIGNAL":      {nativeOpFlowSignal, 0x020D},
 		"FLOW.CREATE_MANY": {nativeOpFlowCreateMany, 0x020F},
+		"FLOW.QUERY":       {nativeOpFlowQuery, 0x0231},
 	}
 	for name, opcode := range wantOpcodes {
 		if opcode.got != opcode.want {

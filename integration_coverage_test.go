@@ -287,6 +287,26 @@ func TestMissingIntegrationCommandsTreatsSkippedCommandsAsMissingWhenStrict(t *t
 	}
 }
 
+func TestExpectedIntegrationCommandsUsesV010FlowQuerySurface(t *testing.T) {
+	commands := make(map[string]struct{})
+	for _, command := range expectedIntegrationCommands() {
+		commands[command] = struct{}{}
+	}
+	for _, required := range []string{"FLOW.QUERY", "FLOW.QUERY.INDEXES"} {
+		if _, ok := commands[required]; !ok {
+			t.Fatalf("missing v0.10 query command %s", required)
+		}
+	}
+	for _, removed := range []string{
+		"FLOW.LIST", "FLOW.SEARCH", "FLOW.TERMINALS", "FLOW.FAILURES", "FLOW.STUCK",
+		"FLOW.BY_PARENT", "FLOW.BY_ROOT", "FLOW.BY_CORRELATION",
+	} {
+		if _, ok := commands[removed]; ok {
+			t.Fatalf("removed collection command remains in integration coverage: %s", removed)
+		}
+	}
+}
+
 type integrationBulkStub struct {
 	doCalls   int
 	bulkCalls int
@@ -501,9 +521,6 @@ func expectedIntegrationCommands() []string {
 		"FLOW.BUDGET.LIST",
 		"FLOW.BUDGET.RELEASE",
 		"FLOW.BUDGET.RESERVE",
-		"FLOW.BY_CORRELATION",
-		"FLOW.BY_PARENT",
-		"FLOW.BY_ROOT",
 		"FLOW.CANCEL",
 		"FLOW.CANCEL_MANY",
 		"FLOW.CLAIM_DUE",
@@ -522,13 +539,11 @@ func expectedIntegrationCommands() []string {
 		"FLOW.EXTEND_LEASE",
 		"FLOW.FAIL",
 		"FLOW.FAIL_MANY",
-		"FLOW.FAILURES",
 		"FLOW.GET",
 		"FLOW.GOVERNANCE.LEDGER",
 		"FLOW.GOVERNANCE.OVERVIEW",
 		"FLOW.HISTORY",
 		"FLOW.INFO",
-		"FLOW.LIST",
 		"FLOW.LIMIT.GET",
 		"FLOW.LIMIT.LEASE",
 		"FLOW.LIMIT.LIST",
@@ -550,14 +565,13 @@ func expectedIntegrationCommands() []string {
 		"FLOW.SCHEDULE.LIST",
 		"FLOW.SCHEDULE.PAUSE",
 		"FLOW.SCHEDULE.RESUME",
-		"FLOW.SEARCH",
+		"FLOW.QUERY",
+		"FLOW.QUERY.INDEXES",
 		"FLOW.SIGNAL",
 		"FLOW.SPAWN_CHILDREN",
 		"FLOW.START_AND_CLAIM",
 		"FLOW.STATS",
 		"FLOW.STEP_CONTINUE",
-		"FLOW.STUCK",
-		"FLOW.TERMINALS",
 		"FLOW.TRANSITION",
 		"FLOW.TRANSITION_MANY",
 		"FLOW.VALUE.MGET",

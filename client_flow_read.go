@@ -2,6 +2,7 @@ package ferricstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -34,50 +35,19 @@ func (c *Client) recordOrGet(ctx context.Context, record *FlowRecord, err error,
 }
 
 func (c *Client) List(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
-	if err := validateFlowTypeRead(flowType, opt); err != nil {
-		return nil, err
-	}
-	args := []any{"FLOW.LIST", flowType}
-	appendReadOptions(&args, opt)
-	value, err := c.typedReply(ctx, args...)
+	query, params, err := buildFlowListQuery(flowType, opt)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateDefaultedFlowResponseLimit(
-		"FLOW.LIST", value, opt.Count, defaultFlowResponseLimitV080, 0,
-	); err != nil {
-		return nil, err
-	}
-	return recordsFromNative(value, c.codec)
+	return c.executeFlowRecordQuery(ctx, query, params, flowQueryReadLimit(opt.Count))
 }
 
 func (c *Client) Search(ctx context.Context, opt SearchOptions) ([]FlowRecord, error) {
-	if err := validateFlowSearch(opt); err != nil {
-		return nil, err
-	}
-	args := []any{"FLOW.SEARCH"}
-	appendOpt(&args, "TYPE", opt.Type)
-	appendOpt(&args, "STATE", opt.State)
-	appendIntPtr(&args, "COUNT", opt.Count)
-	appendOpt(&args, "PARTITION", opt.PartitionKey)
-	appendInt64Ptr(&args, "FROM_MS", opt.FromMS)
-	appendInt64Ptr(&args, "TO_MS", opt.ToMS)
-	appendBoolPtr(&args, "REV", opt.Rev)
-	appendBoolPtr(&args, "TERMINAL_ONLY", opt.TerminalOnly)
-	appendBoolPtr(&args, "INCLUDE_COLD", opt.IncludeCold)
-	appendBoolPtr(&args, "CONSISTENT_PROJECTION", opt.ConsistentProjection)
-	appendAttributes(&args, opt.Attributes, nil, nil)
-	appendSearchStateMeta(&args, opt.StateMeta)
-	value, err := c.typedReply(ctx, args...)
+	query, params, err := buildFlowSearchQuery(opt)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateDefaultedFlowResponseLimit(
-		"FLOW.SEARCH", value, opt.Count, defaultFlowResponseLimitV080, 0,
-	); err != nil {
-		return nil, err
-	}
-	return recordsFromNative(value, c.codec)
+	return c.executeFlowRecordQuery(ctx, query, params, flowQueryReadLimit(opt.Count))
 }
 
 func (c *Client) Exists(ctx context.Context, flowType string, opt ReadOptions) (bool, error) {
@@ -94,53 +64,71 @@ func (c *Client) Exists(ctx context.Context, flowType string, opt ReadOptions) (
 }
 
 func (c *Client) Terminals(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
-	if err := validateFlowTypeRead(flowType, opt); err != nil {
-		return nil, err
-	}
-	return c.indexRead(ctx, "FLOW.TERMINALS", flowType, opt)
-}
-
-func (c *Client) Failures(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
-	if err := validateFlowTypeRead(flowType, opt); err != nil {
-		return nil, err
-	}
-	return c.indexRead(ctx, "FLOW.FAILURES", flowType, opt)
-}
-
-func (c *Client) ByParent(ctx context.Context, parentFlowID string, opt ReadOptions) ([]FlowRecord, error) {
-	if err := validateFlowIDRead("parent flow id", parentFlowID, opt); err != nil {
-		return nil, err
-	}
-	return c.indexRead(ctx, "FLOW.BY_PARENT", parentFlowID, opt)
-}
-
-func (c *Client) ByRoot(ctx context.Context, rootFlowID string, opt ReadOptions) ([]FlowRecord, error) {
-	if err := validateFlowIDRead("root flow id", rootFlowID, opt); err != nil {
-		return nil, err
-	}
-	return c.indexRead(ctx, "FLOW.BY_ROOT", rootFlowID, opt)
-}
-
-func (c *Client) ByCorrelation(ctx context.Context, correlationID string, opt ReadOptions) ([]FlowRecord, error) {
-	if err := validateFlowReadKey("flow correlation id", correlationID, opt); err != nil {
-		return nil, err
-	}
-	return c.indexRead(ctx, "FLOW.BY_CORRELATION", correlationID, opt)
-}
-
-func (c *Client) indexRead(ctx context.Context, command, key string, opt ReadOptions) ([]FlowRecord, error) {
-	args := []any{command, key}
-	appendReadOptions(&args, opt)
-	value, err := c.typedReply(ctx, args...)
+	query, params, err := buildFlowTerminalQuery(flowType, opt)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateDefaultedFlowResponseLimit(
-		command, value, opt.Count, defaultFlowResponseLimitV080, 0,
-	); err != nil {
+	return c.executeFlowRecordQuery(ctx, query, params, flowQueryReadLimit(opt.Count))
+}
+
+func (c *Client) Failures(ctx context.Context, flowType string, opt ReadOptions) ([]FlowRecord, error) {
+	query, params, err := buildFlowFailureQuery(flowType, opt)
+	if err != nil {
 		return nil, err
 	}
-	return recordsFromNative(value, c.codec)
+	return c.executeFlowRecordQuery(ctx, query, params, flowQueryReadLimit(opt.Count))
+}
+
+func (c *Client) ByParent(ctx context.Context, parentFlowID string, opt ReadOptions) ([]FlowRecord, error) {
+	query, params, err := buildFlowLineageQuery("parent_flow_id", parentFlowID, opt)
+	if err != nil {
+		return nil, err
+	}
+	return c.executeFlowRecordQuery(ctx, query, params, flowQueryReadLimit(opt.Count))
+}
+
+func (c *Client) ByRoot(ctx context.Context, rootFlowID string, opt ReadOptions) ([]FlowRecord, error) {
+	query, params, err := buildFlowLineageQuery("root_flow_id", rootFlowID, opt)
+	if err != nil {
+		return nil, err
+	}
+	return c.executeFlowRecordQuery(ctx, query, params, flowQueryReadLimit(opt.Count))
+}
+
+func (c *Client) ByCorrelation(ctx context.Context, correlationID string, opt ReadOptions) ([]FlowRecord, error) {
+	query, params, err := buildFlowLineageQuery("correlation_id", correlationID, opt)
+	if err != nil {
+		return nil, err
+	}
+	return c.executeFlowRecordQuery(ctx, query, params, flowQueryReadLimit(opt.Count))
+}
+
+func (c *Client) executeFlowRecordQuery(ctx context.Context, query string, params map[string]any, limit int) ([]FlowRecord, error) {
+	result, err := c.FlowQuery(ctx, query, params)
+	if err != nil {
+		return nil, err
+	}
+	if result.Count != nil {
+		return nil, errors.New("FLOW record convenience query returned a count result")
+	}
+	if len(result.Records) > limit {
+		return nil, fmt.Errorf("FLOW.QUERY returned %d items, limit is %d", len(result.Records), limit)
+	}
+	records := make([]FlowRecord, len(result.Records))
+	for index, mapping := range result.Records {
+		records[index], err = recordFromMap(mapping, c.codec)
+		if err != nil {
+			return nil, fmt.Errorf("decode FLOW.QUERY record %d: %w", index, err)
+		}
+	}
+	return records, nil
+}
+
+func flowQueryReadLimit(count *int) int {
+	if count == nil {
+		return defaultFlowResponseLimitV080
+	}
+	return *count
 }
 
 func appendReadOptions(args *[]any, opt ReadOptions) {
@@ -172,24 +160,11 @@ func (c *Client) Info(ctx context.Context, flowType, partitionKey string, includ
 }
 
 func (c *Client) Stuck(ctx context.Context, flowType string, partitionKey string, count *int, olderThanMS, now *int64) ([]FlowRecord, error) {
-	if err := validateFlowStuck(flowType, count, olderThanMS, now); err != nil {
-		return nil, err
-	}
-	args := []any{"FLOW.STUCK", flowType}
-	appendOpt(&args, "PARTITION", partitionKey)
-	appendIntPtr(&args, "COUNT", count)
-	appendInt64Ptr(&args, "OLDER_THAN", olderThanMS)
-	appendInt64Ptr(&args, "NOW", now)
-	value, err := c.typedReply(ctx, args...)
+	query, params, err := buildFlowStuckQuery(flowType, partitionKey, count, olderThanMS, now)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateDefaultedFlowResponseLimit(
-		"FLOW.STUCK", value, count, defaultFlowResponseLimitV080, 0,
-	); err != nil {
-		return nil, err
-	}
-	return recordsFromNative(value, c.codec)
+	return c.executeFlowRecordQuery(ctx, query, params, flowQueryReadLimit(count))
 }
 
 func (c *Client) History(ctx context.Context, opt HistoryOptions) ([]any, error) {

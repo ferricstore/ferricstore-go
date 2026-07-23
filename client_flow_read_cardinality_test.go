@@ -13,25 +13,27 @@ func TestFlowReadResponsesCannotExceedRequestedCount(t *testing.T) {
 		call func(*Client) error
 	}{
 		{name: "list", call: func(client *Client) error {
-			_, err := client.List(context.Background(), "work", ReadOptions{Count: Int(1)})
+			_, err := client.List(context.Background(), "work", ReadOptions{PartitionKey: "tenant-a", Count: Int(1)})
 			return err
 		}},
 		{name: "search", call: func(client *Client) error {
-			_, err := client.Search(context.Background(), SearchOptions{Count: Int(1)})
+			_, err := client.Search(context.Background(), SearchOptions{
+				PartitionKey: "tenant-a", Count: Int(1), Attributes: map[string]any{"key": "value"},
+			})
 			return err
 		}},
 		{name: "lineage", call: func(client *Client) error {
-			_, err := client.ByParent(context.Background(), "parent", ReadOptions{Count: Int(1)})
+			_, err := client.ByParent(context.Background(), "parent", ReadOptions{PartitionKey: "tenant-a", Count: Int(1)})
 			return err
 		}},
 		{name: "stuck", call: func(client *Client) error {
-			_, err := client.Stuck(context.Background(), "work", "", Int(1), nil, nil)
+			_, err := client.Stuck(context.Background(), "work", "tenant-a", Int(1), nil, nil)
 			return err
 		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := test.call(NewClientWithExecutor(&fakeExecutor{value: records}))
+			err := test.call(NewClientWithExecutor(&fakeExecutor{value: flowQueryPageResponse(records, false, nil)}))
 			if err == nil || !strings.Contains(err.Error(), "returned 2 items, limit is 1") {
 				t.Fatalf("cardinality error = %v", err)
 			}
@@ -50,14 +52,14 @@ func TestFlowHistoryResponseCannotExceedRequestedCount(t *testing.T) {
 	}
 }
 
-func TestFlowReadResponseCannotExceedV080DefaultCount(t *testing.T) {
+func TestFlowReadResponseCannotExceedV010QueryPageLimit(t *testing.T) {
 	records := make([]any, 101)
 	for index := range records {
 		records[index] = map[string]any{"id": "flow"}
 	}
-	client := NewClientWithExecutor(&fakeExecutor{value: records})
-	if _, err := client.List(context.Background(), "work", ReadOptions{}); err == nil ||
-		!strings.Contains(err.Error(), "returned 101 items, limit is 100") {
+	client := NewClientWithExecutor(&fakeExecutor{value: flowQueryPageResponse(records, false, nil)})
+	if _, err := client.List(context.Background(), "work", ReadOptions{PartitionKey: "tenant-a"}); err == nil ||
+		!strings.Contains(err.Error(), "expected at most 100 records") {
 		t.Fatalf("default cardinality error = %v", err)
 	}
 }

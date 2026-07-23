@@ -20,12 +20,12 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.9.1`, by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.10.1`, by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
-The Go package contract is v0.9.0 and requires FerricStore 0.9.1 or newer. This is a breaking beta API update; the native wire protocol remains v1.
+The Go package contract is v0.10.0 and requires FerricStore 0.10.0 or newer. This is a breaking beta API update; the native wire protocol remains v1.
 
 ## Client
 
@@ -214,6 +214,53 @@ fmt.Printf("installed policy generation %d\n", updated.Generation)
 Generations must be in `0..9_007_199_254_740_991`. FIFO ordering is enforced
 by FerricStore per `(type, state, partition_key)`, so worker concurrency can
 remain greater than one to process independent partitions concurrently.
+
+## Flow Query Planner
+
+FerricStore 0.10.0 replaces the collection read commands with bounded FQL1.
+Queries use named scalar parameters and return a versioned page or exact count
+with quality and resource-usage metadata:
+
+```go
+query := `FROM runs
+WHERE partition_key = @partition AND type = @type AND state = @state
+ORDER BY updated_at_ms DESC LIMIT 25 RETURN RECORDS`
+
+params := map[string]any{
+	"partition": "partition-a",
+	"type":      "order",
+	"state":     "failed",
+}
+page, err := client.FlowQuery(ctx, query, params)
+if err != nil {
+	var queryErr *ferricstore.FlowQueryError
+	if errors.As(err, &queryErr) {
+		log.Printf("%s at %+v: %s", queryErr.Code, queryErr.Position, queryErr.Hint)
+	}
+	return err
+}
+```
+
+Pass `page.Page.Cursor` as a named parameter to the same query with
+`CURSOR @cursor` before `RETURN RECORDS`. Cursors are authenticated and bound
+to the original query, parameters, ordering, and index generation.
+
+Inspect plans without returning data, or execute a bounded plan only for its
+actual usage counters:
+
+```go
+planned, err := client.FlowExplain(ctx, query, params)
+analyzed, err := client.FlowExplainAnalyze(ctx, query, params)
+indexes, err := client.FlowQueryIndexes(ctx)
+```
+
+`FlowQueryIndexes` is an admin command and exposes index generations, build and
+validation progress, retirement, service health, and statistics freshness.
+`List`, `Search`, `Terminals`, `Failures`, `Stuck`, `ByParent`, `ByRoot`, and
+`ByCorrelation` remain convenience APIs but now issue FQL. Their collection
+forms require `PartitionKey`; query projection is eventual, and the removed
+`IncludeCold` and `ConsistentProjection` behaviors are rejected instead of
+silently changing query guarantees.
 
 ## Native Events and Flow Wake Signals
 

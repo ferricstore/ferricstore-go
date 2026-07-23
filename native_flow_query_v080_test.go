@@ -20,17 +20,6 @@ func TestV080FlowQueriesUseDedicatedNativeSchemas(t *testing.T) {
 			},
 		},
 		{
-			name: "list", opcode: 0x020E,
-			args: []any{
-				"FLOW.LIST", "email", "STATE", "queued", "COUNT", 5,
-				"ATTRIBUTE", "tenant", "a", "REV", "true",
-			},
-			want: map[string]any{
-				"type": "email", "state": "queued", "count": 5,
-				"attributes": map[string]any{"tenant": "a"}, "rev": true,
-			},
-		},
-		{
 			name: "history", opcode: 0x020A,
 			args: []any{
 				"FLOW.HISTORY", "flow-1", "COUNT", 10, "FROM_EVENT", "evt-1",
@@ -42,16 +31,6 @@ func TestV080FlowQueriesUseDedicatedNativeSchemas(t *testing.T) {
 			},
 		},
 		{
-			name: "search nested state meta", opcode: 0x0230,
-			args: []any{
-				"FLOW.SEARCH", "TYPE", "email", "STATE_META", "queued", "attempt", int64(2),
-			},
-			want: map[string]any{
-				"type":       "email",
-				"state_meta": map[string]map[string]any{"queued": {"attempt": int64(2)}},
-			},
-		},
-		{
 			name: "stats", opcode: 0x022D,
 			args: []any{"FLOW.STATS", "email", "STATE", "queued"},
 			want: map[string]any{"type": "email", "state": "queued"},
@@ -60,16 +39,6 @@ func TestV080FlowQueriesUseDedicatedNativeSchemas(t *testing.T) {
 			name: "attribute values", opcode: 0x022F,
 			args: []any{"FLOW.ATTRIBUTE_VALUES", "email", "tenant", "COUNT", 5},
 			want: map[string]any{"type": "email", "attribute": "tenant", "count": 5},
-		},
-		{
-			name: "by parent", opcode: 0x0219,
-			args: []any{"FLOW.BY_PARENT", "parent-1", "COUNT", 5},
-			want: map[string]any{"parent_id": "parent-1", "count": 5},
-		},
-		{
-			name: "stuck", opcode: 0x021D,
-			args: []any{"FLOW.STUCK", "email", "OLDER_THAN", int64(1000), "NOW", int64(2000)},
-			want: map[string]any{"type": "email", "older_than_ms": int64(1000), "now_ms": int64(2000)},
 		},
 		{
 			name: "retention cleanup", opcode: 0x0221,

@@ -7,9 +7,8 @@ import (
 )
 
 type nativeFlowQueryShape struct {
-	leadingFields   []string
-	repeatedStates  bool
-	nestedStateMeta bool
+	leadingFields  []string
+	repeatedStates bool
 }
 
 func buildFlowClaimDueAnyNative(args []any) (nativeCommand, bool, error) {
@@ -88,17 +87,6 @@ func appendFlowQueryOptions(payload map[string]any, args []any, shape nativeFlow
 				index += 2
 				continue
 			}
-		case "STATE_META":
-			if shape.nestedStateMeta {
-				if index+3 >= len(args) {
-					return false, errors.New("FLOW.SEARCH STATE_META requires state, name, and value")
-				}
-				putNativeNestedMapValue(
-					payload, "state_meta", asString(args[index+1]), asString(args[index+2]), args[index+3],
-				)
-				index += 4
-				continue
-			}
 		case "ATTRIBUTE":
 			if index+2 >= len(args) {
 				return false, errors.New("FLOW read ATTRIBUTE requires name and value")
@@ -123,18 +111,4 @@ func appendFlowQueryOptions(payload map[string]any, args []any, shape nativeFlow
 		index += 2
 	}
 	return true, nil
-}
-
-func putNativeNestedMapValue(payload map[string]any, field, outer, inner string, value any) {
-	nested, _ := payload[field].(map[string]map[string]any)
-	if nested == nil {
-		nested = make(map[string]map[string]any)
-		payload[field] = nested
-	}
-	mapping := nested[outer]
-	if mapping == nil {
-		mapping = make(map[string]any)
-		nested[outer] = mapping
-	}
-	mapping[inner] = value
 }

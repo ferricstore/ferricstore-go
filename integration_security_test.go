@@ -33,7 +33,8 @@ func TestIntegrationSecurityBootstrap(t *testing.T) {
 		t.Fatalf("authenticate after default-user bootstrap (SETUSER error %v): %v", setAdminErr, err)
 	}
 	if err := client.ACLSetUser(ctx, securityReaderUser(t),
-		"on", ">"+securityReaderPassword(t), "-@all", "+PING", "+GET", "+SET", "~secure:allowed:*"); err != nil {
+		"on", ">"+securityReaderPassword(t), "-@all", "+PING", "+GET", "+SET",
+		"+FLOW.QUERY", "+FLOW.QUERY.EXPLAIN", "~secure:allowed:*"); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.ACLSave(ctx); err != nil {
@@ -94,6 +95,37 @@ func TestIntegrationSecurityAuthenticationAndACL(t *testing.T) {
 	}
 	if _, err := reader.Delete(ctx, "secure:allowed:write"); err == nil {
 		t.Fatal("reader executed a command outside its ACL command set")
+	}
+
+	queryID := "secure:allowed:query:" + integrationSuffix("acl")
+	queryPartition := "secure:allowed:query:partition"
+	queryType := "go-sdk-security-query"
+	if _, err := admin.Create(ctx, CreateOptions{
+		ID: queryID, Type: queryType, State: "ready", PartitionKey: queryPartition,
+		NowMS: time.Now().UnixMilli(), Idempotent: Bool(true),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	query := "FROM runs WHERE partition_key = @partition AND type = @type AND state = @state ORDER BY updated_at_ms ASC LIMIT 10 RETURN RECORDS"
+	params := map[string]any{"partition": queryPartition, "type": queryType, "state": "ready"}
+	waitForFlowQueryResult(t, ctx, func() (*FlowQueryResult, error) {
+		return reader.FlowQuery(ctx, query, params)
+	}, func(result *FlowQueryResult) bool {
+		return result != nil && len(result.Records) == 1
+	})
+	if explain, err := reader.FlowExplain(ctx, query, params); err != nil || explain.Status != "planned" {
+		t.Fatalf("reader allowed EXPLAIN = %#v, %v", explain, err)
+	}
+
+	deniedParams := map[string]any{"partition": "secure:denied:query:partition", "type": queryType, "state": "ready"}
+	if _, err := reader.FlowQuery(ctx, query, deniedParams); err == nil {
+		t.Fatal("reader queried a partition outside its ACL key pattern")
+	}
+	if _, err := reader.FlowExplain(ctx, query, deniedParams); err == nil {
+		t.Fatal("reader explained a partition outside its ACL key pattern")
+	}
+	if _, err := reader.FlowQueryIndexes(ctx); err == nil {
+		t.Fatal("reader accessed admin-only FLOW.QUERY.INDEXES")
 	}
 }
 

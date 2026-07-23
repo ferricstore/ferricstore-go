@@ -4,6 +4,7 @@ package ferricstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -102,6 +103,90 @@ func integrationAddress() string {
 
 func integrationSuffix(name string) string {
 	return fmt.Sprintf("%s:%d", name, time.Now().UnixNano())
+}
+
+const (
+	integrationProjectionTimeout = 30 * time.Second
+	integrationProjectionRetry   = 100 * time.Millisecond
+)
+
+func waitForFlowQueryRecord(
+	t *testing.T,
+	ctx context.Context,
+	id string,
+	query func() ([]FlowRecord, error),
+) []FlowRecord {
+	t.Helper()
+	deadline := time.NewTimer(integrationProjectionTimeout)
+	defer deadline.Stop()
+	retry := time.NewTicker(integrationProjectionRetry)
+	defer retry.Stop()
+	var lastRecords []FlowRecord
+	var lastErr error
+
+	for {
+		lastRecords, lastErr = query()
+		if lastErr == nil && hasRecordID(lastRecords, id) {
+			return lastRecords
+		}
+		if lastErr != nil && !transientIntegrationFlowQueryError(lastErr) {
+			t.Fatalf("FLOW.QUERY while waiting for %q: %v", id, lastErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			t.Fatalf("FLOW.QUERY while waiting for %q: %v (records=%#v, last_error=%v)", id, ctx.Err(), lastRecords, lastErr)
+		case <-deadline.C:
+			t.Fatalf("FLOW.QUERY did not project %q within %s (records=%#v, last_error=%v)", id, integrationProjectionTimeout, lastRecords, lastErr)
+		case <-retry.C:
+		}
+	}
+}
+
+func waitForFlowQueryResult(
+	t *testing.T,
+	ctx context.Context,
+	query func() (*FlowQueryResult, error),
+	ready func(*FlowQueryResult) bool,
+) *FlowQueryResult {
+	t.Helper()
+	deadline := time.NewTimer(integrationProjectionTimeout)
+	defer deadline.Stop()
+	retry := time.NewTicker(integrationProjectionRetry)
+	defer retry.Stop()
+	var last *FlowQueryResult
+	var lastErr error
+
+	for {
+		last, lastErr = query()
+		if lastErr == nil && ready(last) {
+			return last
+		}
+		if lastErr != nil && !transientIntegrationFlowQueryError(lastErr) {
+			t.Fatalf("FLOW.QUERY while waiting for projection: %v", lastErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			t.Fatalf("FLOW.QUERY while waiting for projection: %v (result=%#v, last_error=%v)", ctx.Err(), last, lastErr)
+		case <-deadline.C:
+			t.Fatalf("FLOW.QUERY projection did not converge within %s (result=%#v, last_error=%v)", integrationProjectionTimeout, last, lastErr)
+		case <-retry.C:
+		}
+	}
+}
+
+func transientIntegrationFlowQueryError(err error) bool {
+	var queryErr *FlowQueryError
+	if !errors.As(err, &queryErr) {
+		return false
+	}
+	switch queryErr.Code {
+	case "query_concurrency_exceeded", "query_no_bounded_plan", "query_projection_changed", "query_storage_unavailable":
+		return true
+	default:
+		return false
+	}
 }
 
 func cleanupPrefix(t *testing.T, ctx context.Context, client *Client, prefix string) {

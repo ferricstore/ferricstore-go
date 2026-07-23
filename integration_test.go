@@ -292,14 +292,15 @@ func assertSearchCommands(t *testing.T, ctx context.Context, client *Client, typ
 		NowMS:        now,
 	}))
 
-	records := must[[]FlowRecord](t)(client.Search(ctx, SearchOptions{
-		Type:                 typeName,
-		State:                "searchable",
-		PartitionKey:         partition,
-		Count:                Int(10),
-		ConsistentProjection: Bool(true),
-		Attributes:           map[string]any{"search_marker": marker},
-	}))
+	records := waitForFlowQueryRecord(t, ctx, id, func() ([]FlowRecord, error) {
+		return client.Search(ctx, SearchOptions{
+			Type:         typeName,
+			State:        "searchable",
+			PartitionKey: partition,
+			Count:        Int(10),
+			Attributes:   map[string]any{"search_marker": marker},
+		})
+	})
 	if !hasRecordID(records, id) {
 		t.Fatalf("FLOW.SEARCH = %#v", records)
 	}
@@ -324,14 +325,18 @@ func assertSingleMutationCommands(t *testing.T, ctx context.Context, client *Cli
 	if record := must[*FlowRecord](t)(client.Get(ctx, failed.id, failed.partitionKey, nil)); record == nil || record.State != "failed" {
 		t.Fatalf("failed record = %#v", record)
 	}
-	_ = must[[]FlowRecord](t)(client.Failures(ctx, typeName, ReadOptions{Count: Int(20)}))
+	_ = waitForFlowQueryRecord(t, ctx, failed.id, func() ([]FlowRecord, error) {
+		return client.Failures(ctx, typeName, ReadOptions{PartitionKey: failed.partitionKey, Count: Int(20)})
+	})
 
 	cancelled := createAndClaim(t, ctx, client, typeName, runID, "cancel", "queued", now, 30_000)
 	_ = must[*FlowRecord](t)(client.Cancel(ctx, CancelOptions{ID: cancelled.id, LeaseToken: cancelled.job.LeaseToken, FencingToken: cancelled.job.FencingToken, PartitionKey: cancelled.partitionKey, Reason: map[string]any{"cancelled": true}}))
 	if record := must[*FlowRecord](t)(client.Get(ctx, cancelled.id, cancelled.partitionKey, nil)); record == nil || record.State != "cancelled" {
 		t.Fatalf("cancelled record = %#v", record)
 	}
-	_ = must[[]FlowRecord](t)(client.Terminals(ctx, typeName, ReadOptions{Count: Int(50)}))
+	_ = waitForFlowQueryRecord(t, ctx, cancelled.id, func() ([]FlowRecord, error) {
+		return client.Terminals(ctx, typeName, ReadOptions{PartitionKey: cancelled.partitionKey, Count: Int(50)})
+	})
 }
 
 func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Client, typeName, runID string, now int64) {
@@ -357,13 +362,14 @@ func assertFusedWorkflowCommands(t *testing.T, ctx context.Context, client *Clie
 		t.Fatalf("FLOW.START_AND_CLAIM state_meta = %#v", started)
 	}
 
-	indexed := must[[]FlowRecord](t)(client.Search(ctx, SearchOptions{
-		Type:                 typeName,
-		PartitionKey:         partition,
-		Count:                Int(10),
-		ConsistentProjection: Bool(true),
-		StateMeta:            map[string]map[string]any{"step-a": {"version": "1"}},
-	}))
+	indexed := waitForFlowQueryRecord(t, ctx, startOptions.ID, func() ([]FlowRecord, error) {
+		return client.Search(ctx, SearchOptions{
+			Type:         typeName,
+			PartitionKey: partition,
+			Count:        Int(10),
+			StateMeta:    map[string]map[string]any{"step-a": {"version": "1"}},
+		})
+	})
 	if !hasRecordID(indexed, startOptions.ID) {
 		t.Fatalf("FLOW.SEARCH state_meta = %#v", indexed)
 	}
@@ -477,7 +483,10 @@ func assertRepairIndexAndRewindCommands(t *testing.T, ctx context.Context, clien
 	stuckPartition := stuckID + ":partition"
 	_ = must[*FlowRecord](t)(client.Create(ctx, CreateOptions{ID: stuckID, Type: typeName, State: "stuck", PartitionKey: stuckPartition, RunAtMS: 1_000, NowMS: 1_000}))
 	stuck := claimOne(t, ctx, client, typeName, "stuck", stuckPartition, "go-sdk-stuck-worker", 1_000, 60_000)
-	if stuckRecords := must[[]FlowRecord](t)(client.Stuck(ctx, typeName, stuckPartition, Int(10), Int64(1), Int64(120_000))); !hasRecordID(stuckRecords, stuckID) {
+	stuckRecords := waitForFlowQueryRecord(t, ctx, stuckID, func() ([]FlowRecord, error) {
+		return client.Stuck(ctx, typeName, stuckPartition, Int(10), Int64(1), Int64(120_000))
+	})
+	if !hasRecordID(stuckRecords, stuckID) {
 		t.Fatalf("FLOW.STUCK = %#v", stuckRecords)
 	}
 	_ = must[*FlowRecord](t)(client.Complete(ctx, CompleteOptions{ID: stuck.ID, LeaseToken: stuck.LeaseToken, FencingToken: stuck.FencingToken, PartitionKey: stuck.PartitionKey}))
@@ -498,9 +507,16 @@ func assertRepairIndexAndRewindCommands(t *testing.T, ctx context.Context, clien
 		FromState:    "dispatch",
 		Children:     []ChildSpec{{ID: "go-sdk:child:" + runID + ":a", Type: typeName, Payload: map[string]any{"child": "a"}}, {ID: "go-sdk:child:" + runID + ":b", Type: typeName, Payload: map[string]any{"child": "b"}}},
 	}))
-	_ = must[[]FlowRecord](t)(client.ByParent(ctx, parentID, ReadOptions{Count: Int(20)}))
-	_ = must[[]FlowRecord](t)(client.ByRoot(ctx, "root:"+runID, ReadOptions{Count: Int(20)}))
-	_ = must[[]FlowRecord](t)(client.ByCorrelation(ctx, "corr:"+runID, ReadOptions{Count: Int(20)}))
+	childID := "go-sdk:child:" + runID + ":a"
+	_ = waitForFlowQueryRecord(t, ctx, childID, func() ([]FlowRecord, error) {
+		return client.ByParent(ctx, parentID, ReadOptions{PartitionKey: parentPartition, Count: Int(20)})
+	})
+	_ = waitForFlowQueryRecord(t, ctx, parentID, func() ([]FlowRecord, error) {
+		return client.ByRoot(ctx, "root:"+runID, ReadOptions{PartitionKey: parentPartition, Count: Int(20)})
+	})
+	_ = waitForFlowQueryRecord(t, ctx, parentID, func() ([]FlowRecord, error) {
+		return client.ByCorrelation(ctx, "corr:"+runID, ReadOptions{PartitionKey: parentPartition, Count: Int(20)})
+	})
 
 	rewind := createAndClaim(t, ctx, client, typeName, runID, "rewind", "queued", now, 30_000)
 	flushHistoryProjectorForRewind(t, ctx, client, rewind)

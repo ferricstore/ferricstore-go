@@ -318,7 +318,7 @@ func (c *Client) NamespaceUsage(ctx context.Context, prefix string) (map[string]
 	return normalizedAdminMap(value)
 }
 
-func (c *Client) FlowQuery(ctx context.Context, attrs map[string]any) ([]any, error) {
+func (c *Client) TelemetryFlowQuery(ctx context.Context, attrs map[string]any) ([]any, error) {
 	args := []any{"FERRICSTORE.TELEMETRY", "FLOW_QUERY"}
 	pairs, err := managementPairArgs(attrs)
 	if err != nil {

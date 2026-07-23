@@ -9,6 +9,11 @@ import (
 )
 
 func flowRoutingKey(name string, args []any) (any, bool) {
+	if name == "FLOW.QUERY" || name == "FLOW.QUERY.INDEXES" {
+		// FQL routing comes from the server's prepared-command contract. Treat
+		// query text and parameter values as opaque data on the client.
+		return nil, false
+	}
 	flowArgs := args[1:]
 	if len(flowArgs) == 0 {
 		return nil, false
@@ -144,7 +149,7 @@ func flowNamedOption(name string, args []any, start int, wanted string) (any, bo
 
 func flowOptionStart(name string) int {
 	switch name {
-	case "FLOW.SEARCH", "FLOW.APPROVAL.LIST", "FLOW.GOVERNANCE.OVERVIEW", "FLOW.BUDGET.LIST", "FLOW.LIMIT.LIST":
+	case "FLOW.APPROVAL.LIST", "FLOW.GOVERNANCE.OVERVIEW", "FLOW.BUDGET.LIST", "FLOW.LIMIT.LIST":
 		return 0
 	case "FLOW.ATTRIBUTE_VALUES":
 		return 2
@@ -167,9 +172,6 @@ func nextFlowOption(name string, args []any, index int) int {
 	case "ATTRIBUTE", "ATTRIBUTE_MERGE", "VALUE_REF":
 		return minInt(len(args), index+3)
 	case "STATE_META":
-		if name == "FLOW.SEARCH" {
-			return minInt(len(args), index+4)
-		}
 		return minInt(len(args), index+3)
 	case "VALUE":
 		if flowValueReturnCommands[name] {

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestIntegrationDockerScriptDefaultsToFerricStore091(t *testing.T) {
+func TestIntegrationDockerScriptDefaultsToFerricStore0101(t *testing.T) {
 	for _, path := range []string{
 		"scripts/integration-docker.sh",
 		"scripts/integration-security-docker.sh",
@@ -16,19 +16,19 @@ func TestIntegrationDockerScriptDefaultsToFerricStore091(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(body), "ghcr.io/ferricstore/ferricstore:0.9.1") {
-			t.Fatalf("%s should default to FerricStore 0.9.1", path)
+		if !strings.Contains(string(body), "ghcr.io/ferricstore/ferricstore:0.10.1") {
+			t.Fatalf("%s should default to FerricStore 0.10.1", path)
 		}
 	}
 }
 
-func TestV090IntegrationCommandCoverageFailsClosed(t *testing.T) {
+func TestV010IntegrationCommandCoverageFailsClosed(t *testing.T) {
 	body, err := os.ReadFile("scripts/integration-docker.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(body), "FERRICSTORE_STRICT_COMMAND_COVERAGE=1") {
-		t.Fatal("exact v0.9.1 integration must reject skipped command coverage")
+		t.Fatal("v0.10 integration must reject skipped command coverage")
 	}
 }
 
@@ -52,13 +52,23 @@ func TestSecurityIntegrationTLSMountPermissions(t *testing.T) {
 	}
 }
 
+func TestSecurityIntegrationGrantsIndependentQueryExplainPermission(t *testing.T) {
+	body, err := os.ReadFile("integration_security_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"+FLOW.QUERY.EXPLAIN"`) {
+		t.Fatal("query ACL fixture must grant FLOW.QUERY.EXPLAIN before exercising EXPLAIN")
+	}
+}
+
 func TestDockerComposeDefaultsToSupportedFerricStoreVersion(t *testing.T) {
 	body, err := os.ReadFile("docker-compose.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	contents := string(body)
-	if !strings.Contains(contents, "ghcr.io/ferricstore/ferricstore:0.9.1") {
+	if !strings.Contains(contents, "ghcr.io/ferricstore/ferricstore:0.10.1") {
 		t.Fatal("docker compose should default to the SDK's pinned supported server version")
 	}
 	if strings.Contains(contents, "ferricstore:latest") {

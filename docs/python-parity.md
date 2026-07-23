@@ -169,7 +169,7 @@ Default behavior matches the Python SDK for normal client usage: one native prot
 | `capabilities` | `Capabilities` | Covered |
 | namespace management | `EnsureNamespace`, `GetNamespace`, `ListNamespaces`, `DeleteNamespace` | Covered |
 | quota management | `SetQuota`, `GetQuota`, `QuotaUsage` | Covered |
-| safe management telemetry | `ClusterInfo`, `NamespaceUsage`, `FlowQuery`, `FlowHistory` | Covered |
+| safe management telemetry | `ClusterInfo`, `NamespaceUsage`, `TelemetryFlowQuery`, `FlowHistory` | Covered |
 | trusted native request context | `RequestContext`, `CommandExecWithContext` | Covered |
 
 ## Current Gaps

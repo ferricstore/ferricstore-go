@@ -31,13 +31,14 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 		NowMS:        now,
 		Idempotent:   Bool(true),
 	}))
-	listed := must[[]FlowRecord](t)(client.List(ctx, typeName, ReadOptions{
-		State:                "attr",
-		PartitionKey:         partition,
-		Attributes:           map[string]any{"tenant": "acme"},
-		ConsistentProjection: Bool(true),
-		Count:                Int(10),
-	}))
+	listed := waitForFlowQueryRecord(t, ctx, attrID, func() ([]FlowRecord, error) {
+		return client.List(ctx, typeName, ReadOptions{
+			State:        "attr",
+			PartitionKey: partition,
+			Attributes:   map[string]any{"tenant": "acme"},
+			Count:        Int(10),
+		})
+	})
 	if !hasRecordID(listed, attrID) {
 		t.Fatalf("attribute list did not include %s: %#v", attrID, listed)
 	}

@@ -1,6 +1,6 @@
 package ferricstore
 
-// FerricStore 0.8.0 Flow opcodes. The native framing protocol remains v1.
+// FerricStore Flow opcodes. The native framing protocol remains v1.
 const (
 	nativeOpFlowCreate             = 0x0201
 	nativeOpFlowGet                = 0x0202
@@ -15,7 +15,6 @@ const (
 	nativeOpFlowValuePut           = 0x020B
 	nativeOpFlowValueMGet          = 0x020C
 	nativeOpFlowSignal             = 0x020D
-	nativeOpFlowList               = 0x020E
 	nativeOpFlowCreateMany         = 0x020F
 	nativeOpFlowCompleteMany       = 0x0210
 	nativeOpFlowTransitionMany     = 0x0211
@@ -24,13 +23,7 @@ const (
 	nativeOpFlowCancelMany         = 0x0214
 	nativeOpFlowReclaim            = 0x0215
 	nativeOpFlowRewind             = 0x0216
-	nativeOpFlowTerminals          = 0x0217
-	nativeOpFlowFailures           = 0x0218
-	nativeOpFlowByParent           = 0x0219
-	nativeOpFlowByRoot             = 0x021A
-	nativeOpFlowByCorrelation      = 0x021B
 	nativeOpFlowInfo               = 0x021C
-	nativeOpFlowStuck              = 0x021D
 	nativeOpFlowPolicySet          = 0x021E
 	nativeOpFlowPolicyGet          = 0x021F
 	nativeOpFlowSpawnChildren      = 0x0220
@@ -49,7 +42,7 @@ const (
 	nativeOpFlowStats              = 0x022D
 	nativeOpFlowAttributes         = 0x022E
 	nativeOpFlowAttributeValues    = 0x022F
-	nativeOpFlowSearch             = 0x0230
+	nativeOpFlowQuery              = 0x0231
 	nativeOpFlowEffectReserve      = 0x0240
 	nativeOpFlowEffectConfirm      = 0x0241
 	nativeOpFlowEffectFail         = 0x0242

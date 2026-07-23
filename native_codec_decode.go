@@ -140,6 +140,11 @@ func decodeNativeValueBudget(data []byte, budget *nativeDecodeBudget, depth int)
 			return nil, nil, errors.New("ferricstore native float is truncated")
 		}
 		return math.Float64frombits(binary.BigEndian.Uint64(rest[:8])), rest[8:], nil
+	case 8:
+		if len(rest) < 8 {
+			return nil, nil, errors.New("ferricstore native unsigned integer is truncated")
+		}
+		return binary.BigEndian.Uint64(rest[:8]), rest[8:], nil
 	default:
 		return nil, nil, fmt.Errorf("ferricstore native value has unknown tag %d", tag)
 	}

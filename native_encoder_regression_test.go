@@ -73,10 +73,18 @@ func TestNativeEncoderPreservesNamedScalarWireTypes(t *testing.T) {
 	}
 }
 
-func TestNativeEncoderRejectsNamedUnsignedIntegerOverflow(t *testing.T) {
+func TestNativeEncoderRoundTripsNamedUnsignedInteger(t *testing.T) {
 	type namedUint64 uint64
-	if _, err := encodeNativeValue(namedUint64(math.MaxUint64)); err == nil {
-		t.Fatal("named uint64 overflow was encoded")
+	encoded, err := encodeNativeValue(namedUint64(math.MaxUint64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, rest, err := decodeNativeValue(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 0 || decoded != uint64(math.MaxUint64) {
+		t.Fatalf("decoded unsigned integer = %#v with %d trailing bytes", decoded, len(rest))
 	}
 }
 

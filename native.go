@@ -91,6 +91,7 @@ type NativeExecutor struct {
 	maxPipelineCommands  int
 	maxDataLanes         uint32
 	responseCodecs       nativeResponseCodecs
+	flowQuery            nativeFlowQueryContract
 	flow                 *nativeFlowController
 	replayWindowUpdate   map[string]any
 	connectInFlight      *nativeConnectAttempt

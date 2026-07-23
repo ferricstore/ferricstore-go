@@ -38,6 +38,7 @@ type nativeHelloContract struct {
 	laneCredits          int
 	laneQueue            int
 	responseCodecs       nativeResponseCodecs
+	flowQuery            nativeFlowQueryContract
 	events               map[string]struct{}
 	authRequired         bool
 }
@@ -80,6 +81,7 @@ func (e *NativeExecutor) applyHelloContractLocked(contract nativeHelloContract) 
 	e.maxPipelineCommands = contract.maxPipelineCommands
 	e.maxDataLanes = contract.maxDataLanes
 	e.responseCodecs = contract.responseCodecs
+	e.flowQuery = contract.flowQuery
 	e.nextLane.Store(0)
 	e.flow = newNativeFlowController(
 		contract.connectionCredits,
@@ -124,6 +126,10 @@ func parseNativeHelloContract(value any, configuredMaxResponseBytes int) (native
 		return nativeHelloContract{}, err
 	}
 	if err := validateNativeFlowPolicyCapabilities(capabilities); err != nil {
+		return nativeHelloContract{}, err
+	}
+	contract.flowQuery, err = parseNativeFlowQueryContract(capabilities)
+	if err != nil {
 		return nativeHelloContract{}, err
 	}
 	limits, err := requiredNativeCapabilityMap(capabilities, "limits")
