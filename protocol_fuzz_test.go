@@ -55,6 +55,8 @@ func FuzzNativeValueRoundTrip(f *testing.F) {
 		}
 		f.Add(encoded)
 	}
+	// Tag 8 may arrive with a value that the encoder canonically emits as tag 3.
+	f.Add([]byte{8, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30})
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		value, rest, err := decodeNativeValueWithLimits(raw, 16, 256)
 		if err != nil || len(rest) != 0 {
@@ -76,6 +78,24 @@ func FuzzNativeValueRoundTrip(f *testing.F) {
 
 func nativeFuzzValuesEqual(left, right any) bool {
 	switch value := left.(type) {
+	case int64:
+		switch other := right.(type) {
+		case int64:
+			return value == other
+		case uint64:
+			return value >= 0 && uint64(value) == other
+		default:
+			return false
+		}
+	case uint64:
+		switch other := right.(type) {
+		case int64:
+			return other >= 0 && value == uint64(other)
+		case uint64:
+			return value == other
+		default:
+			return false
+		}
 	case float64:
 		other, ok := right.(float64)
 		return ok && math.Float64bits(value) == math.Float64bits(other)
