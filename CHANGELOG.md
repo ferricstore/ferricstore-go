@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1 - 2026-07-24
+
+- Require FerricStore 0.10.3 for result projections and the negotiated compact FQL1 result codec while retaining native wire protocol v1.
+- Add source-aware `ProjectFlowQuery` selectors for bounded sparse run/event
+  results and decode the shared server compact-result golden corpus in CI.
+
 ## 0.10.0 - 2026-07-23
 
 - Require FerricStore 0.10.0 and negotiate the complete FQL1 request, result, explain, capability, shape, and native schema manifest during HELLO.

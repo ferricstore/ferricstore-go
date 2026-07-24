@@ -58,3 +58,27 @@ func TestIntegrationKVAndFlowRoundTrip(t *testing.T) {
 		t.Fatalf("expected completed flow, got %#v", record)
 	}
 }
+
+func TestIntegrationFlowQueryPlannerReady(t *testing.T) {
+	ctx, cancel := integrationContext(t)
+	defer cancel()
+
+	client := integrationClient(JSONCodec{})
+	defer client.Close()
+
+	suffix := integrationSuffix("query-ready")
+	result, err := client.FlowQuery(ctx,
+		"FROM runs WHERE partition_key = @partition AND type = @type AND state = @state RETURN COUNT",
+		map[string]any{
+			"partition": "go-sdk:query-ready:" + suffix,
+			"type":      "go-sdk-query-ready-" + suffix,
+			"state":     "queued",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Count == nil || *result.Count != 0 {
+		t.Fatalf("query planner readiness result = %#v", result)
+	}
+}

@@ -35,11 +35,12 @@ type nativeResponseChunkKey struct {
 }
 
 type nativeResponseChunkState struct {
-	first  nativeFrame
-	parts  [][]byte
-	body   []byte
-	bytes  int
-	frames int
+	first      nativeFrame
+	parts      [][]byte
+	body       []byte
+	bytes      int
+	frames     int
+	decodeMode nativeResponseDecodeMode
 }
 
 type nativeResponseAssembler struct {
@@ -64,6 +65,13 @@ func newNativeResponseAssembler(maxBytes, maxFrames int, codecs ...nativeRespons
 }
 
 func (a *nativeResponseAssembler) add(frame nativeFrame) (*nativeResponse, error) {
+	return a.addWithDecodeMode(frame, nativeResponseDecodeGeneric)
+}
+
+func (a *nativeResponseAssembler) addWithDecodeMode(
+	frame nativeFrame,
+	decodeMode nativeResponseDecodeMode,
+) (*nativeResponse, error) {
 	if err := validateNativeResponseFlags(frame.flags, true); err != nil {
 		return nil, err
 	}
@@ -83,7 +91,9 @@ func (a *nativeResponseAssembler) add(frame nativeFrame) (*nativeResponse, error
 		if a.bufferedFrames >= a.maxFrames {
 			return nil, fmt.Errorf("ferricstore native buffered chunk responses exceed %d frames", a.maxFrames)
 		}
-		response, err := decodeNativeResponseFrameWithCodecs(frame, frame.body, frame.flags, a.responseCodecs)
+		response, err := decodeNativeResponseFrameWithCodecsAndMode(
+			frame, frame.body, frame.flags, a.responseCodecs, decodeMode,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -92,10 +102,12 @@ func (a *nativeResponseAssembler) add(frame nativeFrame) (*nativeResponse, error
 	if state == nil {
 		first := frame
 		first.body = nil
-		state = &nativeResponseChunkState{first: first}
+		state = &nativeResponseChunkState{first: first, decodeMode: decodeMode}
 		a.chunks[key] = state
 	} else if state.first.flags&nativeStableChunkFlags != frame.flags&nativeStableChunkFlags {
 		return nil, errors.New("ferricstore native response flags changed between chunks")
+	} else if state.decodeMode != decodeMode {
+		return nil, errors.New("ferricstore native response decode mode changed between chunks")
 	}
 	state.first.flags |= frame.flags
 	if len(frame.body) > a.maxBytes-state.bytes {
@@ -142,7 +154,9 @@ func (a *nativeResponseAssembler) add(frame nativeFrame) (*nativeResponse, error
 		}
 	}
 	flags := (state.first.flags | frame.flags) &^ nativeFlagMoreChunks
-	response, err := decodeNativeResponseFrameWithCodecs(state.first, body, flags, a.responseCodecs)
+	response, err := decodeNativeResponseFrameWithCodecsAndMode(
+		state.first, body, flags, a.responseCodecs, state.decodeMode,
+	)
 	if err != nil {
 		return nil, err
 	}

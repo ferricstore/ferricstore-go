@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-image="${FERRICSTORE_IMAGE:-ghcr.io/ferricstore/ferricstore:0.10.2@sha256:e6116d6f6c2c701e7c12076ed55233f4305e5fd6ff627cc3ed4ab7f828940cf3}"
+image="${FERRICSTORE_IMAGE:-ghcr.io/ferricstore/ferricstore:0.10.3@sha256:f78a6f716cef8a1ef0a36ff620e653f9615bf9ba45abe9d86c990234fb9850d3}"
 name="${FERRICSTORE_TEST_CONTAINER:-ferricstore-go-integration-$$}"
 
 cleanup() {
@@ -36,8 +36,10 @@ run_go_test() {
 
 ready_log="$(mktemp)"
 ready=0
+# Activate the composite count path before the smoke test writes its first Flow.
+# The pinned server builds its launch indexes online during startup.
 for _ in $(seq 1 60); do
-  if FERRICSTORE_ADDR="127.0.0.1:${host_port}" run_go_test -tags=integration -run '^TestIntegrationKVAndFlowRoundTrip$' . >"$ready_log" 2>&1; then
+  if FERRICSTORE_ADDR="127.0.0.1:${host_port}" run_go_test -tags=integration -run '^TestIntegrationFlowQueryPlannerReady$' . >"$ready_log" 2>&1; then
     ready=1
     break
   fi
@@ -49,5 +51,19 @@ if [[ "$ready" != 1 ]]; then
   cat "$ready_log" >&2
 	exit 1
 fi
+
+flow_ready=0
+for _ in $(seq 1 60); do
+  if run_go_test -tags=integration -run '^TestIntegrationKVAndFlowRoundTrip$' . >"$ready_log" 2>&1; then
+    flow_ready=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$flow_ready" != 1 ]]; then
+  cat "$ready_log" >&2
+	exit 1
+fi
+
 export FERRICSTORE_STRICT_COMMAND_COVERAGE=1
 run_go_test -tags=integration ./...

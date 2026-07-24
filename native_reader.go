@@ -19,7 +19,7 @@ func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader, policie
 			e.closeConnAndFailPendingIfCurrent(conn, err)
 			return
 		}
-		current, err := e.validateNativeWireFrameTuple(conn, wireFrame)
+		current, decodeMode, err := e.validateNativeWireFrameTuple(conn, wireFrame)
 		if err != nil {
 			e.closeConnAndFailPendingIfCurrent(conn, err)
 			return
@@ -27,7 +27,7 @@ func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader, policie
 		if !current {
 			return
 		}
-		assembled, err := assembler.add(wireFrame)
+		assembled, err := assembler.addWithDecodeMode(wireFrame, decodeMode)
 		if err != nil {
 			e.closeConnAndFailPendingIfCurrent(conn, err)
 			return
@@ -93,15 +93,18 @@ func (e *NativeExecutor) readerLoop(conn net.Conn, reader *bufio.Reader, policie
 	}
 }
 
-func (e *NativeExecutor) validateNativeWireFrameTuple(conn net.Conn, frame nativeFrame) (bool, error) {
+func (e *NativeExecutor) validateNativeWireFrameTuple(
+	conn net.Conn,
+	frame nativeFrame,
+) (bool, nativeResponseDecodeMode, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.conn != conn {
-		return false, nil
+		return false, nativeResponseDecodeGeneric, nil
 	}
 	e.lastActivityUnixNano.Store(time.Now().UnixNano())
 	if frame.requestID == 0 {
-		return true, nil
+		return true, nativeResponseDecodeGeneric, nil
 	}
 	pending := e.pending[frame.requestID]
 	if pending == nil {
@@ -109,16 +112,16 @@ func (e *NativeExecutor) validateNativeWireFrameTuple(conn net.Conn, frame nativ
 		// replies are harmless. Data-lane requests remain pending while draining,
 		// so an unknown data request ID can only be a protocol violation.
 		if frame.laneID == 0 {
-			return true, nil
+			return true, nativeResponseDecodeGeneric, nil
 		}
-		return true, fmt.Errorf(
+		return true, nativeResponseDecodeGeneric, fmt.Errorf(
 			"ferricstore native response uses unknown data request ID %d", frame.requestID,
 		)
 	}
 	if pending.opcode == frame.opcode && pending.laneID == frame.laneID {
-		return true, nil
+		return true, pending.decodeMode, nil
 	}
-	return true, fmt.Errorf(
+	return true, nativeResponseDecodeGeneric, fmt.Errorf(
 		"ferricstore native response mismatch: got lane=%d opcode=%d request=%d",
 		frame.laneID, frame.opcode, frame.requestID,
 	)

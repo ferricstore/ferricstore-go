@@ -215,6 +215,7 @@ func (e *NativeExecutor) requestOnceOnConnection(ctx context.Context, opcode uin
 		responseCh: responseCh,
 		opcode:     opcode,
 		laneID:     laneID,
+		decodeMode: nativeResponseModeForPayload(payload),
 		flowCredit: flowCredit,
 	}
 	requestID := e.addPendingRequest(pendingRequest)

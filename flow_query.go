@@ -3,11 +3,7 @@ package ferricstore
 import (
 	"context"
 	"errors"
-	"fmt"
-	"math"
-	"slices"
 	"strings"
-	"unicode/utf8"
 )
 
 const (
@@ -186,11 +182,17 @@ func (c *Client) flowExplain(ctx context.Context, prefix, query string, params m
 }
 
 func (c *Client) executeFlowQuery(ctx context.Context, query string, params map[string]any) (any, error) {
-	args, err := flowQueryCommandArgs(query, params)
+	prepared, err := prepareFlowQuery(query, params)
 	if err != nil {
 		return nil, err
 	}
-	value, err := c.typedReply(ctx, args...)
+	var direct typedDirectCommand
+	if exec, ok := c.exec.(flowQueryExecutor); ok {
+		direct = func() (any, error) {
+			return exec.executePreparedFlowQuery(ctx, prepared)
+		}
+	}
+	value, _, err := c.typedCommandWithState(ctx, false, direct, prepared.commandArgs)
 	if err != nil {
 		return nil, wrapFlowQueryError(err)
 	}
@@ -216,103 +218,6 @@ func (c *Client) FlowQueryIndexes(ctx context.Context, indexIDs ...string) (*Flo
 		return nil, wrapFlowQueryError(err)
 	}
 	return decodeFlowQueryIndexStatus(value)
-}
-
-func flowQueryCommandArgs(query string, params map[string]any) ([]any, error) {
-	if err := validateFlowQueryText(query); err != nil {
-		return nil, err
-	}
-	if len(params) > flowQueryMaxParameters {
-		return nil, fmt.Errorf("FLOW.QUERY accepts at most %d named parameters", flowQueryMaxParameters)
-	}
-	type parameter struct {
-		name  string
-		value any
-	}
-	parameters := make([]parameter, 0, len(params))
-	for name, value := range params {
-		if !utf8.ValidString(name) {
-			return nil, errors.New("FLOW.QUERY parameter names must be valid UTF-8")
-		}
-		if name == "" || len(name) > flowQueryMaxParameterName {
-			return nil, fmt.Errorf("FLOW.QUERY parameter names must be 1..%d bytes", flowQueryMaxParameterName)
-		}
-		normalized, err := normalizeFlowQueryParameter(value)
-		if err != nil {
-			return nil, fmt.Errorf("FLOW.QUERY parameter %q: %w", name, err)
-		}
-		parameters = append(parameters, parameter{name: name, value: normalized})
-	}
-	slices.SortFunc(parameters, func(left, right parameter) int {
-		return strings.Compare(left.name, right.name)
-	})
-	args := make([]any, 0, 3+len(parameters)*2)
-	args = append(args, "FLOW.QUERY", flowQueryLanguageVersion, query)
-	for _, parameter := range parameters {
-		args = append(args, parameter.name, parameter.value)
-	}
-	return args, nil
-}
-
-func validateFlowQueryText(query string) error {
-	if !utf8.ValidString(query) {
-		return errors.New("FLOW.QUERY query must be valid UTF-8")
-	}
-	if strings.TrimSpace(query) == "" {
-		return errors.New("FLOW.QUERY query must not be empty")
-	}
-	if len(query) > flowQueryMaxBytes {
-		return fmt.Errorf("FLOW.QUERY query exceeds %d bytes", flowQueryMaxBytes)
-	}
-	return nil
-}
-
-func normalizeFlowQueryParameter(value any) (any, error) {
-	switch typed := value.(type) {
-	case string:
-		if !utf8.ValidString(typed) {
-			return nil, errors.New("text values must be valid UTF-8")
-		}
-		return typed, nil
-	case []byte:
-		return typed, nil
-	case bool:
-		return typed, nil
-	case float32:
-		value := float64(typed)
-		if !math.IsNaN(value) && !math.IsInf(value, 0) {
-			return value, nil
-		}
-	case float64:
-		if !math.IsNaN(typed) && !math.IsInf(typed, 0) {
-			return typed, nil
-		}
-	case int:
-		return int64(typed), nil
-	case int8:
-		return int64(typed), nil
-	case int16:
-		return int64(typed), nil
-	case int32:
-		return int64(typed), nil
-	case int64:
-		return typed, nil
-	case uint:
-		if uint64(typed) <= math.MaxInt64 {
-			return int64(typed), nil
-		}
-	case uint8:
-		return int64(typed), nil
-	case uint16:
-		return int64(typed), nil
-	case uint32:
-		return int64(typed), nil
-	case uint64:
-		if typed <= math.MaxInt64 {
-			return int64(typed), nil
-		}
-	}
-	return nil, errors.New("value must be a string, byte slice, boolean, finite float, or signed 64-bit integer")
 }
 
 func hasFlowExplainPrefix(query string) bool {

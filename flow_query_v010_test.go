@@ -50,6 +50,28 @@ func TestV010FlowQueryBuildsDeterministicRequestAndDecodesPage(t *testing.T) {
 	}
 }
 
+func TestV010FlowQueryPreservesSparseProjectedRecords(t *testing.T) {
+	query := "FROM runs WHERE run_id = @run RETURN RECORD (run_id, state, attribute['customer'])"
+	exec := &fakeExecutor{value: flowQueryPageResponse([]any{
+		map[string]any{
+			"id": []byte("run-1"), "state": []byte("ready"),
+			"attributes": map[string]any{"customer": []byte("acme")},
+		},
+	}, false, nil)}
+	client := NewClientWithExecutor(exec)
+
+	result, err := client.FlowQuery(context.Background(), query, map[string]any{"run": "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || len(result.Records[0]) != 3 {
+		t.Fatalf("projected records = %#v", result.Records)
+	}
+	if _, present := result.Records[0]["type"]; present {
+		t.Fatalf("unrequested type field present in %#v", result.Records[0])
+	}
+}
+
 func TestV010FlowQueryDecodesExactCount(t *testing.T) {
 	exec := &fakeExecutor{value: map[string]any{
 		"version": "ferric.flow.query.result/v1",
@@ -508,6 +530,12 @@ func TestV010HelloRejectsIncompleteFlowQueryManifest(t *testing.T) {
 		}},
 		{name: "missing capability", mutate: func(capabilities map[string]any) {
 			capabilities["flow_query"].(map[string]any)["capabilities"] = []any{"flow_query_v1"}
+		}},
+		{name: "missing projection capability", mutate: func(capabilities map[string]any) {
+			capabilities["flow_query"].(map[string]any)["capabilities"] = []any{
+				"flow_query_v1", "flow_explain_v1", "flow_explain_analyze_v1",
+				"flow_composite_index_v1", "flow_query_index_status_v1",
+			}
 		}},
 		{name: "missing count shape", mutate: func(capabilities map[string]any) {
 			capabilities["flow_query"].(map[string]any)["shapes"] = []any{"runs_by_run_id_record"}

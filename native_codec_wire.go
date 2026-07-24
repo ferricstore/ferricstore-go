@@ -70,6 +70,10 @@ type nativeEncodeState struct {
 	visiting  map[nativeEncodeVisit]struct{}
 }
 
+type nativeEncodeSizer interface {
+	nativeEncodedSize(limit int) (int, error)
+}
+
 func encodeNativeValue(value any) ([]byte, error) {
 	return encodeNativeValueWithLimit(value, nativeMaxFrameBytes)
 }
@@ -79,7 +83,17 @@ func encodeNativeValueWithLimit(value any, limit int) ([]byte, error) {
 		return nil, errors.New("ferricstore native request encoding limit must be positive")
 	}
 	buf := &nativeEncodeBuffer{limit: limit}
-	state := &nativeEncodeState{remaining: nativeMaxContainerItems, visiting: make(map[nativeEncodeVisit]struct{})}
+	if sized, ok := value.(nativeEncodeSizer); ok {
+		size, err := sized.nativeEncodedSize(limit)
+		if err != nil {
+			return nil, err
+		}
+		if size < 0 || size > limit {
+			return nil, nativeEncodeLimitError{limit: limit}
+		}
+		buf.Grow(size)
+	}
+	state := &nativeEncodeState{remaining: nativeMaxContainerItems}
 	if err := writeNativeValue(buf, value, state, 0); err != nil {
 		return nil, err
 	}
@@ -100,6 +114,9 @@ func (s *nativeEncodeState) enter(value any, depth int) (func(), error) {
 	}
 	if _, exists := s.visiting[visit]; exists {
 		return nil, errors.New("ferricstore native request contains a reference cycle")
+	}
+	if s.visiting == nil {
+		s.visiting = make(map[nativeEncodeVisit]struct{})
 	}
 	s.visiting[visit] = struct{}{}
 	return func() { delete(s.visiting, visit) }, nil
@@ -196,6 +213,8 @@ func writeNativeValue(buf *nativeEncodeBuffer, value any, state *nativeEncodeSta
 		return writeNativeKeyValueCommandPayload(buf, v, state, depth)
 	case nativeKeyCommandPayload:
 		return writeNativeKeyCommandPayload(buf, v, state, depth)
+	case nativeFlowQueryPayload:
+		return writeNativeFlowQueryPayload(buf, v, state, depth)
 	case []any:
 		return writeNativeArray(buf, v, state, depth)
 	case map[string]any:

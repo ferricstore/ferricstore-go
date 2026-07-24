@@ -18,6 +18,10 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 	typeName := "go-sdk-latest-" + runID
 	partition := "go-sdk:latest:" + runID + ":partition"
 	now := time.Now().UnixMilli()
+	must[PolicySnapshot](t)(client.SetPolicy(ctx, typeName, PolicyOptions{
+		Replace:           Bool(true),
+		IndexedAttributes: []string{"tenant"},
+	}))
 
 	attrID := "go-sdk:attr:" + runID
 	_ = must[*FlowRecord](t)(client.Create(ctx, CreateOptions{

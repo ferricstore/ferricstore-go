@@ -36,6 +36,18 @@ func (e *integrationTrackingExecutor) Do(ctx context.Context, args ...any) (any,
 	return value, err
 }
 
+func (e *integrationTrackingExecutor) executePreparedFlowQuery(ctx context.Context, query preparedFlowQuery) (any, error) {
+	exec, ok := e.inner.(flowQueryExecutor)
+	if !ok {
+		return nil, errors.New("integration executor lost native FLOW.QUERY capability")
+	}
+	value, err := exec.executePreparedFlowQuery(ctx, query)
+	if err == nil {
+		recordIntegrationCommand(query.commandArgs())
+	}
+	return value, err
+}
+
 func (e *integrationTrackingExecutor) Pipeline(ctx context.Context, commands [][]any) ([]any, error) {
 	if exec, ok := e.inner.(pipelineExecutor); ok {
 		values, err := exec.Pipeline(ctx, commands)

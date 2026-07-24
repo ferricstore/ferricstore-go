@@ -15,6 +15,13 @@ type nativeResponsePolicy struct {
 	codecs   nativeResponseCodecs
 }
 
+type nativeResponseDecodeMode uint8
+
+const (
+	nativeResponseDecodeGeneric nativeResponseDecodeMode = iota
+	nativeResponseDecodeFlowQuery
+)
+
 func readNativeResponseWithPolicy(reader *bufio.Reader, policy nativeResponsePolicy) (nativeResponse, error) {
 	assembler := newNativeResponseAssembler(policy.maxBytes, nativeMaxResponseChunkFrames, policy.codecs)
 	for {
@@ -37,6 +44,19 @@ func decodeNativeResponseFrame(first nativeFrame, body []byte, flags byte) (nati
 }
 
 func decodeNativeResponseFrameWithCodecs(first nativeFrame, body []byte, flags byte, codecs nativeResponseCodecs) (nativeResponse, error) {
+	return decodeNativeResponseFrameWithCodecsAndMode(first, body, flags, codecs, nativeResponseDecodeGeneric)
+}
+
+func decodeNativeResponseFrameWithCodecsAndMode(
+	first nativeFrame,
+	body []byte,
+	flags byte,
+	codecs nativeResponseCodecs,
+	mode nativeResponseDecodeMode,
+) (nativeResponse, error) {
+	if mode != nativeResponseDecodeGeneric && mode != nativeResponseDecodeFlowQuery {
+		return nativeResponse{}, errors.New("ferricstore native response decode mode is invalid")
+	}
 	if err := validateNativeResponseFlags(flags, false); err != nil {
 		return nativeResponse{}, err
 	}
@@ -52,7 +72,11 @@ func decodeNativeResponseFrameWithCodecs(first nativeFrame, body []byte, flags b
 		if len(body) == 2 {
 			return nativeResponse{}, errors.New("ferricstore native custom response payload is empty")
 		}
-		value, ok, err := decodeNativeCompactValueWithCodecs(first.opcode, body[2:], codecs)
+		responseMode := mode
+		if status != nativeStatusOK {
+			responseMode = nativeResponseDecodeGeneric
+		}
+		value, ok, err := decodeNativeCompactResponseWithMode(first.opcode, body[2:], codecs, responseMode)
 		if err != nil {
 			return nativeResponse{}, err
 		}
@@ -88,6 +112,30 @@ func decodeNativeResponseFrameWithCodecs(first nativeFrame, body []byte, flags b
 		value:     value,
 		wireBytes: len(body),
 	}, nil
+}
+
+func decodeNativeCompactResponseWithMode(
+	opcode uint16,
+	data []byte,
+	codecs nativeResponseCodecs,
+	mode nativeResponseDecodeMode,
+) (any, bool, error) {
+	if mode == nativeResponseDecodeFlowQuery && nativeCompactFlowQueryCodecAccepted(opcode, data, codecs) {
+		result, err := decodeNativeCompactFlowQueryResultTyped(data)
+		return ownedNativeFlowQueryResult{result: result}, true, err
+	}
+	return decodeNativeCompactValueWithCodecs(opcode, data, codecs)
+}
+
+func nativeCompactFlowQueryCodecAccepted(opcode uint16, data []byte, codecs nativeResponseCodecs) bool {
+	if len(data) == 0 || data[0] != nativeCompactFlowQueryResult {
+		return false
+	}
+	if !codecs.negotiated {
+		return true
+	}
+	codec, advertised := codecs.byOpcode[opcode]
+	return advertised && nativeCompactCodecAcceptsMarker(codec, data[0])
 }
 
 func validateNativeResponseFlags(flags byte, chunksAllowed bool) error {

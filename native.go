@@ -70,6 +70,7 @@ const (
 	nativeCompactKVMGetFixed      = 0x89
 	nativeCompactPipelineRequest  = 0x94
 	nativeCompactPipelineResponse = 0x95
+	nativeCompactFlowQueryResult  = 0xA0
 )
 
 type nativeCompactOKCount int
@@ -116,6 +117,7 @@ type nativePendingRequest struct {
 	responseCh chan nativeResponse
 	opcode     uint16
 	laneID     uint32
+	decodeMode nativeResponseDecodeMode
 	flowCredit *nativeFlowController
 	abandoned  bool
 }

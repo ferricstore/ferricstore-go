@@ -22,6 +22,7 @@ const (
 	nativeCodecKVMGet
 	nativeCodecOKList
 	nativeCodecPipeline
+	nativeCodecFlowQueryResult
 )
 
 type nativeResponseCodecs struct {
@@ -276,6 +277,8 @@ func nativeCompactCodecByName(name string) (nativeCompactCodec, bool) {
 		return nativeCodecOKList, true
 	case "pipeline_v1":
 		return nativeCodecPipeline, true
+	case "flow_query_result_v1":
+		return nativeCodecFlowQueryResult, true
 	default:
 		return 0, false
 	}

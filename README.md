@@ -20,12 +20,12 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.10.2`, by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.10.3`, by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
-The Go package contract is v0.10.0 and requires FerricStore 0.10.0 or newer. This is a breaking beta API update; the native wire protocol remains v1.
+The Go package contract is v0.10.1 and requires FerricStore 0.10.3 or newer. This is a breaking beta API update; the native wire protocol remains v1.
 
 ## Client
 
@@ -241,6 +241,28 @@ if err != nil {
 }
 ```
 
+Select a sparse result map by adding up to 32 source-specific fields after
+`RETURN RECORD` or `RETURN RECORDS`, for example
+`RETURN RECORDS (run_id, state, attribute['customer'])`. A bare return keeps the
+complete public record. Projection runs after authorization, authoritative
+recheck, ordering, and cursor calculation: it reduces retained result data,
+encoding, network, and client decoding work, but not index scans or hydration.
+
+Build the return clause with source-aware selectors instead of hand-quoting
+metadata names:
+
+```go
+customer, err := ferricstore.FlowAttributeProjection("customer")
+projected, err := ferricstore.ProjectFlowQuery(
+	"FROM runs WHERE partition_key = @partition AND run_id = @run",
+	ferricstore.FlowProjectionRecord,
+	ferricstore.FlowRunID,
+	ferricstore.FlowRunState,
+	customer,
+)
+page, err := client.FlowQuery(ctx, projected, params)
+```
+
 Pass `page.Page.Cursor` as a named parameter to the same query with
 `CURSOR @cursor` before `RETURN RECORDS`. Cursors are authenticated and bound
 to the original query, parameters, ordering, and index generation.
@@ -258,7 +280,7 @@ indexes, err := client.FlowQueryIndexes(ctx)
 validation progress, retirement, service health, and statistics freshness.
 `List`, `Search`, `Terminals`, `Failures`, `Stuck`, `ByParent`, `ByRoot`, and
 `ByCorrelation` remain convenience APIs but now issue FQL. Their collection
-forms require `PartitionKey`; query projection is eventual, and the removed
+forms require `PartitionKey`; query-index maintenance is eventual, and the removed
 `IncludeCold` and `ConsistentProjection` behaviors are rejected instead of
 silently changing query guarantees.
 

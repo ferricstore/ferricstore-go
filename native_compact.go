@@ -55,6 +55,9 @@ func decodeNativeCompactValueWithCodecs(opcode uint16, data []byte, codecs nativ
 	case nativeCompactPipelineResponse:
 		value, err := decodeNativeCompactPipelineResponse(data)
 		return nativeCompactResult(opcode, data[0], value, err)
+	case nativeCompactFlowQueryResult:
+		value, err := decodeNativeCompactFlowQueryResult(data)
+		return nativeCompactResult(opcode, data[0], value, err)
 	default:
 		return nil, false, nil
 	}
@@ -94,6 +97,8 @@ func nativeCompactCodecAcceptsMarker(codec nativeCompactCodec, marker byte) bool
 		default:
 			return false
 		}
+	case nativeCodecFlowQueryResult:
+		return marker == nativeCompactFlowQueryResult
 	default:
 		return false
 	}

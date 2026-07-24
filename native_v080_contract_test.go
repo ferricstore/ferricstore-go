@@ -70,7 +70,7 @@ func nativeFlowQueryCapabilitiesForTest() map[string]any {
 		"explain_contract":      flowExplainContract,
 		"index_status_contract": flowQueryIndexesContract,
 		"capabilities": []any{
-			"flow_query_v1", "flow_explain_v1", "flow_explain_analyze_v1",
+			"flow_query_v1", "flow_query_result_projection_v1", "flow_explain_v1", "flow_explain_analyze_v1",
 			"flow_composite_index_v1", "flow_query_index_status_v1",
 		},
 		"language_versions": []any{flowQueryLanguageVersion},
