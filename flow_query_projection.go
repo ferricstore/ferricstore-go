@@ -222,7 +222,7 @@ func quoteFlowProjectionName(value string, allowPrivate bool) (string, error) {
 	if !utf8.ValidString(value) || value == "" || len(value) > flowQueryMaxDynamicNameBytes ||
 		!allowPrivate && strings.HasPrefix(value, "__") {
 		return "", fmt.Errorf(
-			"Flow query projection metadata names must be 1..%d valid UTF-8 bytes",
+			"flow query projection metadata names must be 1..%d valid UTF-8 bytes",
 			flowQueryMaxDynamicNameBytes,
 		)
 	}
