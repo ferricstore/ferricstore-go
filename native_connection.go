@@ -236,7 +236,7 @@ func nativeHelloPayload(clientName string) map[string]any {
 		"client_name":             name,
 		"driver_name":             name,
 		"compression":             "none",
-		"compact_flow_responses":  true,
+		"compact_flow_responses":  false,
 		"compact_response_codecs": []any{"flow_query_result_v1"},
 	}
 }

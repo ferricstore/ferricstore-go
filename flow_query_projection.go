@@ -109,10 +109,10 @@ func ProjectFlowQuery(query string, shape FlowProjectionShape, fields ...FlowPro
 		return "", err
 	}
 	if shape != FlowProjectionRecord && shape != FlowProjectionRecords {
-		return "", errors.New("Flow query projection shape must be record or records")
+		return "", errors.New("flow query projection shape must be record or records")
 	}
 	if len(fields) == 0 || len(fields) > flowQueryMaxProjectionFields {
-		return "", fmt.Errorf("Flow query projection must contain 1..%d fields", flowQueryMaxProjectionFields)
+		return "", fmt.Errorf("flow query projection must contain 1..%d fields", flowQueryMaxProjectionFields)
 	}
 	source, err := projectedFlowQuerySource(query)
 	if err != nil {
@@ -122,20 +122,20 @@ func ProjectFlowQuery(query string, shape FlowProjectionShape, fields ...FlowPro
 	seen := make(map[string]struct{}, len(fields))
 	for _, field := range fields {
 		if field == nil {
-			return "", errors.New("Flow query projection accepts only projection fields")
+			return "", errors.New("flow query projection accepts only projection fields")
 		}
 		fieldSource, selector, valid := validatedFlowProjection(field)
 		if !valid || fieldSource != source {
-			return "", fmt.Errorf("Flow query projection field %q does not belong to %s", selector, source)
+			return "", fmt.Errorf("flow query projection field %q does not belong to %s", selector, source)
 		}
 		if _, exists := seen[selector]; exists {
-			return "", errors.New("Flow query projection contains a duplicate field")
+			return "", errors.New("flow query projection contains a duplicate field")
 		}
 		seen[selector] = struct{}{}
 		selectors = append(selectors, selector)
 	}
 	if containsFlowQueryReturn(query) {
-		return "", errors.New("Flow query already contains a RETURN clause")
+		return "", errors.New("flow query already contains a RETURN clause")
 	}
 
 	base := strings.TrimSpace(query)
@@ -150,11 +150,11 @@ func ProjectFlowQuery(query string, shape FlowProjectionShape, fields ...FlowPro
 func projectedFlowQuerySource(query string) (string, error) {
 	parts := strings.Fields(query)
 	if len(parts) < 2 || !strings.EqualFold(parts[0], "FROM") {
-		return "", errors.New("Projected Flow query must start with FROM runs or FROM events")
+		return "", errors.New("projected Flow query must start with FROM runs or FROM events")
 	}
 	source := strings.ToLower(parts[1])
 	if source != "runs" && source != "events" {
-		return "", errors.New("Projected Flow query must start with FROM runs or FROM events")
+		return "", errors.New("projected Flow query must start with FROM runs or FROM events")
 	}
 	return source, nil
 }

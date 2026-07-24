@@ -5,6 +5,8 @@
 - Require FerricStore 0.10.3 for result projections and the negotiated compact FQL1 result codec while retaining native wire protocol v1.
 - Add source-aware `ProjectFlowQuery` selectors for bounded sparse run/event
   results and decode the shared server compact-result golden corpus in CI.
+- Negotiate the named FQL1 result codec without enabling the broader compact
+  Flow response surface, preserving full-record `ClaimDue` responses.
 
 ## 0.10.0 - 2026-07-23
 

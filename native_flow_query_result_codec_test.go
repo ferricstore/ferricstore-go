@@ -137,9 +137,9 @@ func TestNativeCompactFlowQueryResultRejectsReservedTruncatedAndTrailingData(t *
 	}
 }
 
-func TestNativeHelloExplicitlyRequestsSupportedQueryResultCodec(t *testing.T) {
+func TestNativeHelloRequestsQueryCodecWithoutBroadCompactFlowResponses(t *testing.T) {
 	payload := nativeHelloPayload("test-client")
-	if payload["compact_flow_responses"] != true {
+	if payload["compact_flow_responses"] != false {
 		t.Fatalf("compact_flow_responses = %#v", payload["compact_flow_responses"])
 	}
 	want := []any{"flow_query_result_v1"}
