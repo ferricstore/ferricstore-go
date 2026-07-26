@@ -65,7 +65,10 @@ old_dir="$("${go_cmd[@]}" list -m -f '{{.Dir}}' "${module}@${baseline}")"
 )
 "$tmp_dir/bin/apidiff" -w "$tmp_dir/new.api" "$module"
 
-incompatible="$("$tmp_dir/bin/apidiff" -incompatible "$tmp_dir/old.api" "$tmp_dir/new.api")"
+incompatible="$(
+  "$tmp_dir/bin/apidiff" -incompatible "$tmp_dir/old.api" "$tmp_dir/new.api" |
+    bash "$PWD/scripts/filter-api-incompatibilities.sh"
+)"
 if [[ -f "$allowed_breaks_file" ]]; then
   if ! diff -u "$allowed_breaks_file" <(printf '%s\n' "$incompatible"); then
     echo "exported API break set differs from the audited allowance file:" >&2

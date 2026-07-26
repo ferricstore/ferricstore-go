@@ -20,13 +20,13 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned tested image, `ghcr.io/ferricstore/ferricstore:0.11.1`, by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned tested image, `ghcr.io/ferricstore/ferricstore:0.11.2`, by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
 The Go package contract is v0.11.1, requires FerricStore 0.11.0 or newer, and
-is tested against FerricStore 0.11.1. The native wire protocol remains v1.
+is tested against FerricStore 0.11.2. The native wire protocol remains v1.
 
 ## Client
 
