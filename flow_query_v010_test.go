@@ -350,6 +350,17 @@ func TestV010FlowQueryIndexesDecodesManagementContract(t *testing.T) {
 		"indexes": []any{map[string]any{
 			"id": "flow_runs_tenant_updated", "version": maximum, "build_id": "build-1",
 			"state": "active", "queryable": true,
+			"covering_fields": []any{
+				"partition_key", "run_id", "updated_at_ms", "version",
+				"attribute.customer", "state_meta.failed.reason",
+			},
+			"format": map[string]any{
+				"query_row": "ferric.flow.query.row/v1",
+				"key":       "ferric.flow.query.composite.key/v1",
+				"entry":     "ferric.flow.query.composite.entry/v2",
+				"reverse":   "ferric.flow.query.composite.reverse/v1",
+				"counter":   nil,
+			},
 		}},
 	}}
 	client := NewClientWithExecutor(exec)
@@ -362,12 +373,73 @@ func TestV010FlowQueryIndexesDecodesManagementContract(t *testing.T) {
 		!reflect.DeepEqual(status.Registry.CatalogVersion, maximum) ||
 		len(status.Indexes) != 1 ||
 		!reflect.DeepEqual(status.Indexes[0].Version, maximum) ||
-		!status.Indexes[0].Queryable {
+		!status.Indexes[0].Queryable ||
+		!reflect.DeepEqual(status.Indexes[0].CoveringFields, []string{
+			"partition_key", "run_id", "updated_at_ms", "version",
+			"attribute.customer", "state_meta.failed.reason",
+		}) ||
+		status.Indexes[0].Format.QueryRow != "ferric.flow.query.row/v1" ||
+		status.Indexes[0].Format.Entry != "ferric.flow.query.composite.entry/v2" ||
+		status.Indexes[0].Format.Counter != "" {
 		t.Fatalf("status = %#v", status)
 	}
 	want := [][]any{{"FLOW.QUERY.INDEXES", "flow_runs_tenant_updated"}}
 	if !reflect.DeepEqual(exec.calls, want) {
 		t.Fatalf("calls = %#v, want %#v", exec.calls, want)
+	}
+}
+
+func TestV011FlowQueryIndexesRequiresBoundedCoveringAndFormatMetadata(t *testing.T) {
+	validIndex := func() map[string]any {
+		return map[string]any{
+			"id": "flow_runs_tenant_updated", "version": uint64(2), "build_id": "build-2",
+			"state": "active", "queryable": true,
+			"covering_fields": []any{"partition_key", "run_id", "updated_at_ms"},
+			"format": map[string]any{
+				"query_row": "ferric.flow.query.row/v1",
+				"key":       "ferric.flow.query.composite.key/v1",
+				"entry":     "ferric.flow.query.composite.entry/v2",
+				"reverse":   "ferric.flow.query.composite.reverse/v1",
+				"counter":   "ferric.flow.query.composite.counter/v1",
+			},
+		}
+	}
+	response := func(index map[string]any) map[string]any {
+		return map[string]any{
+			"contract_version":      "ferric.flow.query.indexes/v1",
+			"observed_at_ms":        int64(1000),
+			"statistics_max_age_ms": int64(60_000),
+			"registry":              map[string]any{"epoch": uint64(1), "catalog_version": uint64(4)},
+			"services":              map[string]any{"registry": "ready"},
+			"indexes":               []any{index},
+		}
+	}
+
+	for name, mutate := range map[string]func(map[string]any){
+		"missing covering fields": func(index map[string]any) { delete(index, "covering_fields") },
+		"duplicate covering field": func(index map[string]any) {
+			index["covering_fields"] = []any{"run_id", "run_id"}
+		},
+		"too many covering fields": func(index map[string]any) {
+			fields := make([]any, 33)
+			for position := range fields {
+				fields[position] = fmt.Sprintf("attribute.field_%d", position)
+			}
+			index["covering_fields"] = fields
+		},
+		"missing format": func(index map[string]any) { delete(index, "format") },
+		"invalid nullable counter": func(index map[string]any) {
+			index["format"].(map[string]any)["counter"] = false
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			index := validIndex()
+			mutate(index)
+			client := NewClientWithExecutor(&fakeExecutor{value: response(index)})
+			if _, err := client.FlowQueryIndexes(context.Background()); err == nil {
+				t.Fatalf("accepted %s", name)
+			}
+		})
 	}
 }
 

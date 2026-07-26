@@ -5,6 +5,12 @@ import (
 	"fmt"
 )
 
+const (
+	flowQueryMaxCoveringFields = 32
+	flowQueryMaxFieldNameBytes = 512
+	flowQueryMaxCodecNameBytes = 128
+)
+
 func decodeFlowQueryIndexStatus(value any) (*FlowQueryIndexStatus, error) {
 	mapping, err := nativeMap(value)
 	if err != nil {
@@ -71,12 +77,76 @@ func decodeFlowQueryIndexStatus(value any) (*FlowQueryIndexStatus, error) {
 		if !ok {
 			return nil, fmt.Errorf("decode FLOW.QUERY.INDEXES index %q: queryable must be boolean", id)
 		}
-		indexes[index] = FlowQueryIndex{ID: id, Version: version, BuildID: buildID, State: state, Queryable: queryable, Raw: entry}
+		coveringFields, fieldErr := decodeFlowQueryCoveringFields(entry, id)
+		if fieldErr != nil {
+			return nil, fieldErr
+		}
+		format, fieldErr := decodeFlowQueryIndexFormat(entry, id)
+		if fieldErr != nil {
+			return nil, fieldErr
+		}
+		indexes[index] = FlowQueryIndex{
+			ID: id, Version: version, BuildID: buildID, State: state, Queryable: queryable,
+			CoveringFields: coveringFields, Format: format, Raw: entry,
+		}
 	}
 	return &FlowQueryIndexStatus{
 		ContractVersion: contract, ObservedAtMS: observed, StatisticsMaxAgeMS: maxAge,
 		Registry: FlowQueryIndexRegistry{Epoch: epoch, CatalogVersion: catalogVersion},
 		Services: services, Indexes: indexes, Raw: mapping,
+	}, nil
+}
+
+func decodeFlowQueryCoveringFields(entry map[string]any, id string) ([]string, error) {
+	raw, ok := entry["covering_fields"].([]any)
+	if !ok || len(raw) > flowQueryMaxCoveringFields {
+		return nil, fmt.Errorf(
+			"decode FLOW.QUERY.INDEXES index %q: covering_fields must contain at most %d entries",
+			id, flowQueryMaxCoveringFields,
+		)
+	}
+	fields := make([]string, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for position, value := range raw {
+		field, err := flowQueryResponseString(value, "FLOW.QUERY.INDEXES covering field")
+		if err != nil || field == "" || len(field) > flowQueryMaxFieldNameBytes {
+			return nil, fmt.Errorf("decode FLOW.QUERY.INDEXES index %q: covering_fields entry %d is invalid", id, position)
+		}
+		if _, duplicate := seen[field]; duplicate {
+			return nil, fmt.Errorf("decode FLOW.QUERY.INDEXES index %q: covering_fields contains duplicate %q", id, field)
+		}
+		seen[field] = struct{}{}
+		fields[position] = field
+	}
+	return fields, nil
+}
+
+func decodeFlowQueryIndexFormat(entry map[string]any, id string) (FlowQueryIndexFormat, error) {
+	mapping, err := requiredFlowQueryMap(entry, "format", "FLOW.QUERY.INDEXES index")
+	if err != nil {
+		return FlowQueryIndexFormat{}, err
+	}
+	values := make([]string, 4)
+	for position, field := range []string{"query_row", "key", "entry", "reverse"} {
+		value, fieldErr := requiredFlowQueryStringField(mapping, field, "FLOW.QUERY.INDEXES index format")
+		if fieldErr != nil || len(value) > flowQueryMaxCodecNameBytes {
+			return FlowQueryIndexFormat{}, fmt.Errorf("decode FLOW.QUERY.INDEXES index %q: format %s is invalid", id, field)
+		}
+		values[position] = value
+	}
+	rawCounter, present := mapping["counter"]
+	if !present {
+		return FlowQueryIndexFormat{}, fmt.Errorf("decode FLOW.QUERY.INDEXES index %q: format counter is missing", id)
+	}
+	counter := ""
+	if rawCounter != nil {
+		counter, err = flowQueryResponseString(rawCounter, "FLOW.QUERY.INDEXES index format counter")
+		if err != nil || counter == "" || len(counter) > flowQueryMaxCodecNameBytes {
+			return FlowQueryIndexFormat{}, fmt.Errorf("decode FLOW.QUERY.INDEXES index %q: format counter is invalid", id)
+		}
+	}
+	return FlowQueryIndexFormat{
+		QueryRow: values[0], Key: values[1], Entry: values[2], Reverse: values[3], Counter: counter,
 	}, nil
 }
 

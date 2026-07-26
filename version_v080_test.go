@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-func TestV010PackageAndServerContractVersions(t *testing.T) {
-	if SDKVersion != "0.10.1" {
+func TestV011PackageAndServerContractVersions(t *testing.T) {
+	if SDKVersion != "0.11.0" {
 		t.Fatalf("SDKVersion = %q", SDKVersion)
 	}
-	if MinimumServerVersion != "0.10.3" {
+	if MinimumServerVersion != "0.11.0" {
 		t.Fatalf("MinimumServerVersion = %q", MinimumServerVersion)
 	}
 	if NativeProtocolVersion != 1 || nativeRequestVersion != 1 {
@@ -18,32 +18,32 @@ func TestV010PackageAndServerContractVersions(t *testing.T) {
 	}
 }
 
-func TestV010ChangelogHasReleaseHeading(t *testing.T) {
+func TestV011ChangelogHasReleaseHeading(t *testing.T) {
 	contents, err := os.ReadFile("CHANGELOG.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(contents), "## 0.10.1 - ") {
-		t.Fatal("CHANGELOG.md does not identify the 0.10.1 release")
+	if !strings.Contains(string(contents), "## 0.11.0 - ") {
+		t.Fatal("CHANGELOG.md does not identify the 0.11.0 release")
 	}
 }
 
-func TestV010ReleaseGuideUsesCurrentTag(t *testing.T) {
+func TestV011ReleaseGuideUsesCurrentTag(t *testing.T) {
 	contents, err := os.ReadFile("RELEASE.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(contents)
-	if !strings.Contains(text, "git tag v0.10.1") ||
-		!strings.Contains(text, "ferricstore-go@v0.10.1") {
-		t.Fatal("RELEASE.md does not use the v0.10.1 tag")
+	if !strings.Contains(text, "git tag v0.11.0") ||
+		!strings.Contains(text, "ferricstore-go@v0.11.0") {
+		t.Fatal("RELEASE.md does not use the v0.11.0 tag")
 	}
 	if strings.Contains(text, "v0.1.0") {
 		t.Fatal("RELEASE.md still contains the stale v0.1.0 tag")
 	}
 }
 
-func TestV010KeepsNativeWireProtocolV1Constants(t *testing.T) {
+func TestV011KeepsNativeWireProtocolV1Constants(t *testing.T) {
 	if nativeMagic != "FSNP" || nativeHeaderLen != 24 ||
 		nativeRequestVersion != 0x01 || nativeResponseVersion != 0x81 {
 		t.Fatalf(

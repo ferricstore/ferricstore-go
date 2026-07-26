@@ -20,12 +20,12 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.10.3`, by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned supported image, `ghcr.io/ferricstore/ferricstore:0.11.0`, by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
-The Go package contract is v0.10.1 and requires FerricStore 0.10.3 or newer. This is a breaking beta API update; the native wire protocol remains v1.
+The Go package contract is v0.11.0 and requires FerricStore 0.11.0 or newer. This is a breaking beta API update; the native wire protocol remains v1.
 
 ## Client
 
@@ -277,7 +277,10 @@ indexes, err := client.FlowQueryIndexes(ctx)
 ```
 
 `FlowQueryIndexes` is an admin command and exposes index generations, build and
-validation progress, retirement, service health, and statistics freshness.
+validation progress, retirement, service health, statistics freshness,
+`CoveringFields`, and `Format`. The format fields are opaque codec identities;
+`Counter` is empty when an index has no exact-count prefix. A format change
+requires rebuilding derived query state, not rewriting authoritative Flow data.
 `List`, `Search`, `Terminals`, `Failures`, `Stuck`, `ByParent`, `ByRoot`, and
 `ByCorrelation` remain convenience APIs but now issue FQL. Their collection
 forms require `PartitionKey`; query-index maintenance is eventual, and the removed

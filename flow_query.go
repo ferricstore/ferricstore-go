@@ -119,15 +119,27 @@ type FlowQueryIndexRegistry struct {
 	CatalogVersion uint64
 }
 
+// FlowQueryIndexFormat identifies the derived storage codecs used by one
+// index generation. Counter is empty when the index has no count prefix.
+type FlowQueryIndexFormat struct {
+	QueryRow string
+	Key      string
+	Entry    string
+	Reverse  string
+	Counter  string
+}
+
 // FlowQueryIndex is the stable identity and lifecycle summary of one index
 // generation. Raw contains its bounded progress and statistics details.
 type FlowQueryIndex struct {
-	ID        string
-	Version   uint64
-	BuildID   string
-	State     string
-	Queryable bool
-	Raw       map[string]any
+	ID             string
+	Version        uint64
+	BuildID        string
+	State          string
+	Queryable      bool
+	CoveringFields []string
+	Format         FlowQueryIndexFormat
+	Raw            map[string]any
 }
 
 // FlowQueryIndexStatus is the OSS query-index management contract.

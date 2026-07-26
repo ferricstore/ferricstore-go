@@ -2,11 +2,11 @@ package ferricstore
 
 import "testing"
 
-func TestProjectionReleaseVersions(t *testing.T) {
-	if SDKVersion != "0.10.1" {
+func TestCompactQueryStorageReleaseVersions(t *testing.T) {
+	if SDKVersion != "0.11.0" {
 		t.Fatalf("SDKVersion = %q", SDKVersion)
 	}
-	if MinimumServerVersion != "0.10.3" {
+	if MinimumServerVersion != "0.11.0" {
 		t.Fatalf("MinimumServerVersion = %q", MinimumServerVersion)
 	}
 }

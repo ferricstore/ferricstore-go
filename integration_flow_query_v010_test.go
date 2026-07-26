@@ -89,6 +89,13 @@ func TestIntegrationFlowQueryPlannerV010(t *testing.T) {
 	if status.Registry.CatalogVersion <= 0 || len(status.Indexes) == 0 {
 		t.Fatalf("FLOW.QUERY.INDEXES = %#v", status)
 	}
+	for _, index := range status.Indexes {
+		if len(index.CoveringFields) == 0 ||
+			index.Format.QueryRow == "" || index.Format.Key == "" ||
+			index.Format.Entry == "" || index.Format.Reverse == "" {
+			t.Fatalf("FLOW.QUERY.INDEXES missing 0.11 coverage metadata: %#v", index)
+		}
+	}
 
 	_, err = client.FlowQuery(ctx, "FROM runs WHERE partition_key = @partition AND unsupported = 1 ORDER BY updated_at_ms ASC LIMIT 2 RETURN RECORDS", map[string]any{"partition": partition})
 	var queryErr *FlowQueryError
