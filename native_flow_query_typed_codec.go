@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/bits"
-	"strings"
 	"unicode/utf8"
 )
 
@@ -25,6 +24,9 @@ func decodeNativeCompactFlowQueryResultTyped(data []byte) (*FlowQueryResult, err
 		Pagination: header.quality[3],
 	}
 	usage := flowQueryUsageFromCompact(header.usage)
+	if err := validateFlowQueryUsageCounters(usage); err != nil {
+		return nil, err
+	}
 	raw := map[string]any{
 		"version": []byte(flowQueryResultContract),
 		"quality": nativeCompactQueryRawQuality(header.quality),
@@ -72,11 +74,8 @@ func decodeNativeCompactFlowQueryResultTyped(data []byte) (*FlowQueryResult, err
 			records[index] = record
 			rawRecords[index] = record
 		}
-		if usage.ResultRecords != int64(count) {
-			return nil, fmt.Errorf(
-				"decode FLOW.QUERY result: usage reports %d records for %d returned records",
-				usage.ResultRecords, count,
-			)
+		if err := validateFlowQueryRecordUsage(usage, count); err != nil {
+			return nil, err
 		}
 		result.Records = records
 		result.Page = page
@@ -88,11 +87,8 @@ func decodeNativeCompactFlowQueryResultTyped(data []byte) (*FlowQueryResult, err
 			return nil, err
 		}
 		offset = next
-		if usage.ResultRecords != 1 {
-			return nil, fmt.Errorf(
-				"decode FLOW.QUERY count result: usage result_records = %d, want 1",
-				usage.ResultRecords,
-			)
+		if err := validateFlowQueryCountUsage(usage); err != nil {
+			return nil, err
 		}
 		result.Count = &count
 		raw["result"] = map[string]any{"kind": []byte("count"), "value": count}
@@ -137,13 +133,7 @@ func typedNativeCompactQueryPage(page nativeCompactQueryPage) (*FlowQueryPage, m
 	if !page.hasMore {
 		return &FlowQueryPage{}, map[string]any{"has_more": false, "cursor": nil}, nil
 	}
-	if !utf8.Valid(page.cursor) {
-		return nil, nil, errors.New("decode FLOW.QUERY page: cursor is invalid")
-	}
 	cursor := string(page.cursor)
-	if !strings.HasPrefix(cursor, "fqc1_") {
-		return nil, nil, errors.New("decode FLOW.QUERY page: cursor is invalid")
-	}
 	return &FlowQueryPage{HasMore: true, Cursor: cursor}, map[string]any{
 		"has_more": true,
 		"cursor":   page.cursor,
@@ -193,7 +183,7 @@ func readNativeCompactQueryRecordTyped(
 
 func nativeCompactQueryRecordTextField(index int) bool {
 	switch index {
-	case 0, 1, 2, 5, 11, 13, 14, 15:
+	case 0, 1, 2, 5, 11, 13, 14, 15, 18:
 		return true
 	default:
 		return false

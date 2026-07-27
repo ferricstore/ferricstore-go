@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"time"
-	"unicode/utf8"
 )
 
 type nativeFlowQueryPayload struct {
@@ -212,8 +211,11 @@ func buildFlowQueryRequestNative(args []any) (nativeCommand, bool, error) {
 		params := make(map[string]any, parameterCount)
 		for index := 2; index < len(args); index += 2 {
 			name, ok := commandText(args[index])
-			if !ok || !utf8.ValidString(name) || name == "" || len(name) > flowQueryMaxParameterName {
-				return nativeCommand{}, true, fmt.Errorf("FLOW.QUERY parameter names must be 1..%d bytes", flowQueryMaxParameterName)
+			if !ok || !validFlowQueryParameterName(name) {
+				return nativeCommand{}, true, fmt.Errorf(
+					"FLOW.QUERY parameter names must be 1..%d ASCII letters, digits, '_', '.', or '-'",
+					flowQueryMaxParameterName,
+				)
 			}
 			if _, exists := params[name]; exists {
 				return nativeCommand{}, true, fmt.Errorf("FLOW.QUERY parameter %q is duplicated", name)

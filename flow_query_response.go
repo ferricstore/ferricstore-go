@@ -16,7 +16,7 @@ const (
 
 var flowQueryRecordTextFields = [...]string{
 	"id", "type", "state", "partition_key", "run_state",
-	"parent_flow_id", "root_flow_id", "correlation_id",
+	"parent_flow_id", "root_flow_id", "correlation_id", "event_id",
 }
 
 func decodeFlowQueryResult(value any) (*FlowQueryResult, error) {
@@ -57,8 +57,8 @@ func decodeFlowQueryResult(value any) (*FlowQueryResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		if usage.ResultRecords != int64(len(records)) {
-			return nil, fmt.Errorf("decode FLOW.QUERY result: usage reports %d records for %d returned records", usage.ResultRecords, len(records))
+		if err := validateFlowQueryRecordUsage(usage, len(records)); err != nil {
+			return nil, err
 		}
 		result.Records = records
 		result.Page = page
@@ -79,8 +79,8 @@ func decodeFlowQueryResult(value any) (*FlowQueryResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if usage.ResultRecords != 1 {
-		return nil, fmt.Errorf("decode FLOW.QUERY count result: usage result_records = %d, want 1", usage.ResultRecords)
+	if err := validateFlowQueryCountUsage(usage); err != nil {
+		return nil, err
 	}
 	result.Count = &count
 	return result, nil
@@ -134,7 +134,7 @@ func decodeFlowQueryPage(value any) (*FlowQueryPage, error) {
 	cursor := ""
 	if value, present := mapping["cursor"]; present && value != nil {
 		cursor, err = flowQueryResponseString(value, "FLOW.QUERY page cursor")
-		if err != nil || cursor == "" || len(cursor) > 4096 || !strings.HasPrefix(cursor, "fqc1_") {
+		if err != nil || len(cursor) < 16 || len(cursor) > 4096 || !strings.HasPrefix(cursor, "fqc1_") {
 			return nil, errors.New("decode FLOW.QUERY page: cursor is invalid")
 		}
 	}
@@ -158,8 +158,26 @@ func decodeFlowQueryQuality(value any) (FlowQueryQuality, error) {
 		if len(fields[index]) > flowQueryMaxQualityBytes {
 			return FlowQueryQuality{}, fmt.Errorf("decode FLOW.QUERY quality %s: exceeds %d bytes", name, flowQueryMaxQualityBytes)
 		}
+		if !validFlowQueryQuality(name, fields[index]) {
+			return FlowQueryQuality{}, fmt.Errorf("decode FLOW.QUERY quality %s: unsupported value %q", name, fields[index])
+		}
 	}
 	return FlowQueryQuality{Exactness: fields[0], Freshness: fields[1], Coverage: fields[2], Pagination: fields[3]}, nil
+}
+
+func validFlowQueryQuality(field, value string) bool {
+	switch field {
+	case "exactness":
+		return value == "authoritative" || value == "projected_exact" || value == "exact" || value == "not_applicable"
+	case "freshness":
+		return value == "current" || value == "projection_watermark" || value == "not_applicable"
+	case "coverage":
+		return value == "complete" || value == "unavailable"
+	case "pagination":
+		return value == "none" || value == "complete" || value == "authenticated_seek" || value == "live_seek"
+	default:
+		return false
+	}
 }
 
 func decodeFlowQueryUsage(value any) (FlowQueryUsage, error) {
@@ -182,11 +200,56 @@ func decodeFlowQueryUsage(value any) (FlowQueryUsage, error) {
 			return FlowQueryUsage{}, err
 		}
 	}
-	return FlowQueryUsage{
+	usage := FlowQueryUsage{
 		RangeSeeks: values[0], RangePages: values[1], ScannedEntries: values[2], ScannedBytes: values[3],
 		HydratedRecords: values[4], ResidualChecks: values[5], DuplicateEntries: values[6],
 		ResultRecords: values[7], ResponseBytes: values[8], MemoryHighWaterBytes: values[9], WallTimeUS: values[10],
-	}, nil
+	}
+	if err := validateFlowQueryUsageCounters(usage); err != nil {
+		return FlowQueryUsage{}, err
+	}
+	return usage, nil
+}
+
+func validateFlowQueryUsageCounters(usage FlowQueryUsage) error {
+	maxPages := int64(math.MaxInt64)
+	if usage.ScannedEntries <= math.MaxInt64-usage.RangeSeeks {
+		maxPages = usage.ScannedEntries + usage.RangeSeeks
+	}
+	maxResidualChecks := int64(math.MaxInt64)
+	if usage.ScannedEntries <= math.MaxInt64/12 {
+		maxResidualChecks = usage.ScannedEntries * 12
+	}
+	if usage.HydratedRecords > usage.ScannedEntries ||
+		usage.DuplicateEntries > usage.ScannedEntries ||
+		usage.RangePages > maxPages || usage.ResidualChecks > maxResidualChecks {
+		return errors.New("decode FLOW.QUERY usage: counters are inconsistent")
+	}
+	return nil
+}
+
+func validateFlowQueryRecordUsage(usage FlowQueryUsage, count int) error {
+	if usage.ResultRecords != int64(count) {
+		return fmt.Errorf(
+			"decode FLOW.QUERY result: usage reports %d records for %d returned records",
+			usage.ResultRecords,
+			count,
+		)
+	}
+	if usage.ResultRecords > usage.ScannedEntries {
+		return errors.New("decode FLOW.QUERY result: returned records exceed scanned entries")
+	}
+	return nil
+}
+
+func validateFlowQueryCountUsage(usage FlowQueryUsage) error {
+	if usage.ResultRecords != 1 {
+		return fmt.Errorf(
+			"decode FLOW.QUERY count result: usage result_records = %d, want 1",
+			usage.ResultRecords,
+		)
+	}
+	return nil
 }
 
 func nonNegativeResponseInteger(value any, context string) (int64, error) {
@@ -195,88 +258,6 @@ func nonNegativeResponseInteger(value any, context string) (int64, error) {
 		return 0, fmt.Errorf("decode %s: expected a non-negative signed integer", context)
 	}
 	return int64(parsed), nil
-}
-
-func decodeFlowExplainResult(value any) (*FlowExplainResult, error) {
-	mapping, err := flowQueryResponseMap(value)
-	if err != nil {
-		return nil, fmt.Errorf("decode FLOW.QUERY explain: %w", err)
-	}
-	version, err := requiredFlowQueryStringField(mapping, "version", "FLOW.QUERY explain")
-	if err != nil || version != flowExplainContract {
-		return nil, fmt.Errorf("decode FLOW.QUERY explain: unsupported contract %q", version)
-	}
-	fingerprint, err := requiredFlowQueryStringField(mapping, "query_fingerprint", "FLOW.QUERY explain")
-	if err != nil || !validFlowQueryFingerprint(fingerprint) {
-		if err == nil {
-			err = errors.New("query_fingerprint must be 64 hexadecimal characters")
-		}
-		return nil, err
-	}
-	status, err := requiredFlowQueryStringField(mapping, "status", "FLOW.QUERY explain")
-	if err != nil {
-		return nil, err
-	}
-	if status != "planned" && status != "rejected" && status != "executed" {
-		return nil, fmt.Errorf("decode FLOW.QUERY explain: unsupported status %q", status)
-	}
-	plan, err := requiredFlowQueryMap(mapping, "plan", "FLOW.QUERY explain")
-	if err != nil {
-		return nil, err
-	}
-	estimate, err := requiredFlowQueryMap(mapping, "estimate", "FLOW.QUERY explain")
-	if err != nil {
-		return nil, err
-	}
-	bounds, err := requiredFlowQueryMap(mapping, "bounds", "FLOW.QUERY explain")
-	if err != nil {
-		return nil, err
-	}
-	result := &FlowExplainResult{
-		Version: version, QueryFingerprint: fingerprint, Status: status, Plan: plan,
-		Estimate: estimate, Bounds: bounds, Raw: mapping,
-	}
-	if actual, present := mapping["actual"]; present && actual != nil {
-		if status != "executed" {
-			return nil, fmt.Errorf("decode FLOW.QUERY explain: status %q contains actual usage", status)
-		}
-		usage, err := decodeFlowQueryUsage(actual)
-		if err != nil {
-			return nil, err
-		}
-		result.Actual = &usage
-	}
-	if status == "executed" && result.Actual == nil {
-		return nil, errors.New("decode FLOW.QUERY explain: executed result is missing actual usage")
-	}
-	if diagnostic, present := mapping["diagnostic"]; present && diagnostic != nil {
-		if status != "rejected" {
-			return nil, fmt.Errorf("decode FLOW.QUERY explain: status %q contains a diagnostic", status)
-		}
-		result.Diagnostic, err = decodeFlowQueryErrorPayload(diagnostic, nil)
-		if err != nil {
-			return nil, fmt.Errorf("decode FLOW.QUERY explain diagnostic: %w", err)
-		}
-	}
-	if status == "rejected" && result.Diagnostic == nil {
-		return nil, errors.New("decode FLOW.QUERY explain: rejected result is missing its diagnostic")
-	}
-	return result, nil
-}
-
-func validFlowQueryFingerprint(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	for index := 0; index < len(value); index++ {
-		character := value[index]
-		if (character < '0' || character > '9') &&
-			(character < 'a' || character > 'f') &&
-			(character < 'A' || character > 'F') {
-			return false
-		}
-	}
-	return true
 }
 
 func requiredFlowQueryStringField(mapping map[string]any, key, context string) (string, error) {
@@ -369,17 +350,17 @@ func decodeFlowQueryErrorPayload(value any, cause error) (*FlowQueryError, error
 }
 
 func decodeFlowQueryErrorMap(mapping map[string]any, cause error) (*FlowQueryError, error) {
-	code, codeErr := requiredFlowQueryStringField(mapping, "code", "FLOW.QUERY error")
-	message, messageErr := requiredFlowQueryStringField(mapping, "message", "FLOW.QUERY error")
+	code, codeErr := requiredFlowQueryDiagnosticText(mapping, "code")
+	message, messageErr := requiredFlowQueryDiagnosticText(mapping, "message")
 	if codeErr != nil || messageErr != nil {
 		return nil, errors.New("diagnostic requires non-empty code and message")
 	}
 	queryErr := &FlowQueryError{Code: code, Message: message, cause: cause}
 	var err error
-	if queryErr.Detail, err = optionalFlowQueryStringField(mapping, "detail", "FLOW.QUERY error"); err != nil {
+	if queryErr.Detail, err = optionalFlowQueryDiagnosticText(mapping, "detail"); err != nil {
 		return nil, err
 	}
-	if queryErr.Hint, err = optionalFlowQueryStringField(mapping, "hint", "FLOW.QUERY error"); err != nil {
+	if queryErr.Hint, err = optionalFlowQueryDiagnosticText(mapping, "hint"); err != nil {
 		return nil, err
 	}
 	var ok bool
@@ -399,6 +380,9 @@ func decodeFlowQueryErrorMap(mapping map[string]any, cause error) (*FlowQueryErr
 	if contextValue, present := mapping["context"]; present && contextValue != nil {
 		if queryErr.Context, err = nativeMap(contextValue); err != nil {
 			return nil, errors.New("diagnostic context must be a map")
+		}
+		if err = validateFlowQueryDiagnosticContext(queryErr.Context); err != nil {
+			return nil, err
 		}
 	}
 	if positionValue, present := mapping["position"]; present && positionValue != nil {

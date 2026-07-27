@@ -50,6 +50,9 @@ func TestNativeCompactFlowQueryTypedDecoderNormalizesEveryRecordTextField(t *tes
 			t.Fatalf("record %s = %#v", field, result.Records[0][field])
 		}
 	}
+	if value, ok := result.Records[0]["event_id"].(string); !ok || value != "event_id-value" {
+		t.Fatalf("record event_id = %#v", result.Records[0]["event_id"])
+	}
 }
 
 func TestNativeCompactFlowQueryTypedDecoderRetainsPublicValidation(t *testing.T) {
@@ -64,6 +67,15 @@ func TestNativeCompactFlowQueryTypedDecoderRetainsPublicValidation(t *testing.T)
 	binary.BigEndian.PutUint64(wrongBytes[70:78], uint64(len(wrongBytes)+1))
 	invalidPage := append([]byte(nil), valid...)
 	invalidPage[94] = 1
+	shortCursor := nativeCompactQueryCursorFixtureWith("fqc1_short")
+	hydratedBeyondScan := append([]byte(nil), valid...)
+	binary.BigEndian.PutUint64(hydratedBeyondScan[38:46], 2)
+	duplicateBeyondScan := append([]byte(nil), valid...)
+	binary.BigEndian.PutUint64(duplicateBeyondScan[54:62], 2)
+	pagesBeyondScan := append([]byte(nil), valid...)
+	binary.BigEndian.PutUint64(pagesBeyondScan[14:22], 2)
+	residualBeyondBound := append([]byte(nil), valid...)
+	binary.BigEndian.PutUint64(residualBeyondBound[46:54], 13)
 	countUsageMismatch := nativeCompactQueryCountFixture(42)
 	binary.BigEndian.PutUint64(countUsageMismatch[62:70], 0)
 
@@ -75,6 +87,11 @@ func TestNativeCompactFlowQueryTypedDecoderRetainsPublicValidation(t *testing.T)
 		"record usage mismatch":  wrongRecords,
 		"response size mismatch": wrongBytes,
 		"invalid page":           invalidPage,
+		"short cursor":           shortCursor,
+		"hydrated beyond scan":   hydratedBeyondScan,
+		"duplicates beyond scan": duplicateBeyondScan,
+		"pages beyond scan":      pagesBeyondScan,
+		"residual beyond bound":  residualBeyondBound,
 		"count usage mismatch":   countUsageMismatch,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -228,7 +245,11 @@ func FuzzNativeCompactFlowQueryTypedDecoderMatchesGeneric(f *testing.F) {
 }
 
 func nativeCompactQueryCursorFixture() []byte {
-	cursor := []byte("fqc1_cursor-token")
+	return nativeCompactQueryCursorFixtureWith("fqc1_cursor-token")
+}
+
+func nativeCompactQueryCursorFixtureWith(value string) []byte {
+	cursor := []byte(value)
 	payload := []byte{nativeCompactFlowQueryResult, 0, 0, 0, 0, 2}
 	payload = append(payload, nativeCompactQueryUsage(0)...)
 	payload = append(payload, 1)
@@ -243,7 +264,7 @@ func nativeCompactQueryAllTextFieldsFixture(t *testing.T) []byte {
 	t.Helper()
 	textIndexes := map[int]string{
 		0: "id", 1: "type", 2: "state", 5: "partition_key", 11: "run_state",
-		13: "parent_flow_id", 14: "root_flow_id", 15: "correlation_id",
+		13: "parent_flow_id", 14: "root_flow_id", 15: "correlation_id", 18: "event_id",
 	}
 	bitmap := uint32(0)
 	values := make([]byte, 0, len(textIndexes)*24)

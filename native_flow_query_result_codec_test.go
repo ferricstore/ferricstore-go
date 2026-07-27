@@ -124,10 +124,23 @@ func TestNativeCompactFlowQueryResultRejectsReservedTruncatedAndTrailingData(t *
 	valid := nativeCompactQueryPageFixture(t)
 	reserved := append([]byte(nil), valid...)
 	binary.BigEndian.PutUint32(reserved[103:107], binary.BigEndian.Uint32(reserved[103:107])|(1<<20))
+	hydratedBeyondScan := append([]byte(nil), valid...)
+	binary.BigEndian.PutUint64(hydratedBeyondScan[38:46], 2)
+	wrongRecords := append([]byte(nil), valid...)
+	binary.BigEndian.PutUint64(wrongRecords[62:70], 2)
+	countUsageMismatch := nativeCompactQueryCountFixture(42)
+	binary.BigEndian.PutUint64(countUsageMismatch[62:70], 0)
 	for name, payload := range map[string][]byte{
-		"reserved":  reserved,
-		"truncated": valid[:len(valid)-1],
-		"trailing":  append(append([]byte(nil), valid...), 0),
+		"reserved":              reserved,
+		"truncated":             valid[:len(valid)-1],
+		"trailing":              append(append([]byte(nil), valid...), 0),
+		"inconsistent usage":    hydratedBeyondScan,
+		"record usage mismatch": wrongRecords,
+		"count usage mismatch":  countUsageMismatch,
+		"invalid cursor prefix": nativeCompactQueryCursorFixtureWith("other_cursor_token"),
+		"invalid cursor text": nativeCompactQueryCursorFixtureWith(
+			"fqc1_" + string([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}),
+		),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := decodeNativeCompactFlowQueryResult(payload); err == nil {
@@ -178,6 +191,8 @@ func nativeCompactQueryCountFixture(count int64) []byte {
 
 func nativeCompactQueryUsage(resultRecords int64) []byte {
 	values := make([]int64, 11)
+	values[2] = resultRecords
+	values[4] = resultRecords
 	values[7] = resultRecords
 	payload := make([]byte, 0, len(values)*8)
 	for _, value := range values {

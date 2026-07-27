@@ -1,16 +1,20 @@
 package ferricstore
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
 	"math/bits"
+	"unicode/utf8"
 )
 
 const (
 	nativeCompactQueryMaxRecords     = 100
+	nativeCompactQueryMinCursorBytes = 16
 	nativeCompactQueryMaxCursorBytes = 4096
+	nativeCompactQueryCursorPrefix   = "fqc1_"
 	nativeCompactQueryRecordMask     = uint32(1<<20) - 1
 	nativeCompactQueryResultRecords  = 7
 	nativeCompactQueryResponseBytes  = 8
@@ -82,6 +86,10 @@ func decodeNativeCompactFlowQueryResult(data []byte) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	usageValues := flowQueryUsageFromCompact(header.usage)
+	if err := validateFlowQueryUsageCounters(usageValues); err != nil {
+		return nil, err
+	}
 	offset := header.offset
 	quality := make(map[string]any, len(nativeCompactQueryQualityFields))
 	for index, field := range nativeCompactQueryQualityFields {
@@ -113,6 +121,9 @@ func decodeNativeCompactFlowQueryResult(data []byte) (map[string]any, error) {
 			return nil, fmt.Errorf("ferricstore native compact FLOW.QUERY page exceeds %d records", nativeCompactQueryMaxRecords)
 		}
 		count := int(rawCount)
+		if err := validateFlowQueryRecordUsage(usageValues, count); err != nil {
+			return nil, err
+		}
 		budget := newNativeCompactFlowRecordBudget()
 		if err := consumeNativeCompactFlowRecordItems("FLOW.QUERY records", budget, count); err != nil {
 			return nil, err
@@ -129,6 +140,9 @@ func decodeNativeCompactFlowQueryResult(data []byte) (map[string]any, error) {
 		result["records"] = records
 		result["page"] = page
 	case 1:
+		if err := validateFlowQueryCountUsage(usageValues); err != nil {
+			return nil, err
+		}
 		count, next, err := readNativeCompactQueryU64(data, offset)
 		if err != nil {
 			return nil, err
@@ -168,11 +182,14 @@ func readNativeCompactQueryPageData(data []byte, offset int) (nativeCompactQuery
 	if hasMore == 0 && size == nativeCompactNilU32 {
 		return nativeCompactQueryPage{}, offset, nil
 	}
-	if hasMore != 1 || size == 0 || size == nativeCompactNilU32 || size > nativeCompactQueryMaxCursorBytes || uint64(size) > uint64(len(data)-offset) {
+	if hasMore != 1 || size < nativeCompactQueryMinCursorBytes || size == nativeCompactNilU32 || size > nativeCompactQueryMaxCursorBytes || uint64(size) > uint64(len(data)-offset) {
 		return nativeCompactQueryPage{}, offset, errors.New("ferricstore native compact FLOW.QUERY cursor is invalid")
 	}
 	cursorSize := int(size)
 	cursor := data[offset : offset+cursorSize : offset+cursorSize]
+	if !bytes.HasPrefix(cursor, []byte(nativeCompactQueryCursorPrefix)) || !utf8.Valid(cursor) {
+		return nativeCompactQueryPage{}, offset, errors.New("ferricstore native compact FLOW.QUERY cursor is invalid")
+	}
 	return nativeCompactQueryPage{hasMore: true, cursor: cursor}, offset + cursorSize, nil
 }
 

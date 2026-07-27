@@ -20,6 +20,16 @@ type preparedFlowQuery struct {
 	parameters []flowQueryParameter
 }
 
+const flowQueryASCIIWhitespace = " \t\n\r"
+
+func trimFlowQueryASCIIWhitespace(value string) string {
+	return strings.Trim(value, flowQueryASCIIWhitespace)
+}
+
+func trimFlowQueryASCIIWhitespaceStart(value string) string {
+	return strings.TrimLeft(value, flowQueryASCIIWhitespace)
+}
+
 // flowQueryExecutor lets built-in native transports retain validated, typed
 // parameters through wire encoding. Custom and queueing executors continue to
 // receive the public command argument shape through the fallback path.
@@ -36,11 +46,11 @@ func prepareFlowQuery(query string, params map[string]any) (preparedFlowQuery, e
 	}
 	parameters := make([]flowQueryParameter, 0, len(params))
 	for name, value := range params {
-		if !utf8.ValidString(name) {
-			return preparedFlowQuery{}, errors.New("FLOW.QUERY parameter names must be valid UTF-8")
-		}
-		if name == "" || len(name) > flowQueryMaxParameterName {
-			return preparedFlowQuery{}, fmt.Errorf("FLOW.QUERY parameter names must be 1..%d bytes", flowQueryMaxParameterName)
+		if !validFlowQueryParameterName(name) {
+			return preparedFlowQuery{}, fmt.Errorf(
+				"FLOW.QUERY parameter names must be 1..%d ASCII letters, digits, '_', '.', or '-'",
+				flowQueryMaxParameterName,
+			)
 		}
 		normalized, err := normalizeFlowQueryParameter(value)
 		if err != nil {
@@ -90,8 +100,14 @@ func normalizeFlowQueryParameter(value any) (any, error) {
 		if !utf8.ValidString(typed) {
 			return nil, errors.New("text values must be valid UTF-8")
 		}
+		if len(typed) > flowQueryMaxParameterValue {
+			return nil, fmt.Errorf("value exceeds %d bytes", flowQueryMaxParameterValue)
+		}
 		return typed, nil
 	case []byte:
+		if len(typed) > flowQueryMaxParameterValue {
+			return nil, fmt.Errorf("value exceeds %d bytes", flowQueryMaxParameterValue)
+		}
 		return typed, nil
 	case bool:
 		return typed, nil
@@ -130,4 +146,20 @@ func normalizeFlowQueryParameter(value any) (any, error) {
 		}
 	}
 	return nil, errors.New("value must be a string, byte slice, boolean, finite float, or signed 64-bit integer")
+}
+
+func validFlowQueryParameterName(name string) bool {
+	if len(name) == 0 || len(name) > flowQueryMaxParameterName {
+		return false
+	}
+	for index := 0; index < len(name); index++ {
+		value := name[index]
+		if (value < 'a' || value > 'z') &&
+			(value < 'A' || value > 'Z') &&
+			(value < '0' || value > '9') &&
+			value != '_' && value != '.' && value != '-' {
+			return false
+		}
+	}
+	return true
 }

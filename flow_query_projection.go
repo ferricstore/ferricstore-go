@@ -138,8 +138,10 @@ func ProjectFlowQuery(query string, shape FlowProjectionShape, fields ...FlowPro
 		return "", errors.New("flow query already contains a RETURN clause")
 	}
 
-	base := strings.TrimSpace(query)
-	base = strings.TrimSpace(strings.TrimSuffix(base, ";"))
+	base, err := stripOptionalFlowQueryTerminator(query)
+	if err != nil {
+		return "", err
+	}
 	projected := base + " RETURN " + strings.ToUpper(string(shape)) + " (" + strings.Join(selectors, ", ") + ")"
 	if err := validateFlowQueryText(projected); err != nil {
 		return "", err
@@ -147,12 +149,31 @@ func ProjectFlowQuery(query string, shape FlowProjectionShape, fields ...FlowPro
 	return projected, nil
 }
 
+func stripOptionalFlowQueryTerminator(query string) (string, error) {
+	trimmed := trimFlowQueryASCIIWhitespace(query)
+	if !strings.HasSuffix(trimmed, ";") {
+		return trimmed, nil
+	}
+
+	base := trimFlowQueryASCIIWhitespace(strings.TrimSuffix(trimmed, ";"))
+	if strings.HasSuffix(base, ";") {
+		return "", errors.New("flow query accepts at most one trailing semicolon")
+	}
+	return base, nil
+}
+
 func projectedFlowQuerySource(query string) (string, error) {
-	parts := strings.Fields(query)
-	if len(parts) < 2 || !strings.EqualFold(parts[0], "FROM") {
+	query = trimFlowQueryASCIIWhitespaceStart(query)
+	if len(query) < len("FROM") || !strings.EqualFold(query[:len("FROM")], "FROM") ||
+		len(query) == len("FROM") || !isFlowQueryWhitespace(query[len("FROM")]) {
 		return "", errors.New("projected Flow query must start with FROM runs or FROM events")
 	}
-	source := strings.ToLower(parts[1])
+	remainder := strings.TrimLeft(query[len("FROM"):], flowQueryASCIIWhitespace)
+	end := strings.IndexAny(remainder, flowQueryASCIIWhitespace)
+	if end < 0 {
+		end = len(remainder)
+	}
+	source := strings.ToLower(remainder[:end])
 	if source != "runs" && source != "events" {
 		return "", errors.New("projected Flow query must start with FROM runs or FROM events")
 	}

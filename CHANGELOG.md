@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.2 - 2026-07-27
+
+- Expose typed specialized-plan capabilities and the complete query-index
+  service, field, lifecycle, validation, retirement, and statistics status.
+- Enforce server-aligned parameter, diagnostic, cursor, quality, and usage
+  bounds, including compact projected event identifiers.
+- Propagate the transport timeout into the server-side query deadline with the
+  existing context timer, retaining the owned native fast path and bounded
+  response decoding.
+- Pin live integration to the immutable FerricStore 0.11.3 image while keeping
+  0.11.0 as the minimum compatible server and native wire protocol v1.
+
 ## 0.11.1 - 2026-07-26
 
 - Validate the unchanged compact FQL1 query/result contract against

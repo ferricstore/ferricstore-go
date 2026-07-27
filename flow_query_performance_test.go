@@ -179,6 +179,8 @@ func flowQueryCompactBenchmarkPayload(tb testing.TB) []byte {
 	tb.Helper()
 	payload := []byte{nativeCompactFlowQueryResult, 0, 1, 1, 0, 0}
 	usage := make([]byte, 8*len(nativeCompactQueryUsageFields))
+	binary.BigEndian.PutUint64(usage[2*8:3*8], flowQueryMaxResponseRecords)
+	binary.BigEndian.PutUint64(usage[4*8:5*8], flowQueryMaxResponseRecords)
 	binary.BigEndian.PutUint64(usage[7*8:8*8], flowQueryMaxResponseRecords)
 	payload = append(payload, usage...)
 	payload = append(payload, 0, 0xff, 0xff, 0xff, 0xff)

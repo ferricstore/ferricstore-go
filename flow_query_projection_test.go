@@ -93,6 +93,46 @@ func TestProjectFlowQueryRejectsInvalidShapesAndFields(t *testing.T) {
 			)
 			return err
 		},
+		"multiple terminators": func() error {
+			_, err := ProjectFlowQuery(
+				"FROM runs WHERE run_id = @id;;",
+				FlowProjectionRecord,
+				FlowRunID,
+			)
+			return err
+		},
+		"spaced multiple terminators": func() error {
+			_, err := ProjectFlowQuery(
+				"FROM runs WHERE run_id = @id; ;",
+				FlowProjectionRecord,
+				FlowRunID,
+			)
+			return err
+		},
+		"non grammar leading whitespace": func() error {
+			_, err := ProjectFlowQuery(
+				"\u00a0FROM runs WHERE run_id = @id",
+				FlowProjectionRecord,
+				FlowRunID,
+			)
+			return err
+		},
+		"unicode source suffix": func() error {
+			_, err := ProjectFlowQuery(
+				"FROM runs\u00e9 WHERE run_id = @id",
+				FlowProjectionRecord,
+				FlowRunID,
+			)
+			return err
+		},
+		"unicode source confusable": func() error {
+			_, err := ProjectFlowQuery(
+				"FROM run\u017f WHERE run_id = @id",
+				FlowProjectionRecord,
+				FlowRunID,
+			)
+			return err
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := build(); err == nil {

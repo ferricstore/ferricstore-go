@@ -7,14 +7,15 @@ import (
 )
 
 const (
-	flowQueryLanguageVersion  = "FQL1"
-	flowQueryRequestContract  = "ferric.flow.query.request/v1"
-	flowQueryResultContract   = "ferric.flow.query.result/v1"
-	flowExplainContract       = "ferric.flow.explain/v1"
-	flowQueryIndexesContract  = "ferric.flow.query.indexes/v1"
-	flowQueryMaxBytes         = 16 * 1024
-	flowQueryMaxParameters    = 64
-	flowQueryMaxParameterName = 128
+	flowQueryLanguageVersion   = "FQL1"
+	flowQueryRequestContract   = "ferric.flow.query.request/v1"
+	flowQueryResultContract    = "ferric.flow.query.result/v1"
+	flowExplainContract        = "ferric.flow.explain/v1"
+	flowQueryIndexesContract   = "ferric.flow.query.indexes/v1"
+	flowQueryMaxBytes          = 16 * 1024
+	flowQueryMaxParameters     = 64
+	flowQueryMaxParameterName  = 128
+	flowQueryMaxParameterValue = 65_535
 )
 
 // FlowQueryPage describes continuation state for a bounded query page.
@@ -59,6 +60,15 @@ type FlowQueryResult struct {
 	Raw     map[string]any
 }
 
+// FlowExplainCapabilities describes the specialized executor contracts a
+// bounded point, history, or fixed-index plan requested and can use.
+type FlowExplainCapabilities struct {
+	Requested []string
+	Available []string
+	Missing   []string
+	Raw       map[string]any
+}
+
 // FlowExplainResult is the redacted result of EXPLAIN or EXPLAIN ANALYZE.
 // Raw retains fields added by future compatible server revisions.
 type FlowExplainResult struct {
@@ -67,7 +77,13 @@ type FlowExplainResult struct {
 	Status           string
 	Plan             map[string]any
 	Estimate         map[string]any
+	Stats            map[string]any
+	Quality          *FlowQueryQuality
 	Bounds           map[string]any
+	Pressure         map[string]any
+	Decision         map[string]any
+	Alternatives     []map[string]any
+	Capabilities     *FlowExplainCapabilities
 	Actual           *FlowQueryUsage
 	Diagnostic       *FlowQueryError
 	Raw              map[string]any
@@ -119,6 +135,23 @@ type FlowQueryIndexRegistry struct {
 	CatalogVersion uint64
 }
 
+// FlowQueryIndexServices reports availability of each catalog subsystem.
+type FlowQueryIndexServices struct {
+	Registry         string
+	LifecycleWorker  string
+	StatisticsStore  string
+	StatisticsWorker string
+	Raw              map[string]any
+}
+
+// FlowQueryIndexField describes one ordered composite-key component.
+type FlowQueryIndexField struct {
+	Name      string
+	Direction string
+	Encoding  string
+	Raw       map[string]any
+}
+
 // FlowQueryIndexFormat identifies the derived storage codecs used by one
 // index generation. Counter is empty when the index has no count prefix.
 type FlowQueryIndexFormat struct {
@@ -127,28 +160,102 @@ type FlowQueryIndexFormat struct {
 	Entry    string
 	Reverse  string
 	Counter  string
+	Raw      map[string]any
 }
 
-// FlowQueryIndex is the stable identity and lifecycle summary of one index
-// generation. Raw contains its bounded progress and statistics details.
+// FlowQueryIndexCoverage summarizes shard build and validation coverage.
+type FlowQueryIndexCoverage struct {
+	CompleteShards uint64
+	TotalShards    uint64
+	Validation     string
+	Raw            map[string]any
+}
+
+// FlowQueryIndexBuild reports durable build progress.
+type FlowQueryIndexBuild struct {
+	Scope           string
+	PhaseCounts     map[string]uint64
+	CurrentPhases   []string
+	CompletedShards uint64
+	TotalShards     uint64
+	ScannedRecords  uint64
+	WrittenEntries  uint64
+	WrittenBytes    uint64
+	Raw             map[string]any
+}
+
+// FlowQueryIndexValidation reports exact catalog validation progress.
+type FlowQueryIndexValidation struct {
+	Scope           string
+	Status          string
+	PhaseCounts     map[string]uint64
+	CurrentPhases   []string
+	CompletedShards uint64
+	TotalShards     uint64
+	CheckedRecords  uint64
+	CheckedEntries  uint64
+	Mismatches      uint64
+	FailureReason   string
+	ValidatedAtMS   *uint64
+	Raw             map[string]any
+}
+
+// FlowQueryIndexRetirement reports deletion progress for retired generations.
+type FlowQueryIndexRetirement struct {
+	Status               string
+	PhaseCounts          map[string]uint64
+	CurrentPhases        []string
+	CompletedShards      *uint64
+	TotalShards          *uint64
+	DeletedEntries       *uint64
+	DeletedBytes         *uint64
+	RewrittenReverseRows *uint64
+	Raw                  map[string]any
+}
+
+// FlowQueryIndexStatistics reports bounded index selectivity sample freshness.
+type FlowQueryIndexStatistics struct {
+	Status              string
+	Samples             uint64
+	FreshSamples        uint64
+	StaleSamples        uint64
+	FutureSamples       uint64
+	OldestCollectedAtMS *uint64
+	NewestCollectedAtMS *uint64
+	OldestAgeMS         *uint64
+	NewestAgeMS         *uint64
+	Raw                 map[string]any
+}
+
+// FlowQueryIndex is the typed identity, storage format, lifecycle progress,
+// and statistics summary of one index generation.
 type FlowQueryIndex struct {
 	ID             string
 	Version        uint64
 	BuildID        string
+	Source         string
 	State          string
 	Queryable      bool
+	Fields         []FlowQueryIndexField
+	Workloads      []string
+	CountPrefixes  []int64
 	CoveringFields []string
 	Format         FlowQueryIndexFormat
+	Coverage       FlowQueryIndexCoverage
+	Build          FlowQueryIndexBuild
+	Validation     FlowQueryIndexValidation
+	Retirement     FlowQueryIndexRetirement
+	Statistics     FlowQueryIndexStatistics
 	Raw            map[string]any
 }
 
 // FlowQueryIndexStatus is the OSS query-index management contract.
 type FlowQueryIndexStatus struct {
 	ContractVersion    string
-	ObservedAtMS       int64
-	StatisticsMaxAgeMS int64
+	ObservedAtMS       uint64
+	StatisticsMaxAgeMS uint64
 	Registry           FlowQueryIndexRegistry
-	Services           map[string]any
+	Services           FlowQueryIndexServices
 	Indexes            []FlowQueryIndex
 	Raw                map[string]any
 }
@@ -178,7 +285,6 @@ func (c *Client) FlowExplainAnalyze(ctx context.Context, query string, params ma
 }
 
 func (c *Client) flowExplain(ctx context.Context, prefix, query string, params map[string]any) (*FlowExplainResult, error) {
-	query = strings.TrimSpace(query)
 	if err := validateFlowQueryText(query); err != nil {
 		return nil, err
 	}
@@ -229,11 +335,15 @@ func (c *Client) FlowQueryIndexes(ctx context.Context, indexIDs ...string) (*Flo
 	if err != nil {
 		return nil, wrapFlowQueryError(err)
 	}
-	return decodeFlowQueryIndexStatus(value)
+	expectedID := ""
+	if len(indexIDs) == 1 {
+		expectedID = indexIDs[0]
+	}
+	return decodeFlowQueryIndexStatus(value, expectedID)
 }
 
 func hasFlowExplainPrefix(query string) bool {
-	query = strings.TrimSpace(query)
+	query = trimFlowQueryASCIIWhitespaceStart(query)
 	const keyword = "EXPLAIN"
 	if len(query) < len(keyword) || !strings.EqualFold(query[:len(keyword)], keyword) {
 		return false

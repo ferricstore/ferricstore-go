@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -142,6 +143,34 @@ func TestPreparedNativeFlowQueryPropagatesContextDeadlineToServer(t *testing.T) 
 	}
 	if !bytes.Equal(fastBody, wantBody) {
 		t.Fatalf("deadline payload differs from canonical map:\nfast: %x\nwant: %x", fastBody, wantBody)
+	}
+}
+
+func TestPreparedNativeFlowQueryPropagatesDefaultTransportDeadlineToServer(t *testing.T) {
+	prepared, err := prepareFlowQuery("FROM runs WHERE run_id = 'run-1' RETURN RECORD", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestCtx, cancel, command := prepareNativeFlowQueryCommand(
+		context.Background(),
+		2*time.Second,
+		prepared,
+	)
+	if cancel == nil {
+		t.Fatal("default transport timeout did not create a request deadline")
+	}
+	defer cancel()
+	deadline, ok := requestCtx.Deadline()
+	if !ok {
+		t.Fatal("request context has no deadline")
+	}
+	payload := command.payload.(nativeFlowQueryPayload)
+	wantDeadlineMS := deadline.UnixMilli()
+	if wantDeadlineMS > 0 && wantDeadlineMS < math.MaxInt64 && deadline.After(time.UnixMilli(wantDeadlineMS)) {
+		wantDeadlineMS++
+	}
+	if payload.deadlineMS != wantDeadlineMS {
+		t.Fatalf("deadline_ms = %d, want effective transport deadline %d", payload.deadlineMS, wantDeadlineMS)
 	}
 }
 

@@ -18,7 +18,7 @@ func TestV010FlowQueryBuildsDeterministicRequestAndDecodesPage(t *testing.T) {
 			"partition_key": []byte("tenant-a"), "root_flow_id": []byte("run-2"),
 			"attributes": map[string]any{"opaque": []byte{0xff}}, "updated_at_ms": int64(20),
 		},
-	}, true, "fqc1_next")}
+	}, true, "fqc1_next-page-token")}
 	client := NewClientWithExecutor(exec)
 
 	result, err := client.FlowQuery(context.Background(), query, map[string]any{
@@ -38,7 +38,7 @@ func TestV010FlowQueryBuildsDeterministicRequestAndDecodesPage(t *testing.T) {
 	if !reflect.DeepEqual(opaque, []byte{0xff}) {
 		t.Fatalf("opaque attribute = %#v", opaque)
 	}
-	if result.Page == nil || !result.Page.HasMore || result.Page.Cursor != "fqc1_next" {
+	if result.Page == nil || !result.Page.HasMore || result.Page.Cursor != "fqc1_next-page-token" {
 		t.Fatalf("page = %#v", result.Page)
 	}
 	if result.Quality.Exactness != "projected_exact" || result.Usage.ResultRecords != 1 {
@@ -69,6 +69,28 @@ func TestV010FlowQueryPreservesSparseProjectedRecords(t *testing.T) {
 	}
 	if _, present := result.Records[0]["type"]; present {
 		t.Fatalf("unrequested type field present in %#v", result.Records[0])
+	}
+}
+
+func TestV010FlowQueryNormalizesProjectedEventID(t *testing.T) {
+	exec := &fakeExecutor{value: flowQueryPageResponse([]any{
+		map[string]any{
+			"event_id": []byte("1710000000000-0"),
+			"fields":   map[string]any{"kind": []byte("transitioned")},
+		},
+	}, false, nil)}
+	client := NewClientWithExecutor(exec)
+
+	result, err := client.FlowQuery(
+		context.Background(),
+		"FROM events WHERE run_id = @run RETURN RECORD (event_id, fields['kind'])",
+		map[string]any{"run": "run-1"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Records[0]["event_id"]; got != "1710000000000-0" {
+		t.Fatalf("event_id = %#v (%T), want UTF-8 text", got, got)
 	}
 }
 
@@ -127,6 +149,16 @@ func TestV010FlowQueryRejectsMalformedOrAmbiguousResponses(t *testing.T) {
 			response["quality"].(map[string]any)["exactness"] = strings.Repeat("x", 65)
 			return response
 		}()},
+		{name: "unsupported quality", value: func() any {
+			response := flowQueryPageResponse([]any{}, false, nil)
+			response["quality"].(map[string]any)["exactness"] = "future_exactness"
+			return response
+		}()},
+		{name: "short cursor", value: flowQueryPageResponse([]any{}, true, "fqc1_short")},
+		{name: "hydrated exceeds scanned", value: flowQueryResponseWithUsage("hydrated_records", int64(2))},
+		{name: "duplicates exceed scanned", value: flowQueryResponseWithUsage("duplicate_entries", int64(2))},
+		{name: "pages exceed entries and seeks", value: flowQueryResponseWithUsage("range_pages", int64(3))},
+		{name: "residual checks exceed predicates", value: flowQueryResponseWithUsage("residual_checks", int64(13))},
 		{name: "invalid UTF-8 record text", value: flowQueryPageResponse(
 			[]any{map[string]any{"id": []byte{0xff}}}, false, nil,
 		)},
@@ -162,7 +194,12 @@ func TestV010FlowQueryValidatesBoundedWireInputsBeforeIO(t *testing.T) {
 		{name: "invalid UTF-8 query", query: "FROM runs " + string([]byte{0xff})},
 		{name: "invalid parameter name", query: "FROM runs WHERE run_id = @id RETURN RECORD", params: map[string]any{"": "one"}},
 		{name: "invalid UTF-8 parameter name", query: "FROM runs WHERE run_id = @id RETURN RECORD", params: map[string]any{string([]byte{0xff}): "one"}},
+		{name: "parameter name with space", query: "FROM runs WHERE run_id = @id RETURN RECORD", params: map[string]any{"bad name": "one"}},
+		{name: "parameter name with unicode", query: "FROM runs WHERE run_id = @id RETURN RECORD", params: map[string]any{"unicode_ä": "one"}},
+		{name: "parameter name with colon", query: "FROM runs WHERE run_id = @id RETURN RECORD", params: map[string]any{"bad:name": "one"}},
 		{name: "invalid UTF-8 text parameter", query: "FROM runs WHERE run_id = @id RETURN RECORD", params: map[string]any{"id": string([]byte{0xff})}},
+		{name: "oversized text parameter", query: "FROM runs WHERE run_id = @id RETURN RECORD", params: map[string]any{"id": strings.Repeat("x", 65_536)}},
+		{name: "oversized bytes parameter", query: "FROM runs WHERE run_id = @id RETURN RECORD", params: map[string]any{"id": make([]byte, 65_536)}},
 		{name: "unsupported parameter", query: "FROM runs WHERE run_id = @id RETURN RECORD", params: map[string]any{"id": map[string]any{"nested": true}}},
 		{name: "too many parameters", query: "FROM runs WHERE run_id = @id RETURN RECORD", params: func() map[string]any {
 			params := make(map[string]any, 65)
@@ -225,8 +262,14 @@ func TestV010FlowExplainAndAnalyzeUseDedicatedResultContract(t *testing.T) {
 		"status":            "planned",
 		"plan":              map[string]any{"path": "composite", "index": "flow_runs_tenant_type_updated"},
 		"estimate":          map[string]any{"scanned_entries": int64(10)},
+		"stats":             map[string]any{"source": "fresh"},
+		"quality":           flowQueryQualityResponse("live_seek"),
 		"bounds":            map[string]any{"scanned_entries": int64(50_000)},
+		"pressure":          map[string]any{"resources": []any{}},
+		"decision":          map[string]any{"reason": "only_bounded_candidate"},
+		"alternatives":      []any{},
 		"actual":            nil,
+		"diagnostic":        nil,
 	}
 	exec := &fakeExecutor{values: []any{
 		explainResponse,
@@ -246,7 +289,9 @@ func TestV010FlowExplainAndAnalyzeUseDedicatedResultContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if explain.Status != "planned" || explain.Plan["path"] != "composite" || explain.Actual != nil {
+	if explain.Status != "planned" || explain.Plan["path"] != "composite" || explain.Actual != nil ||
+		explain.Stats["source"] != "fresh" || explain.Quality.Pagination != "live_seek" ||
+		explain.Decision["reason"] != "only_bounded_candidate" || len(explain.Alternatives) != 0 {
 		t.Fatalf("explain = %#v", explain)
 	}
 	analyze, err := client.FlowExplainAnalyze(context.Background(), query, map[string]any{"tenant": "tenant-a"})
@@ -264,6 +309,101 @@ func TestV010FlowExplainAndAnalyzeUseDedicatedResultContract(t *testing.T) {
 	}
 }
 
+func TestV011FlowExplainPreservesNonGrammarLeadingWhitespace(t *testing.T) {
+	query := "\u00a0FROM runs WHERE run_id = @id RETURN RECORD"
+	exec := &fakeExecutor{value: flowExplainResponseForTest("planned")}
+	client := NewClientWithExecutor(exec)
+
+	if _, err := client.FlowExplain(context.Background(), query, map[string]any{"id": "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := exec.calls[0][2]; got != "EXPLAIN "+query {
+		t.Fatalf("explain query = %q, want preserved input", got)
+	}
+}
+
+func TestV011FlowExplainRequiresCompleteActionableEnvelope(t *testing.T) {
+	for _, field := range []string{
+		"stats", "quality", "pressure", "decision", "alternatives", "actual", "diagnostic",
+	} {
+		t.Run(field, func(t *testing.T) {
+			response := flowExplainResponseForTest("planned")
+			delete(response, field)
+			client := NewClientWithExecutor(&fakeExecutor{value: response})
+			if _, err := client.FlowExplain(context.Background(), "FROM runs WHERE run_id = 'one' RETURN RECORD", nil); err == nil {
+				t.Fatalf("accepted EXPLAIN response without %s", field)
+			}
+		})
+	}
+}
+
+func TestV011FlowExplainDecodesSpecializedCapabilities(t *testing.T) {
+	response := specializedFlowExplainResponseForTest()
+	client := NewClientWithExecutor(&fakeExecutor{value: response})
+
+	explain, err := client.FlowExplain(
+		context.Background(),
+		"FROM runs WHERE run_id = 'one' RETURN RECORD",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explain.Capabilities == nil ||
+		!reflect.DeepEqual(explain.Capabilities.Requested, []string{"flow_query_point_v1"}) ||
+		!reflect.DeepEqual(explain.Capabilities.Available, []string{"flow_query_point_v1", "flow_query_history_v1"}) ||
+		len(explain.Capabilities.Missing) != 0 || explain.Stats != nil || explain.Quality != nil ||
+		explain.Pressure != nil || explain.Decision != nil || len(explain.Alternatives) != 0 {
+		t.Fatalf("specialized explain = %#v", explain)
+	}
+}
+
+func TestV011FlowExplainRejectsMalformedSpecializedEnvelope(t *testing.T) {
+	tests := map[string]func(map[string]any){
+		"missing capabilities": func(response map[string]any) {
+			delete(response, "capabilities")
+		},
+		"missing capability list": func(response map[string]any) {
+			delete(response["capabilities"].(map[string]any), "requested")
+		},
+		"duplicate capability": func(response map[string]any) {
+			response["capabilities"].(map[string]any)["available"] = []any{
+				"flow_query_point_v1", "flow_query_point_v1",
+			}
+		},
+		"too many capabilities": func(response map[string]any) {
+			items := make([]any, 65)
+			for index := range items {
+				items[index] = fmt.Sprintf("missing_%d", index)
+			}
+			response["capabilities"].(map[string]any)["missing"] = items
+		},
+		"invalid UTF-8 capability": func(response map[string]any) {
+			response["capabilities"].(map[string]any)["available"] = []any{string([]byte{0xff})}
+		},
+		"partial actionable envelope": func(response map[string]any) {
+			response["stats"] = map[string]any{}
+		},
+		"executed status": func(response map[string]any) {
+			response["status"] = "executed"
+		},
+		"extended status field": func(response map[string]any) {
+			response["actual"] = nil
+		},
+	}
+
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			response := specializedFlowExplainResponseForTest()
+			mutate(response)
+			client := NewClientWithExecutor(&fakeExecutor{value: response})
+			if _, err := client.FlowExplain(context.Background(), "FROM runs WHERE run_id = 'one' RETURN RECORD", nil); err == nil {
+				t.Fatal("accepted malformed specialized EXPLAIN response")
+			}
+		})
+	}
+}
+
 func TestV010FlowExplainRejectsMalformedQueryFingerprint(t *testing.T) {
 	response := map[string]any{
 		"version":           flowExplainContract,
@@ -271,7 +411,14 @@ func TestV010FlowExplainRejectsMalformedQueryFingerprint(t *testing.T) {
 		"status":            "planned",
 		"plan":              map[string]any{},
 		"estimate":          map[string]any{},
+		"stats":             map[string]any{},
+		"quality":           flowQueryQualityResponse("live_seek"),
 		"bounds":            map[string]any{},
+		"pressure":          map[string]any{},
+		"decision":          map[string]any{},
+		"alternatives":      []any{},
+		"actual":            nil,
+		"diagnostic":        nil,
 	}
 	client := NewClientWithExecutor(&fakeExecutor{value: response})
 
@@ -287,7 +434,12 @@ func TestV010FlowExplainSurfacesRejectedPlanDiagnostic(t *testing.T) {
 		"status":            "rejected",
 		"plan":              map[string]any{"path": "reject", "fallback_reason": "no_active_bounded_index"},
 		"estimate":          map[string]any{"scanned_entries": int64(0)},
+		"stats":             map[string]any{"source": "fresh"},
+		"quality":           flowQueryQualityResponse("live_seek"),
 		"bounds":            map[string]any{"scanned_entries": int64(50_000)},
+		"pressure":          map[string]any{"resources": []any{}},
+		"decision":          map[string]any{"reason": "no_bounded_candidate"},
+		"alternatives":      []any{},
 		"actual":            nil,
 		"diagnostic": map[string]any{
 			"code": "query_no_bounded_plan", "message": "no bounded plan",
@@ -339,175 +491,50 @@ func TestV010FlowQueryPreservesStructuredDiagnostics(t *testing.T) {
 	}
 }
 
-func TestV010FlowQueryIndexesDecodesManagementContract(t *testing.T) {
-	maximum := uint64(math.MaxUint64)
-	exec := &fakeExecutor{value: map[string]any{
-		"contract_version":      "ferric.flow.query.indexes/v1",
-		"observed_at_ms":        int64(1000),
-		"statistics_max_age_ms": int64(60_000),
-		"registry":              map[string]any{"epoch": maximum, "catalog_version": maximum},
-		"services":              map[string]any{"registry": "ready"},
-		"indexes": []any{map[string]any{
-			"id": "flow_runs_tenant_updated", "version": maximum, "build_id": "build-1",
-			"state": "active", "queryable": true,
-			"covering_fields": []any{
-				"partition_key", "run_id", "updated_at_ms", "version",
-				"attribute.customer", "state_meta.failed.reason",
-			},
-			"format": map[string]any{
-				"query_row": "ferric.flow.query.row/v1",
-				"key":       "ferric.flow.query.composite.key/v1",
-				"entry":     "ferric.flow.query.composite.entry/v2",
-				"reverse":   "ferric.flow.query.composite.reverse/v1",
-				"counter":   nil,
-			},
-		}},
-	}}
-	client := NewClientWithExecutor(exec)
-
-	status, err := client.FlowQueryIndexes(context.Background(), "flow_runs_tenant_updated")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(status.Registry.Epoch, maximum) ||
-		!reflect.DeepEqual(status.Registry.CatalogVersion, maximum) ||
-		len(status.Indexes) != 1 ||
-		!reflect.DeepEqual(status.Indexes[0].Version, maximum) ||
-		!status.Indexes[0].Queryable ||
-		!reflect.DeepEqual(status.Indexes[0].CoveringFields, []string{
-			"partition_key", "run_id", "updated_at_ms", "version",
-			"attribute.customer", "state_meta.failed.reason",
-		}) ||
-		status.Indexes[0].Format.QueryRow != "ferric.flow.query.row/v1" ||
-		status.Indexes[0].Format.Entry != "ferric.flow.query.composite.entry/v2" ||
-		status.Indexes[0].Format.Counter != "" {
-		t.Fatalf("status = %#v", status)
-	}
-	want := [][]any{{"FLOW.QUERY.INDEXES", "flow_runs_tenant_updated"}}
-	if !reflect.DeepEqual(exec.calls, want) {
-		t.Fatalf("calls = %#v, want %#v", exec.calls, want)
-	}
-}
-
-func TestV011FlowQueryIndexesRequiresBoundedCoveringAndFormatMetadata(t *testing.T) {
-	validIndex := func() map[string]any {
-		return map[string]any{
-			"id": "flow_runs_tenant_updated", "version": uint64(2), "build_id": "build-2",
-			"state": "active", "queryable": true,
-			"covering_fields": []any{"partition_key", "run_id", "updated_at_ms"},
-			"format": map[string]any{
-				"query_row": "ferric.flow.query.row/v1",
-				"key":       "ferric.flow.query.composite.key/v1",
-				"entry":     "ferric.flow.query.composite.entry/v2",
-				"reverse":   "ferric.flow.query.composite.reverse/v1",
-				"counter":   "ferric.flow.query.composite.counter/v1",
-			},
-		}
-	}
-	response := func(index map[string]any) map[string]any {
-		return map[string]any{
-			"contract_version":      "ferric.flow.query.indexes/v1",
-			"observed_at_ms":        int64(1000),
-			"statistics_max_age_ms": int64(60_000),
-			"registry":              map[string]any{"epoch": uint64(1), "catalog_version": uint64(4)},
-			"services":              map[string]any{"registry": "ready"},
-			"indexes":               []any{index},
-		}
-	}
-
-	for name, mutate := range map[string]func(map[string]any){
-		"missing covering fields": func(index map[string]any) { delete(index, "covering_fields") },
-		"duplicate covering field": func(index map[string]any) {
-			index["covering_fields"] = []any{"run_id", "run_id"}
+func TestV011FlowQueryRejectsDiagnosticsOutsideBoundedWireContract(t *testing.T) {
+	tests := map[string]func(map[string]any){
+		"oversized text": func(diagnostic map[string]any) {
+			diagnostic["detail"] = strings.Repeat("x", 1_025)
 		},
-		"too many covering fields": func(index map[string]any) {
-			fields := make([]any, 33)
-			for position := range fields {
-				fields[position] = fmt.Sprintf("attribute.field_%d", position)
+		"too many context entries": func(diagnostic map[string]any) {
+			context := make(map[string]any, 17)
+			for index := 0; index < 17; index++ {
+				context[fmt.Sprintf("field_%d", index)] = int64(index)
 			}
-			index["covering_fields"] = fields
+			diagnostic["context"] = context
 		},
-		"missing format": func(index map[string]any) { delete(index, "format") },
-		"invalid nullable counter": func(index map[string]any) {
-			index["format"].(map[string]any)["counter"] = false
+		"empty context key": func(diagnostic map[string]any) {
+			diagnostic["context"] = map[string]any{"": "invalid"}
 		},
-	} {
+		"oversized context list": func(diagnostic map[string]any) {
+			diagnostic["context"] = map[string]any{"fields": make([]any, 33)}
+		},
+		"floating context value": func(diagnostic map[string]any) {
+			diagnostic["context"] = map[string]any{"estimate": 1.5}
+		},
+		"context integer overflow": func(diagnostic map[string]any) {
+			diagnostic["context"] = map[string]any{"estimate": uint64(math.MaxUint64)}
+		},
+		"context too deep": func(diagnostic map[string]any) {
+			var nested any = int64(1)
+			for _, key := range []string{"g", "f", "e", "d", "c", "b", "a"} {
+				nested = map[string]any{key: nested}
+			}
+			diagnostic["context"] = nested
+		},
+	}
+
+	if _, err := decodeFlowQueryErrorPayload(flowQueryDiagnosticForTest(), nil); err != nil {
+		t.Fatalf("valid diagnostic: %v", err)
+	}
+	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			index := validIndex()
-			mutate(index)
-			client := NewClientWithExecutor(&fakeExecutor{value: response(index)})
-			if _, err := client.FlowQueryIndexes(context.Background()); err == nil {
-				t.Fatalf("accepted %s", name)
+			diagnostic := flowQueryDiagnosticForTest()
+			mutate(diagnostic)
+			if _, err := decodeFlowQueryErrorPayload(diagnostic, nil); err == nil {
+				t.Fatal("accepted diagnostic outside the bounded wire contract")
 			}
 		})
-	}
-}
-
-func TestV010FlowQueryIndexesRejectsTextEncodedGenerations(t *testing.T) {
-	for _, encoded := range []any{"3", []byte("3")} {
-		response := map[string]any{
-			"contract_version":      "ferric.flow.query.indexes/v1",
-			"observed_at_ms":        int64(1000),
-			"statistics_max_age_ms": int64(60_000),
-			"registry":              map[string]any{"epoch": encoded, "catalog_version": uint64(3)},
-			"services":              map[string]any{"registry": "ready"},
-			"indexes":               []any{},
-		}
-		client := NewClientWithExecutor(&fakeExecutor{value: response})
-		if _, err := client.FlowQueryIndexes(context.Background()); err == nil {
-			t.Fatalf("accepted text-encoded registry epoch %#v", encoded)
-		}
-	}
-}
-
-func TestV010FlowQueryIndexesRejectsOversizedCatalog(t *testing.T) {
-	indexes := make([]any, 33)
-	for index := range indexes {
-		indexes[index] = map[string]any{
-			"id": fmt.Sprintf("index-%d", index), "version": uint64(1),
-			"build_id": fmt.Sprintf("build-%d", index), "state": "active", "queryable": true,
-		}
-	}
-	response := map[string]any{
-		"contract_version":      "ferric.flow.query.indexes/v1",
-		"observed_at_ms":        int64(1000),
-		"statistics_max_age_ms": int64(60_000),
-		"registry":              map[string]any{"epoch": uint64(1), "catalog_version": uint64(3)},
-		"services":              map[string]any{"registry": "ready"},
-		"indexes":               indexes,
-	}
-	client := NewClientWithExecutor(&fakeExecutor{value: response})
-	if _, err := client.FlowQueryIndexes(context.Background()); err == nil {
-		t.Fatal("accepted an index catalog larger than the negotiated query contract")
-	}
-}
-
-func TestV010FlowQueryIndexesValidatesServerIdentifierContractBeforeIO(t *testing.T) {
-	for _, indexID := range []string{
-		"contains space",
-		"contains/slash",
-		strings.Repeat("a", 65),
-	} {
-		exec := &fakeExecutor{}
-		client := NewClientWithExecutor(exec)
-
-		if _, err := client.FlowQueryIndexes(context.Background(), indexID); err == nil {
-			t.Fatalf("accepted invalid index id %q", indexID)
-		}
-		if len(exec.calls) != 0 {
-			t.Fatalf("index validation performed IO: %#v", exec.calls)
-		}
-	}
-
-	for _, indexIDs := range [][]string{{""}, {"first", "second"}} {
-		exec := &fakeExecutor{}
-		client := NewClientWithExecutor(exec)
-		if _, err := client.FlowQueryIndexes(context.Background(), indexIDs...); err == nil {
-			t.Fatalf("accepted index ids %#v", indexIDs)
-		}
-		if len(exec.calls) != 0 {
-			t.Fatalf("index validation performed IO: %#v", exec.calls)
-		}
 	}
 }
 
@@ -537,6 +564,25 @@ func TestV010NativeFlowQueryRejectsInvalidUTF8ParameterNames(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("accepted an invalid UTF-8 native parameter name")
+	}
+}
+
+func TestV011NativeFlowQueryUsesSharedParameterBounds(t *testing.T) {
+	for _, test := range []struct {
+		name  any
+		value any
+	}{
+		{name: "bad name", value: "run-1"},
+		{name: "unicode_ä", value: "run-1"},
+		{name: "bad:name", value: "run-1"},
+		{name: "id", value: strings.Repeat("x", 65_536)},
+		{name: "id", value: make([]byte, 65_536)},
+	} {
+		if _, err := buildNativeCommand([]any{
+			"FLOW.QUERY", "FQL1", "FROM runs WHERE run_id = @id RETURN RECORD", test.name, test.value,
+		}); err == nil {
+			t.Fatalf("accepted native parameter %#v", test)
+		}
 	}
 }
 
@@ -642,6 +688,58 @@ func flowQueryQualityResponse(pagination string) map[string]any {
 	}
 }
 
+func flowExplainResponseForTest(status string) map[string]any {
+	response := map[string]any{
+		"version":           flowExplainContract,
+		"query_fingerprint": strings.Repeat("a", 64),
+		"status":            status,
+		"plan":              map[string]any{"path": "ordered_range"},
+		"estimate":          map[string]any{"scanned_entries": int64(1)},
+		"stats":             map[string]any{"source": "fresh"},
+		"quality":           flowQueryQualityResponse("live_seek"),
+		"bounds":            map[string]any{"scanned_entries": int64(50_000)},
+		"pressure":          map[string]any{"resources": []any{}},
+		"decision":          map[string]any{"reason": "only_bounded_candidate"},
+		"alternatives":      []any{},
+		"actual":            nil,
+		"diagnostic":        nil,
+	}
+	if status == "executed" {
+		response["actual"] = flowQueryUsageResponse(0)
+	}
+	return response
+}
+
+func flowQueryDiagnosticForTest() map[string]any {
+	return map[string]any{
+		"code":           "unsupported_field",
+		"message":        "unsupported query field",
+		"detail":         "Use a supported field.",
+		"hint":           "See context.supported_fields.",
+		"retryable":      false,
+		"safe_to_retry":  false,
+		"retry_after_ms": int64(0),
+		"position":       map[string]any{"byte": int64(18), "line": int64(1), "column": int64(19)},
+		"context":        map[string]any{"supported_fields": []any{"partition_key", "run_id", "type"}},
+	}
+}
+
+func specializedFlowExplainResponseForTest() map[string]any {
+	return map[string]any{
+		"version":           flowExplainContract,
+		"query_fingerprint": strings.Repeat("b", 64),
+		"status":            "planned",
+		"plan":              map[string]any{"path": "point_lookup"},
+		"estimate":          map[string]any{"scanned_entries": int64(1)},
+		"bounds":            map[string]any{"scanned_entries": int64(1)},
+		"capabilities": map[string]any{
+			"requested": []any{"flow_query_point_v1"},
+			"available": []any{"flow_query_point_v1", "flow_query_history_v1"},
+			"missing":   []any{},
+		},
+	}
+}
+
 func flowQueryUsageResponse(resultRecords int64) map[string]any {
 	return map[string]any{
 		"range_seeks": int64(1), "range_pages": int64(1),
@@ -651,6 +749,12 @@ func flowQueryUsageResponse(resultRecords int64) map[string]any {
 		"response_bytes": int64(256), "memory_high_water_bytes": int64(1024),
 		"wall_time_us": int64(10),
 	}
+}
+
+func flowQueryResponseWithUsage(field string, value int64) map[string]any {
+	response := flowQueryPageResponse([]any{map[string]any{"id": "run-1"}}, false, nil)
+	response["usage"].(map[string]any)[field] = value
+	return response
 }
 
 var flowQueryArgsBenchmarkSink []any
