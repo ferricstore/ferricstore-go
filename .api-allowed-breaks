@@ -1,4 +1,0 @@
-- FlowQueryIndexFormat: old is comparable, new is not
-- FlowQueryIndexStatus.ObservedAtMS: changed from int64 to uint64
-- FlowQueryIndexStatus.Services: changed from map[string]any to FlowQueryIndexServices
-- FlowQueryIndexStatus.StatisticsMaxAgeMS: changed from int64 to uint64
