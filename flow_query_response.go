@@ -275,21 +275,6 @@ func requiredFlowQueryStringField(mapping map[string]any, key, context string) (
 	return value, nil
 }
 
-func optionalFlowQueryStringField(mapping map[string]any, key, context string) (string, error) {
-	raw, found := mapping[key]
-	if !found || raw == nil {
-		return "", nil
-	}
-	value, err := flowQueryResponseString(raw, "")
-	if err != nil {
-		return "", fmt.Errorf("decode %s %s: %w", context, key, err)
-	}
-	if value == "" {
-		return "", fmt.Errorf("decode %s %s: field must be a non-empty string", context, key)
-	}
-	return value, nil
-}
-
 func flowQueryResponseString(value any, context string) (string, error) {
 	switch typed := value.(type) {
 	case string:

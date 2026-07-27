@@ -251,9 +251,10 @@ func validateFlowQueryStatistics(index *FlowQueryIndex, status *FlowQueryIndexSt
 		return flowQueryIndexContractError("statistics timestamps or ages are inconsistent")
 	}
 	expected := "mixed"
-	if statistics.FreshSamples == statistics.Samples {
+	switch statistics.FreshSamples {
+	case statistics.Samples:
 		expected = "fresh"
-	} else if statistics.FreshSamples == 0 {
+	case 0:
 		expected = "stale"
 		if statistics.FutureSamples > 0 && statistics.Status == "future" {
 			expected = "future"
