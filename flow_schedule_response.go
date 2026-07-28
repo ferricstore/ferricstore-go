@@ -45,9 +45,26 @@ func scheduleRecordFromMapWithCodec(m map[string]any, codec Codec) (ScheduleReco
 		return ScheduleRecord{}, fmt.Errorf("schedule response has invalid state %q", status)
 	}
 
-	texts := make([]string, 7)
+	createdAtMS, err := requiredScheduleResponseInt(m, "created_at_ms")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	everyMS, err := requiredNullableScheduleInt(m, "every_ms")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	cron, err := requiredNullableScheduleText(m, "cron")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	timezone, err := requiredNullableScheduleText(m, "timezone")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+
+	texts := make([]string, 5)
 	for index, field := range []string{
-		"timezone", "cron", "last_target_id",
+		"last_target_id",
 		"last_overlap_target_id", "last_overlap_reason", "end_reason", "last_planning_error",
 	} {
 		texts[index], err = optionalScheduleResponseText(m, field)
@@ -72,6 +89,13 @@ func scheduleRecordFromMapWithCodec(m map[string]any, codec Codec) (ScheduleReco
 	}
 	if !validScheduleOverlapPolicy(overlapPolicy) {
 		return ScheduleRecord{}, fmt.Errorf("schedule response has invalid overlap_policy %q", overlapPolicy)
+	}
+	overlapRetryMS, err := requiredNullableScheduleInt(m, "overlap_retry_ms")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	if err := validateScheduleResponseRecurrence(kind, everyMS, cron, timezone, overlapPolicy, overlapRetryMS); err != nil {
+		return ScheduleRecord{}, err
 	}
 	nextRunAtMS, err := requiredNullableScheduleInt(m, "next_run_at_ms")
 	if err != nil {
@@ -124,30 +148,78 @@ func scheduleRecordFromMapWithCodec(m map[string]any, codec Codec) (ScheduleReco
 		Kind:                 kind,
 		State:                status,
 		Target:               target,
-		Timezone:             texts[0],
-		Cron:                 texts[1],
+		CreatedAtMS:          createdAtMS,
+		EveryMS:              everyMS,
+		Timezone:             timezone,
+		Cron:                 cron,
 		CatchupPolicy:        catchupPolicy,
 		OverlapPolicy:        overlapPolicy,
+		OverlapRetryMS:       overlapRetryMS,
 		NextRunAtMS:          nextRunAtMS,
 		LastFireAtMS:         values[0],
 		FireCount:            fireCount,
 		Attempts:             attempts,
 		MaxFires:             values[1],
 		EndAtMS:              values[2],
-		LastTargetID:         texts[2],
+		LastTargetID:         texts[0],
 		LastOverlapAtMS:      values[3],
-		LastOverlapTargetID:  texts[3],
-		LastOverlapReason:    texts[4],
+		LastOverlapTargetID:  texts[1],
+		LastOverlapReason:    texts[2],
 		LastSkippedAtMS:      values[4],
 		SkippedCount:         skippedCount,
 		OverlapQueuedDueAtMS: values[5],
 		CoalescedCount:       coalescedCount,
 		LastCatchupAtMS:      lastCatchupAtMS,
 		LastCoalescedCount:   lastCoalescedCount,
-		EndReason:            texts[5],
-		LastPlanningError:    texts[6],
+		EndReason:            texts[3],
+		LastPlanningError:    texts[4],
 		Raw:                  m,
 	}, nil
+}
+
+func validateScheduleResponseRecurrence(
+	kind string,
+	everyMS *int64,
+	cron string,
+	timezone string,
+	overlapPolicy string,
+	overlapRetryMS *int64,
+) error {
+	if kind == "interval" {
+		if everyMS == nil || *everyMS <= 0 {
+			return errors.New("schedule response interval every_ms must be positive")
+		}
+	} else if everyMS != nil {
+		return errors.New("schedule response every_ms is only valid for interval schedules")
+	}
+
+	if kind == "cron" {
+		if cron == "" {
+			return errors.New("schedule response cron schedule is missing cron")
+		}
+		if timezone == "" {
+			return errors.New("schedule response cron schedule is missing timezone")
+		}
+	} else if cron != "" {
+		return errors.New("schedule response cron is only valid for cron schedules")
+	} else if timezone != "" {
+		return errors.New("schedule response timezone is only valid for cron schedules")
+	}
+
+	if kind != "interval" && kind != "cron" && overlapPolicy != "allow" {
+		return errors.New("schedule response overlap_policy is only valid for recurring schedules")
+	}
+
+	if overlapRetryMS != nil {
+		if *overlapRetryMS <= 0 {
+			return errors.New("schedule response overlap_retry_ms must be positive")
+		}
+		if overlapPolicy != "queue_after_previous" {
+			return errors.New("schedule response overlap_retry_ms requires queue_after_previous")
+		}
+	}
+
+	return nil
 }
 
 func validateScheduleResponseCatchupState(

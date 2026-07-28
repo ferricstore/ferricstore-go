@@ -44,11 +44,15 @@ type ScheduleStatusOptions struct {
 }
 
 type ScheduleRecord struct {
-	ID       string
-	FlowID   string
-	Kind     string
-	State    string
-	Target   map[string]any
+	ID     string
+	FlowID string
+	Kind   string
+	State  string
+	Target map[string]any
+	// CreatedAtMS is the logical timestamp at which the schedule was created.
+	CreatedAtMS int64
+	// EveryMS is set only for interval schedules.
+	EveryMS  *int64
 	Timezone string
 	Cron     string
 	// CatchupPolicy is "fire_once" for interval schedules and empty otherwise.
@@ -59,8 +63,10 @@ type ScheduleRecord struct {
 	// LastCatchupAtMS is the wall-clock recovery time of the latest catch-up.
 	LastCatchupAtMS *int64
 	// LastCoalescedCount is the number coalesced by the latest recovery fire.
-	LastCoalescedCount   int64
-	OverlapPolicy        string
+	LastCoalescedCount int64
+	OverlapPolicy      string
+	// OverlapRetryMS is an optional queue-after-previous retry override.
+	OverlapRetryMS       *int64
 	NextRunAtMS          *int64
 	LastFireAtMS         *int64
 	FireCount            int64

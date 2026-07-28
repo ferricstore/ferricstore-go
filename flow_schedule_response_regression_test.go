@@ -12,13 +12,17 @@ func TestScheduleRecordDecodesCanonicalServerView(t *testing.T) {
 		"flow_id":                  "__ferricstore_schedule__:daily",
 		"state":                    "active",
 		"kind":                     "interval",
+		"created_at_ms":            int64(50),
+		"every_ms":                 int64(25),
+		"cron":                     nil,
 		"target":                   map[string]any{"type": "email", "id_prefix": "daily"},
-		"timezone":                 "Etc/UTC",
+		"timezone":                 nil,
 		"catchup_policy":           "fire_once",
 		"coalesced_count":          int64(12),
 		"last_catchup_at_ms":       int64(85),
 		"last_coalesced_count":     int64(4),
 		"overlap_policy":           "skip",
+		"overlap_retry_ms":         nil,
 		"next_run_at_ms":           int64(100),
 		"last_fire_at_ms":          int64(90),
 		"fire_count":               int64(3),
@@ -40,7 +44,10 @@ func TestScheduleRecordDecodesCanonicalServerView(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.ID != "daily" || got.FlowID != "__ferricstore_schedule__:daily" ||
-		got.State != "active" || got.Kind != "interval" || scheduleInt64(got.NextRunAtMS) != 100 ||
+		got.State != "active" || got.Kind != "interval" || got.CreatedAtMS != 50 ||
+		scheduleInt64(got.EveryMS) != 25 || got.Cron != "" || got.OverlapRetryMS != nil ||
+		got.Timezone != "" ||
+		scheduleInt64(got.NextRunAtMS) != 100 ||
 		scheduleInt64(got.LastFireAtMS) != 90 || got.FireCount != 3 || got.Attempts != 4 ||
 		got.CatchupPolicy != "fire_once" || got.CoalescedCount != 12 ||
 		scheduleInt64(got.LastCatchupAtMS) != 85 || got.LastCoalescedCount != 4 ||
@@ -99,6 +106,15 @@ func TestScheduleRecordRejectsInvalidRecordIntegrity(t *testing.T) {
 		{name: "blank id", raw: scheduleResponseWith("id", " "), want: "id"},
 		{name: "missing kind", raw: scheduleResponseWithout("kind"), want: "kind"},
 		{name: "missing state", raw: scheduleResponseWithout("state"), want: "state"},
+		{name: "missing creation time", raw: scheduleResponseWithout("created_at_ms"), want: "created_at_ms"},
+		{name: "missing interval period", raw: scheduleResponseWithout("every_ms"), want: "every_ms"},
+		{name: "missing timezone", raw: scheduleResponseWithout("timezone"), want: "timezone"},
+		{name: "interval without period", raw: scheduleResponseWith("every_ms", nil), want: "every_ms"},
+		{name: "cron on interval", raw: scheduleResponseWith("cron", "* * * * *"), want: "cron"},
+		{name: "timezone on interval", raw: scheduleResponseWith("timezone", "Etc/UTC"), want: "timezone"},
+		{name: "cron without timezone", raw: scheduleResponseWithMany(map[string]any{"kind": "cron", "every_ms": nil, "cron": "* * * * *", "timezone": nil, "catchup_policy": nil}), want: "timezone"},
+		{name: "overlap retry on skip", raw: scheduleResponseWith("overlap_retry_ms", int64(5)), want: "overlap_retry_ms"},
+		{name: "overlap policy on one-shot", raw: scheduleResponseWithMany(map[string]any{"kind": "one_shot", "every_ms": nil, "catchup_policy": nil, "overlap_policy": "skip"}), want: "overlap_policy"},
 		{name: "missing interval catch-up policy", raw: scheduleResponseWithout("catchup_policy"), want: "catchup_policy"},
 		{name: "invalid interval catch-up policy", raw: scheduleResponseWith("catchup_policy", "replay_all"), want: "catchup_policy"},
 		{name: "catch-up policy on cron", raw: scheduleResponseWithMany(map[string]any{"kind": "cron", "catchup_policy": "fire_once"}), want: "catchup_policy"},
@@ -114,10 +130,11 @@ func TestScheduleRecordRejectsInvalidRecordIntegrity(t *testing.T) {
 		{name: "negative attempts", raw: scheduleResponseWith("attempts", int64(-1)), want: "attempts"},
 		{name: "fire count exceeds exact range", raw: scheduleResponseWith("fire_count", maxFlowExactIntegerV080+1), want: "fire_count"},
 		{name: "missing coalesced count", raw: scheduleResponseWithout("coalesced_count"), want: "coalesced_count"},
-		{name: "non-interval coalesced count", raw: scheduleResponseWithMany(map[string]any{"kind": "one_shot", "catchup_policy": nil, "coalesced_count": int64(1)}), want: "coalesced_count"},
+		{name: "period on one-shot", raw: scheduleResponseWithMany(map[string]any{"kind": "one_shot", "catchup_policy": nil}), want: "every_ms"},
+		{name: "non-interval coalesced count", raw: scheduleResponseWithMany(map[string]any{"kind": "one_shot", "every_ms": nil, "catchup_policy": nil, "coalesced_count": int64(1)}), want: "coalesced_count"},
 		{name: "latest coalesced exceeds cumulative", raw: scheduleResponseWithMany(map[string]any{"coalesced_count": int64(3), "last_coalesced_count": int64(4), "last_catchup_at_ms": int64(100)}), want: "last_coalesced_count"},
 		{name: "latest coalesced missing catch-up time", raw: scheduleResponseWithMany(map[string]any{"coalesced_count": int64(1), "last_coalesced_count": int64(1)}), want: "last_catchup_at_ms"},
-		{name: "non-interval epoch catch-up time", raw: scheduleResponseWithMany(map[string]any{"kind": "one_shot", "catchup_policy": nil, "last_catchup_at_ms": int64(0)}), want: "last_catchup_at_ms"},
+		{name: "non-interval epoch catch-up time", raw: scheduleResponseWithMany(map[string]any{"kind": "one_shot", "every_ms": nil, "catchup_policy": nil, "last_catchup_at_ms": int64(0)}), want: "last_catchup_at_ms"},
 		{name: "epoch catch-up time without coalescing", raw: scheduleResponseWith("last_catchup_at_ms", int64(0)), want: "last_catchup_at_ms"},
 	}
 	for _, test := range tests {
@@ -134,9 +151,12 @@ func canonicalScheduleResponse() map[string]any {
 	return map[string]any{
 		"id": "daily", "flow_id": "__ferricstore_schedule__:daily",
 		"kind": "interval", "state": "active",
+		"created_at_ms": int64(50), "every_ms": int64(1_000), "cron": nil,
+		"timezone":       nil,
 		"target":         map[string]any{"id_prefix": "daily", "type": "task", "state": "queued"},
 		"catchup_policy": "fire_once", "overlap_policy": "allow",
-		"next_run_at_ms": int64(100), "fire_count": int64(0), "attempts": int64(0),
+		"overlap_retry_ms": nil,
+		"next_run_at_ms":   int64(100), "fire_count": int64(0), "attempts": int64(0),
 		"skipped_count": int64(0), "coalesced_count": int64(0),
 		"last_coalesced_count": int64(0),
 	}
@@ -165,5 +185,6 @@ func scheduleResponseWithout(field string) map[string]any {
 func oneShotScheduleResponse(id, state string) map[string]any {
 	return scheduleResponseWithMany(map[string]any{
 		"id": id, "kind": "one_shot", "state": state, "catchup_policy": nil,
+		"every_ms": nil,
 	})
 }

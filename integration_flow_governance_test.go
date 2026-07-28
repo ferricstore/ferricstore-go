@@ -108,6 +108,11 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 	if createdCatchup.CatchupPolicy != "fire_once" {
 		t.Fatalf("created catch-up policy = %q", createdCatchup.CatchupPolicy)
 	}
+	if createdCatchup.CreatedAtMS != now || scheduleInt64(createdCatchup.EveryMS) != catchupEvery ||
+		createdCatchup.Cron != "" || createdCatchup.Timezone != "" ||
+		createdCatchup.OverlapRetryMS != nil {
+		t.Fatalf("created recurrence config = %#v", createdCatchup)
+	}
 	catchupSummary := must[ScheduleFireDueResult](t)(client.ScheduleFireDue(ctx, ScheduleFireDueOptions{
 		NowMS: Int64(catchupRecovery), Worker: "go-sdk-catchup-scheduler", Limit: Int(100),
 	}))
@@ -117,7 +122,8 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 	storedCatchup := must[*ScheduleRecord](t)(client.ScheduleGet(ctx, catchupScheduleID, nil))
 	if storedCatchup == nil || storedCatchup.FireCount != 1 || storedCatchup.CoalescedCount != 10 ||
 		storedCatchup.LastCoalescedCount != 10 || scheduleInt64(storedCatchup.LastCatchupAtMS) != catchupRecovery ||
-		scheduleInt64(storedCatchup.NextRunAtMS) != catchupRecovery+catchupEvery {
+		scheduleInt64(storedCatchup.NextRunAtMS) != catchupRecovery+catchupEvery ||
+		storedCatchup.CreatedAtMS != now || scheduleInt64(storedCatchup.EveryMS) != catchupEvery {
 		t.Fatalf("stored catch-up schedule = %#v", storedCatchup)
 	}
 

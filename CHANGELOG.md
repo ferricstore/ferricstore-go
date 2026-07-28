@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+## 0.11.4 - 2026-07-28
+
+- Decode and validate the complete durable-schedule recurrence response,
+  including creation time, interval period, cron expression, timezone, and
+  overlap retry configuration.
+- Require FerricStore 0.11.4 while retaining native wire protocol v1.
+
 ## 0.11.2 - 2026-07-27
 
 - Expose typed specialized-plan capabilities and the complete query-index

@@ -20,13 +20,14 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned tested image, `ghcr.io/ferricstore/ferricstore:0.11.3`, by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned tested image, `ghcr.io/ferricstore/ferricstore:0.11.4`, by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
-The Go package contract is v0.11.3, requires FerricStore 0.11.0 or newer, and
-is tested against FerricStore 0.11.3. The native wire protocol remains v1.
+Go SDK 0.11.4 requires FerricStore 0.11.4 or newer because schedule
+responses now use the complete recurrence contract. The native wire protocol
+remains v1.
 
 ## Client
 
@@ -468,10 +469,14 @@ schedule, err := client.ScheduleCreate(ctx, "billing-sweep", ferricstore.Schedul
 })
 ```
 
-Schedule reads expose `CatchupPolicy`, `CoalescedCount`,
-`LastCoalescedCount`, and `LastCatchupAtMS`. Nullable timestamps such as
-`NextRunAtMS` and `LastCatchupAtMS` are `*int64`, preserving the distinction
-between null and Unix epoch zero. `ScheduleFireDue`
+Schedule reads expose the complete recurrence configuration through
+`CreatedAtMS`, `EveryMS`, `Cron`, `Timezone`, `OverlapPolicy`, and
+`OverlapRetryMS`, in addition to `CatchupPolicy`, `CoalescedCount`,
+`LastCoalescedCount`, and `LastCatchupAtMS`. `EveryMS` and
+`OverlapRetryMS` are `*int64`; `Cron` is empty when the canonical server value
+is null. Nullable timestamps such as `NextRunAtMS` and `LastCatchupAtMS` are
+also `*int64`, preserving the distinction between null and Unix epoch zero.
+`ScheduleFireDue`
 returns the batch `Coalesced` total. Its `Errors` entries correspond to
 claimed schedules; `ClaimError` separately reports a failure to request a
 later wave after completed outcomes were preserved. Catch-up is separate from

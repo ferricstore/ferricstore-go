@@ -7,10 +7,10 @@ import (
 )
 
 func TestV011PackageAndServerContractVersions(t *testing.T) {
-	if SDKVersion != "0.11.2" {
+	if SDKVersion != "0.11.4" {
 		t.Fatalf("SDKVersion = %q", SDKVersion)
 	}
-	if MinimumServerVersion != "0.11.0" {
+	if MinimumServerVersion != "0.11.4" {
 		t.Fatalf("MinimumServerVersion = %q", MinimumServerVersion)
 	}
 	if NativeProtocolVersion != 1 || nativeRequestVersion != 1 {
@@ -23,8 +23,8 @@ func TestV011ChangelogHasReleaseHeading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(contents), "## 0.11.2 - ") {
-		t.Fatal("CHANGELOG.md does not identify the 0.11.2 release")
+	if !strings.Contains(string(contents), "## 0.11.4 - ") {
+		t.Fatal("CHANGELOG.md does not identify the 0.11.4 release")
 	}
 }
 
@@ -34,9 +34,9 @@ func TestV011ReleaseGuideUsesCurrentTag(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(contents)
-	if !strings.Contains(text, "git tag v0.11.2") ||
-		!strings.Contains(text, "ferricstore-go@v0.11.2") {
-		t.Fatal("RELEASE.md does not use the v0.11.2 tag")
+	if !strings.Contains(text, "git tag v0.11.4") ||
+		!strings.Contains(text, "ferricstore-go@v0.11.4") {
+		t.Fatal("RELEASE.md does not use the v0.11.4 tag")
 	}
 	if strings.Contains(text, "v0.1.0") {
 		t.Fatal("RELEASE.md still contains the stale v0.1.0 tag")
