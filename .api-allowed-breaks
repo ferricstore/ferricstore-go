@@ -1,0 +1,26 @@
+- (*Client).ScheduleDelete: changed from func(context.Context, string, *int64) (ScheduleResult, error) to func(context.Context, string, ScheduleStatusOptions) error
+- (*Client).ScheduleDeleteWithOptions: removed
+- (*Client).ScheduleFire: changed from func(context.Context, string, *int64) (ScheduleResult, error) to func(context.Context, string, ScheduleFireOptions) (ScheduleFireResult, error)
+- (*Client).ScheduleFireDue: changed from func(context.Context, *int64, string, *int64, *int) (ScheduleResult, error) to func(context.Context, ScheduleFireDueOptions) (ScheduleFireDueResult, error)
+- (*Client).ScheduleFireDueWithOptions: removed
+- (*Client).ScheduleFireWithOptions: removed
+- (*Client).SchedulePause: changed from func(context.Context, string, *int64) (ScheduleResult, error) to func(context.Context, string, ScheduleStatusOptions) (ScheduleRecord, error)
+- (*Client).SchedulePauseWithOptions: removed
+- (*Client).ScheduleResume: changed from func(context.Context, string, *int64) (ScheduleResult, error) to func(context.Context, string, ScheduleStatusOptions) (ScheduleRecord, error)
+- (*Client).ScheduleResumeWithOptions: removed
+- MinimumServerVersion: value changed from "0.11.0" to "0.11.4"
+- ScheduleResult.Claimed: removed
+- ScheduleResult.EndAtMS: changed from int64 to *int64
+- ScheduleResult.Errors: removed
+- ScheduleResult.Fired: removed
+- ScheduleResult.Fires: removed
+- ScheduleResult.LastFireAtMS: changed from int64 to *int64
+- ScheduleResult.LastOverlapAtMS: changed from int64 to *int64
+- ScheduleResult.LastSkipReason: removed
+- ScheduleResult.LastSkippedAtMS: changed from int64 to *int64
+- ScheduleResult.MaxFires: changed from int64 to *int64
+- ScheduleResult.NextFireAtMS: removed
+- ScheduleResult.OverlapQueuedDueAtMS: changed from int64 to *int64
+- ScheduleResult.Skipped: removed
+- ScheduleResult.Status: removed
+- ScheduleResult: removed
