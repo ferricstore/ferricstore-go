@@ -82,7 +82,20 @@ func responseField(value any, name string) any {
 
 func integrationContext(t *testing.T) (context.Context, context.CancelFunc) {
 	t.Helper()
-	return context.WithTimeout(context.Background(), 30*time.Second)
+	return context.WithTimeout(context.Background(), integrationScenarioTimeout)
+}
+
+func TestIntegrationContextOutlivesIndependentProjectionWaits(t *testing.T) {
+	ctx, cancel := integrationContext(t)
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("integration context has no deadline")
+	}
+	if remaining := time.Until(deadline); remaining < 2*integrationProjectionTimeout {
+		t.Fatalf("integration context remaining = %s, want at least %s", remaining, 2*integrationProjectionTimeout)
+	}
 }
 
 func integrationClient(codec Codec) *Client {
@@ -106,6 +119,7 @@ func integrationSuffix(name string) string {
 }
 
 const (
+	integrationScenarioTimeout   = 2 * time.Minute
 	integrationProjectionTimeout = 30 * time.Second
 	integrationProjectionRetry   = 100 * time.Millisecond
 )
