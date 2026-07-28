@@ -35,7 +35,7 @@ func scheduleFireResultWithCodec(value any, err error, codec Codec) (ScheduleFir
 	if err != nil {
 		return ScheduleFireResult{}, fmt.Errorf("FLOW.SCHEDULE.FIRE schedule: %w", err)
 	}
-	schedule, err := scheduleResultFromMapWithCodec(scheduleMap, codec)
+	schedule, err := scheduleRecordFromMapWithCodec(scheduleMap, codec)
 	if err != nil {
 		return ScheduleFireResult{}, err
 	}
@@ -52,6 +52,12 @@ func scheduleFireResultWithCodec(value any, err error, codec Codec) (ScheduleFir
 	}
 	if skipped == 1 && reason == "" {
 		return ScheduleFireResult{}, errors.New("FLOW.SCHEDULE.FIRE skipped response is missing reason")
+	}
+	if fired == 0 && targetID != "" {
+		return ScheduleFireResult{}, errors.New("FLOW.SCHEDULE.FIRE target_id requires a fired outcome")
+	}
+	if skipped == 0 && reason != "" {
+		return ScheduleFireResult{}, errors.New("FLOW.SCHEDULE.FIRE reason requires a skipped outcome")
 	}
 	return ScheduleFireResult{
 		Fired: fired, Skipped: skipped, TargetID: targetID, Reason: reason,

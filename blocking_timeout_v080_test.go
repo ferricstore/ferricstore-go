@@ -46,7 +46,7 @@ func TestV080BlockingTimeoutsRejectValuesAboveProtocolMaximum(t *testing.T) {
 		{
 			name: "FLOW.SCHEDULE.FIRE_DUE",
 			call: func(client *Client) error {
-				_, err := client.ScheduleFireDueWithOptions(context.Background(), ScheduleFireDueOptions{
+				_, err := client.ScheduleFireDue(context.Background(), ScheduleFireDueOptions{
 					BlockMS: &tooLarge,
 				})
 				return err

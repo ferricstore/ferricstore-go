@@ -15,6 +15,9 @@ func validateScheduleCreate(id string, opt ScheduleOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := validateScheduleTimingOptions(kind, opt); err != nil {
+		return err
+	}
 	recurring := kind == "interval" || kind == "cron"
 	if err := validateScheduleTarget(opt.Target, recurring); err != nil {
 		return err
@@ -74,9 +77,19 @@ func validateScheduleCreate(id string, opt ScheduleOptions) error {
 			return err
 		}
 	}
+	if kind == "interval" {
+		if opt.CatchupPolicy != "" && !validScheduleCatchupPolicy(opt.CatchupPolicy) {
+			return errors.New("catchup_policy must be fire_once")
+		}
+	} else if opt.CatchupPolicy != "" {
+		return errors.New("catchup_policy is only supported for interval schedules")
+	}
 	if recurring {
 		if opt.OverlapPolicy != "" && !validScheduleOverlapPolicy(opt.OverlapPolicy) {
 			return errors.New("overlap_policy must be allow, skip, queue_after_previous, or fail_schedule")
+		}
+		if opt.OverlapRetryMS != nil && canonicalAdminEnum(opt.OverlapPolicy) != "queue_after_previous" {
+			return errors.New("overlap_retry_ms requires overlap_policy queue_after_previous")
 		}
 		if firstRun, known := knownFirstScheduleRun(kind, opt); known && opt.EndAtMS != nil && *opt.EndAtMS < firstRun {
 			return errors.New("end_at_ms must be at or after first run")
@@ -85,12 +98,34 @@ func validateScheduleCreate(id string, opt ScheduleOptions) error {
 		if opt.OverlapPolicy != "" {
 			return errors.New("overlap_policy is only supported for recurring schedules")
 		}
+		if opt.OverlapRetryMS != nil {
+			return errors.New("overlap_retry_ms requires overlap_policy queue_after_previous")
+		}
 		if opt.MaxFires != nil {
 			return errors.New("max_fires is only supported for recurring schedules")
 		}
 		if opt.EndAtMS != nil {
 			return errors.New("end_at_ms is only supported for recurring schedules")
 		}
+	}
+	return nil
+}
+
+func validateScheduleTimingOptions(kind string, opt ScheduleOptions) error {
+	if opt.AtMS != nil && opt.StartAtMS != nil {
+		return errors.New("cannot set both at_ms and start_at_ms")
+	}
+	if opt.DelayMS != nil && kind != "delay" {
+		return errors.New("delay_ms is only supported for delay schedules")
+	}
+	if opt.EveryMS != nil && kind != "interval" {
+		return errors.New("every_ms is only supported for interval schedules")
+	}
+	if opt.Cron != "" && kind != "cron" {
+		return errors.New("cron is only supported for cron schedules")
+	}
+	if (opt.AtMS != nil || opt.StartAtMS != nil) && kind == "delay" {
+		return errors.New("at_ms and start_at_ms are not supported for delay schedules")
 	}
 	return nil
 }
@@ -150,6 +185,9 @@ func validateScheduleTarget(target map[string]any, recurring bool) error {
 				return err
 			}
 		}
+	}
+	if target["id"] != nil && target["id_prefix"] != nil {
+		return errors.New("target cannot set both id and id_prefix")
 	}
 	if recurring {
 		if value, exists := target["id"]; exists && value != nil {
@@ -231,6 +269,10 @@ func validScheduleOverlapPolicy(value string) bool {
 	default:
 		return false
 	}
+}
+
+func validScheduleCatchupPolicy(value string) bool {
+	return canonicalAdminEnum(value) == "fire_once"
 }
 
 func knownFirstScheduleRun(kind string, opt ScheduleOptions) (int64, bool) {
@@ -333,18 +375,10 @@ func validateScheduleList(opt ScheduleListOptions) error {
 			return err
 		}
 	}
-	for _, field := range []struct {
-		name  string
-		value *int64
-	}{
-		{name: "from_ms", value: opt.FromMS},
-		{name: "to_ms", value: opt.ToMS},
-	} {
-		if err := validateOptionalFlowExactNonNegative(field.name, field.value); err != nil {
-			return err
-		}
+	if opt.State != "" && opt.State != "all" && !validScheduleResponseState(opt.State) {
+		return errors.New("state must be active, paused, running, completed, failed, cancelled, or all")
 	}
-	if err := validateOptionalPositiveInt("count", opt.Count); err != nil {
+	if err := validateFlowReadRange(opt.Count, opt.FromMS, opt.ToMS); err != nil {
 		return err
 	}
 	return validateOptionalNonNegativeInt64("deadline_ms", opt.DeadlineMS)

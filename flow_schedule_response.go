@@ -1,105 +1,226 @@
 package ferricstore
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
 
-func scheduleResult(value any, err error) (ScheduleResult, error) {
-	return scheduleResultWithCodec(value, err, RawCodec{})
+func scheduleRecord(value any, err error) (ScheduleRecord, error) {
+	return scheduleRecordWithCodec(value, err, RawCodec{})
 }
 
-func scheduleResultWithCodec(value any, err error, codec Codec) (ScheduleResult, error) {
+func scheduleRecordWithCodec(value any, err error, codec Codec) (ScheduleRecord, error) {
 	if err != nil {
-		return ScheduleResult{}, err
+		return ScheduleRecord{}, err
 	}
 	m, err := nativeMap(value)
 	if err != nil {
-		return ScheduleResult{}, err
+		return ScheduleRecord{}, err
 	}
-	return scheduleResultFromMapWithCodec(m, codec)
+	return scheduleRecordFromMapWithCodec(m, codec)
 }
 
-func scheduleResultFromMapWithCodec(m map[string]any, codec Codec) (ScheduleResult, error) {
+func scheduleRecordFromMapWithCodec(m map[string]any, codec Codec) (ScheduleRecord, error) {
 	id, err := requiredScheduleText(m, "id")
 	if err != nil {
-		return ScheduleResult{}, err
+		return ScheduleRecord{}, err
+	}
+	flowID, err := optionalScheduleResponseText(m, "flow_id")
+	if err != nil {
+		return ScheduleRecord{}, err
 	}
 	kind, err := requiredScheduleText(m, "kind")
 	if err != nil {
-		return ScheduleResult{}, err
+		return ScheduleRecord{}, err
 	}
-	status, err := scheduleTextAlias(m, "state", "status", true)
+	if !validScheduleResponseKind(kind) {
+		return ScheduleRecord{}, fmt.Errorf("schedule response has invalid kind %q", kind)
+	}
+	status, err := requiredScheduleText(m, "state")
 	if err != nil {
-		return ScheduleResult{}, err
+		return ScheduleRecord{}, err
+	}
+	if !validScheduleResponseState(status) {
+		return ScheduleRecord{}, fmt.Errorf("schedule response has invalid state %q", status)
 	}
 
-	texts := make([]string, 9)
+	texts := make([]string, 7)
 	for index, field := range []string{
-		"flow_id", "timezone", "cron", "overlap_policy", "last_target_id",
-		"last_overlap_target_id", "last_overlap_reason", "end_reason", "last_skip_reason",
+		"timezone", "cron", "last_target_id",
+		"last_overlap_target_id", "last_overlap_reason", "end_reason", "last_planning_error",
 	} {
 		texts[index], err = optionalScheduleResponseText(m, field)
 		if err != nil {
-			return ScheduleResult{}, err
+			return ScheduleRecord{}, err
 		}
+	}
+	catchupPolicy, err := requiredNullableScheduleText(m, "catchup_policy")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	if err := validateScheduleResponseCatchupPolicy(kind, catchupPolicy); err != nil {
+		return ScheduleRecord{}, err
 	}
 	target, err := decodeScheduleTarget(codec, m["target"])
 	if err != nil {
-		return ScheduleResult{}, err
+		return ScheduleRecord{}, err
 	}
-	nextFireAtMS, err := scheduleIntAlias(m, "next_run_at_ms", "next_fire_at_ms")
+	overlapPolicy, err := requiredScheduleText(m, "overlap_policy")
 	if err != nil {
-		return ScheduleResult{}, err
+		return ScheduleRecord{}, err
 	}
-	fires, err := scheduleIntAlias(m, "fire_count", "fires")
+	if !validScheduleOverlapPolicy(overlapPolicy) {
+		return ScheduleRecord{}, fmt.Errorf("schedule response has invalid overlap_policy %q", overlapPolicy)
+	}
+	nextRunAtMS, err := requiredNullableScheduleInt(m, "next_run_at_ms")
 	if err != nil {
-		return ScheduleResult{}, err
+		return ScheduleRecord{}, err
+	}
+	fireCount, err := requiredScheduleResponseInt(m, "fire_count")
+	if err != nil {
+		return ScheduleRecord{}, err
 	}
 
-	values := make([]int64, 8)
+	values := make([]*int64, 6)
 	for index, field := range []string{
-		"last_fire_at_ms", "attempts", "max_fires", "end_at_ms", "last_overlap_at_ms",
-		"last_skipped_at_ms", "skipped_count", "overlap_queued_due_at_ms",
+		"last_fire_at_ms", "max_fires", "end_at_ms", "last_overlap_at_ms",
+		"last_skipped_at_ms", "overlap_queued_due_at_ms",
 	} {
 		values[index], err = optionalNonNegativeScheduleInt(m, field)
 		if err != nil {
-			return ScheduleResult{}, err
+			return ScheduleRecord{}, err
 		}
 	}
+	attempts, err := requiredScheduleResponseInt(m, "attempts")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	skippedCount, err := requiredScheduleResponseInt(m, "skipped_count")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	coalescedCount, err := requiredScheduleResponseInt(m, "coalesced_count")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	lastCoalescedCount, err := requiredScheduleResponseInt(m, "last_coalesced_count")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	lastCatchupAtMS, err := optionalNonNegativeScheduleInt(m, "last_catchup_at_ms")
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	if err := validateScheduleResponseCatchupState(
+		kind, coalescedCount, lastCoalescedCount, lastCatchupAtMS != nil,
+	); err != nil {
+		return ScheduleRecord{}, err
+	}
 
-	return ScheduleResult{
+	return ScheduleRecord{
 		ID:                   id,
-		FlowID:               texts[0],
+		FlowID:               flowID,
 		Kind:                 kind,
-		Status:               status,
+		State:                status,
 		Target:               target,
-		Timezone:             texts[1],
-		Cron:                 texts[2],
-		OverlapPolicy:        texts[3],
-		NextFireAtMS:         nextFireAtMS,
+		Timezone:             texts[0],
+		Cron:                 texts[1],
+		CatchupPolicy:        catchupPolicy,
+		OverlapPolicy:        overlapPolicy,
+		NextRunAtMS:          nextRunAtMS,
 		LastFireAtMS:         values[0],
-		Fires:                fires,
-		Attempts:             values[1],
-		MaxFires:             values[2],
-		EndAtMS:              values[3],
-		LastTargetID:         texts[4],
-		LastOverlapAtMS:      values[4],
-		LastOverlapTargetID:  texts[5],
-		LastOverlapReason:    texts[6],
-		LastSkippedAtMS:      values[5],
-		SkippedCount:         values[6],
-		OverlapQueuedDueAtMS: values[7],
-		EndReason:            texts[7],
-		LastSkipReason:       texts[8],
+		FireCount:            fireCount,
+		Attempts:             attempts,
+		MaxFires:             values[1],
+		EndAtMS:              values[2],
+		LastTargetID:         texts[2],
+		LastOverlapAtMS:      values[3],
+		LastOverlapTargetID:  texts[3],
+		LastOverlapReason:    texts[4],
+		LastSkippedAtMS:      values[4],
+		SkippedCount:         skippedCount,
+		OverlapQueuedDueAtMS: values[5],
+		CoalescedCount:       coalescedCount,
+		LastCatchupAtMS:      lastCatchupAtMS,
+		LastCoalescedCount:   lastCoalescedCount,
+		EndReason:            texts[5],
+		LastPlanningError:    texts[6],
 		Raw:                  m,
 	}, nil
 }
 
+func validateScheduleResponseCatchupState(
+	kind string,
+	coalescedCount int64,
+	lastCoalescedCount int64,
+	lastCatchupAtPresent bool,
+) error {
+	if kind != "interval" {
+		if coalescedCount != 0 {
+			return errors.New("schedule response non-interval coalesced_count must be zero")
+		}
+		if lastCoalescedCount != 0 {
+			return errors.New("schedule response non-interval last_coalesced_count must be zero")
+		}
+		if lastCatchupAtPresent {
+			return errors.New("schedule response non-interval last_catchup_at_ms must be null")
+		}
+		return nil
+	}
+	if lastCoalescedCount > coalescedCount {
+		return errors.New("schedule response last_coalesced_count exceeds coalesced_count")
+	}
+	if lastCoalescedCount > 0 && !lastCatchupAtPresent {
+		return errors.New("schedule response last_catchup_at_ms is missing after catch-up")
+	}
+	if lastCoalescedCount == 0 && lastCatchupAtPresent {
+		return errors.New("schedule response last_catchup_at_ms requires a catch-up")
+	}
+	return nil
+}
+
+func validScheduleResponseKind(kind string) bool {
+	switch kind {
+	case "one_shot", "delay", "interval", "cron":
+		return true
+	default:
+		return false
+	}
+}
+
+func validScheduleResponseState(state string) bool {
+	switch state {
+	case "active", "paused", "running", "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateScheduleResponseCatchupPolicy(kind, policy string) error {
+	if kind == "interval" {
+		if policy != "fire_once" {
+			return errors.New("schedule response interval catchup_policy must be fire_once")
+		}
+		return nil
+	}
+	if policy != "" {
+		return errors.New("schedule response catchup_policy is only valid for intervals")
+	}
+	return nil
+}
+
 func decodeScheduleTarget(codec Codec, value any) (map[string]any, error) {
-	target, err := optionalNativeMap(value, "schedule target")
+	if value == nil {
+		return nil, errors.New("schedule response is missing target")
+	}
+	target, err := nativeMap(value)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode schedule target: %w", err)
+	}
+	if _, err := requiredScheduleText(target, "type"); err != nil {
+		return nil, fmt.Errorf("schedule response target type: %w", err)
 	}
 	if raw, present := target["payload"]; present && raw != nil {
 		decoded, err := decodeValue(codec, raw)
@@ -116,6 +237,13 @@ func decodeScheduleTarget(codec Codec, value any) (map[string]any, error) {
 		target["values"] = decoded
 	}
 	return target, nil
+}
+
+func requiredNullableScheduleText(m map[string]any, field string) (string, error) {
+	if _, present := m[field]; !present {
+		return "", fmt.Errorf("schedule response is missing %s", field)
+	}
+	return optionalScheduleResponseText(m, field)
 }
 
 func requiredScheduleText(m map[string]any, field string) (string, error) {
@@ -142,64 +270,36 @@ func optionalScheduleResponseText(m map[string]any, field string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("decode schedule field %s: %w", field, err)
 	}
-	return text, nil
-}
-
-func scheduleTextAlias(m map[string]any, canonical, legacy string, required bool) (string, error) {
-	canonicalText, canonicalPresent, err := presentScheduleText(m, canonical)
-	if err != nil {
-		return "", err
-	}
-	legacyText, legacyPresent, err := presentScheduleText(m, legacy)
-	if err != nil {
-		return "", err
-	}
-	if canonicalPresent && legacyPresent && canonicalText != legacyText {
-		return "", fmt.Errorf("schedule response has conflicting %s and %s", canonical, legacy)
-	}
-	text := legacyText
-	if canonicalPresent {
-		text = canonicalText
-	}
-	if required && strings.TrimSpace(text) == "" {
-		return "", fmt.Errorf("schedule response is missing %s", canonical)
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("schedule response %s must be non-empty", field)
 	}
 	return text, nil
 }
 
-func presentScheduleText(m map[string]any, field string) (string, bool, error) {
-	value, present := m[field]
-	if !present || value == nil {
-		return "", false, nil
+func requiredNullableScheduleInt(m map[string]any, field string) (*int64, error) {
+	if _, present := m[field]; !present {
+		return nil, fmt.Errorf("schedule response is missing %s", field)
 	}
-	text, err := responseString(value, nil)
-	if err != nil {
-		return "", false, fmt.Errorf("decode schedule field %s: %w", field, err)
-	}
-	return text, true, nil
+	return optionalNonNegativeScheduleInt(m, field)
 }
 
-func scheduleIntAlias(m map[string]any, canonical, legacy string) (int64, error) {
-	canonicalValue, canonicalPresent, err := presentScheduleInt(m, canonical)
+func requiredScheduleResponseInt(m map[string]any, field string) (int64, error) {
+	value, present, err := presentScheduleInt(m, field)
 	if err != nil {
 		return 0, err
 	}
-	legacyValue, legacyPresent, err := presentScheduleInt(m, legacy)
-	if err != nil {
-		return 0, err
+	if !present {
+		return 0, fmt.Errorf("schedule response is missing %s", field)
 	}
-	if canonicalPresent && legacyPresent && canonicalValue != legacyValue {
-		return 0, fmt.Errorf("schedule response has conflicting %s and %s", canonical, legacy)
-	}
-	if canonicalPresent {
-		return canonicalValue, nil
-	}
-	return legacyValue, nil
+	return value, nil
 }
 
-func optionalNonNegativeScheduleInt(m map[string]any, field string) (int64, error) {
-	value, _, err := presentScheduleInt(m, field)
-	return value, err
+func optionalNonNegativeScheduleInt(m map[string]any, field string) (*int64, error) {
+	value, present, err := presentScheduleInt(m, field)
+	if err != nil || !present {
+		return nil, err
+	}
+	return &value, nil
 }
 
 func presentScheduleInt(m map[string]any, field string) (int64, bool, error) {

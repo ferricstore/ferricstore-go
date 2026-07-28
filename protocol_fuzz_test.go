@@ -153,7 +153,7 @@ func FuzzDecodedProtocolSurfaces(f *testing.F) {
 		_, _ = recordFromNative(value, RawCodec{})
 		_, _ = recordsFromNative(value, RawCodec{})
 		_, _ = claimedItemsFromNative(value, RawCodec{})
-		_, _ = scheduleResult(value, nil)
+		_, _ = scheduleRecord(value, nil)
 		_, _ = effectResult(value, nil)
 		_, _ = approvalResult(value, nil)
 		_, _ = circuitResult(value, nil)

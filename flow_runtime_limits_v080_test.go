@@ -31,9 +31,9 @@ func TestV080FlowRuntimeDefaultsAreNotSDKHardLimits(t *testing.T) {
 	}
 
 	fireExec := &fakeExecutor{value: map[string]any{
-		"claimed": int64(0), "fired": int64(0), "skipped": int64(0), "errors": []any{},
+		"claimed": int64(0), "fired": int64(0), "skipped": int64(0), "coalesced": int64(0), "errors": []any{},
 	}}
-	if _, err := NewClientWithExecutor(fireExec).ScheduleFireDueWithOptions(
+	if _, err := NewClientWithExecutor(fireExec).ScheduleFireDue(
 		context.Background(), ScheduleFireDueOptions{Limit: Int(1_001)},
 	); err != nil {
 		t.Fatalf("configured scheduler claim limit above default was rejected locally: %v", err)

@@ -8,7 +8,7 @@ import (
 )
 
 func TestScheduleCreateBuildsCommand(t *testing.T) {
-	exec := &fakeExecutor{value: map[string]any{"id": "sched-1", "status": "active", "kind": "interval"}}
+	exec := &fakeExecutor{value: scheduleResponseWith("id", "sched-1")}
 	client := NewClientWithExecutor(exec)
 	overwrite := true
 	every := int64(1000)
@@ -23,7 +23,7 @@ func TestScheduleCreateBuildsCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ID != "sched-1" || result.Status != "active" {
+	if result.ID != "sched-1" || result.State != "active" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	want := []any{"FLOW.SCHEDULE.CREATE", "sched-1", "KIND", "interval", "EVERY_MS", int64(1000), "TARGET", map[string]any{"type": "email"}, "OVERWRITE", "true"}
@@ -34,13 +34,14 @@ func TestScheduleCreateBuildsCommand(t *testing.T) {
 
 func TestFlowAdminEnumInputsUseCanonicalWireValues(t *testing.T) {
 	exec := &fakeExecutor{values: []any{
-		map[string]any{"id": "sched-1", "status": "active", "kind": "interval"},
+		scheduleResponseWith("id", "sched-1"),
 		[]any{},
 		[]any{},
 	}}
 	client := NewClientWithExecutor(exec)
 	if _, err := client.ScheduleCreate(context.Background(), "sched-1", ScheduleOptions{
-		Kind: " INTERVAL ", EveryMS: Int64(1), OverlapPolicy: " SKIP ", Target: map[string]any{"type": "email"},
+		Kind: " INTERVAL ", EveryMS: Int64(1), CatchupPolicy: " FIRE_ONCE ",
+		OverlapPolicy: " SKIP ", Target: map[string]any{"type": "email"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestFlowAdminEnumInputsUseCanonicalWireValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]any{
-		{"FLOW.SCHEDULE.CREATE", "sched-1", "KIND", "interval", "EVERY_MS", int64(1), "TARGET", map[string]any{"type": "email"}, "OVERLAP_POLICY", "skip"},
+		{"FLOW.SCHEDULE.CREATE", "sched-1", "KIND", "interval", "EVERY_MS", int64(1), "TARGET", map[string]any{"type": "email"}, "CATCHUP_POLICY", "fire_once", "OVERLAP_POLICY", "skip"},
 		{"FLOW.SCHEDULE.LIST", "KIND", "cron"},
 		{"FLOW.APPROVAL.LIST", "STATUS", "pending"},
 	}
@@ -279,7 +280,7 @@ func TestTypedAdminResultsRejectMalformedNumericAndNestedFields(t *testing.T) {
 		{
 			name: "schedule numeric",
 			run: func() error {
-				_, err := scheduleResult(map[string]any{"id": "schedule-1", "fires": "not-a-number"}, nil)
+				_, err := scheduleRecord(map[string]any{"id": "schedule-1", "fires": "not-a-number"}, nil)
 				return err
 			},
 		},
@@ -322,7 +323,7 @@ func TestTypedAdminResultsRejectMalformedStringFields(t *testing.T) {
 		run  func() error
 	}{
 		{name: "schedule id", run: func() error {
-			_, err := scheduleResult(map[string]any{"id": map[string]any{}}, nil)
+			_, err := scheduleRecord(map[string]any{"id": map[string]any{}}, nil)
 			return err
 		}},
 		{name: "effect status", run: func() error {

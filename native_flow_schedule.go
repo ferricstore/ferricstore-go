@@ -109,6 +109,8 @@ func scheduleNativeField(token string) (string, bool) {
 		return "now_ms", true
 	case "OVERWRITE":
 		return "overwrite", true
+	case "CATCHUP_POLICY":
+		return "catchup_policy", true
 	case "OVERLAP_POLICY":
 		return "overlap_policy", true
 	case "OVERLAP_RETRY_MS":

@@ -452,12 +452,51 @@ schedule, err := client.ScheduleCreate(ctx, "daily-report", ferricstore.Schedule
 })
 ```
 
+Overdue interval schedules use bounded `fire_once` catch-up. Recovery creates
+one target, reports the additional elapsed periods through `Coalesced`, and
+sets the next run one full interval after recovery:
+
+```go
+schedule, err := client.ScheduleCreate(ctx, "billing-sweep", ferricstore.ScheduleOptions{
+	Kind:          "interval",
+	EveryMS:       ferricstore.Int64(60_000),
+	CatchupPolicy: "fire_once",
+	Target: map[string]any{
+		"type":      "billing",
+		"id_prefix": "billing-sweep",
+	},
+})
+```
+
+Schedule reads expose `CatchupPolicy`, `CoalescedCount`,
+`LastCoalescedCount`, and `LastCatchupAtMS`. Nullable timestamps such as
+`NextRunAtMS` and `LastCatchupAtMS` are `*int64`, preserving the distinction
+between null and Unix epoch zero. `ScheduleFireDue`
+returns the batch `Coalesced` total. Its `Errors` entries correspond to
+claimed schedules; `ClaimError` separately reports a failure to request a
+later wave after completed outcomes were preserved. Catch-up is separate from
+`OverlapPolicy`, which controls an active previous target. `fire_once` is the
+default and only catch-up policy for interval schedules; other schedule kinds
+reject it. The server's built-in scheduler normally owns due execution. Use
+`ScheduleFireDue` only for tests, administration, or a deployment
+that deliberately disables the built-in runner and supplies a custom one.
+
+Recurring targets reject a fixed `id`. Set `id_prefix` to choose their
+generated prefix, or omit it to use the schedule ID. Schedule records may
+briefly have state `running` while the server holds a due-execution lease.
+Bounded catch-up is interval-only; overdue cron schedules advance one matching
+occurrence per successful automatic fire.
+When recurrence planning fails, `State` is `failed`, `EndReason` is
+`planning_failed`, and `LastPlanningError` contains the actionable error.
+
 Schedules can be paused, resumed, deleted, manually fired, and listed:
 
 ```go
-_, _ = client.SchedulePause(ctx, "daily-report", nil)
-_, _ = client.ScheduleResume(ctx, "daily-report", nil)
-_, _ = client.ScheduleFire(ctx, "daily-report", nil)
+_, _ = client.SchedulePause(ctx, "daily-report", ferricstore.ScheduleStatusOptions{})
+_, _ = client.ScheduleResume(ctx, "daily-report", ferricstore.ScheduleStatusOptions{})
+fire, _ := client.ScheduleFire(ctx, "daily-report", ferricstore.ScheduleFireOptions{})
+_ = client.ScheduleDelete(ctx, "daily-report", ferricstore.ScheduleStatusOptions{})
+due, _ := client.ScheduleFireDue(ctx, ferricstore.ScheduleFireDueOptions{Limit: ferricstore.Int(100)})
 schedules, _ := client.ScheduleList(ctx, ferricstore.ScheduleListOptions{Count: ferricstore.Int(100)})
 ```
 

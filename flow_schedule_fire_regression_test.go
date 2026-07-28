@@ -6,23 +6,23 @@ import (
 	"testing"
 )
 
-func TestScheduleFireWithOptionsDecodesManualFireEnvelope(t *testing.T) {
+func TestScheduleFireDecodesManualFireEnvelope(t *testing.T) {
 	t.Parallel()
 
 	exec := &fakeExecutor{value: map[string]any{
 		"fired":     int64(1),
 		"target_id": "target-1",
-		"schedule":  map[string]any{"id": "schedule", "kind": "interval", "status": "active"},
+		"schedule":  scheduleResponseWith("id", "schedule"),
 	}}
 	client := NewClientWithExecutor(exec)
-	result, err := client.ScheduleFireWithOptions(context.Background(), "schedule", ScheduleFireOptions{
+	result, err := client.ScheduleFire(context.Background(), "schedule", ScheduleFireOptions{
 		NowMS: Int64(10), FireAtMS: Int64(20), DeadlineMS: Int64(30),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Fired != 1 || result.Skipped != 0 || result.TargetID != "target-1" ||
-		result.Schedule.ID != "schedule" || result.Schedule.Kind != "interval" || result.Schedule.Status != "active" {
+		result.Schedule.ID != "schedule" || result.Schedule.Kind != "interval" || result.Schedule.State != "active" {
 		t.Fatalf("decoded manual fire result = %#v", result)
 	}
 	want := []any{
@@ -48,24 +48,6 @@ func TestScheduleFireWithOptionsDecodesManualFireEnvelope(t *testing.T) {
 	}
 }
 
-func TestLegacyScheduleFireReturnsNestedScheduleAndOutcome(t *testing.T) {
-	t.Parallel()
-
-	exec := &fakeExecutor{value: map[string]any{
-		"fired":    int64(0),
-		"skipped":  int64(1),
-		"reason":   "overlap",
-		"schedule": map[string]any{"id": "schedule", "kind": "cron", "status": "active"},
-	}}
-	result, err := NewClientWithExecutor(exec).ScheduleFire(context.Background(), "schedule", Int64(10))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ID != "schedule" || result.Kind != "cron" || result.Fired != 0 || result.Skipped != 1 || result.LastSkipReason != "overlap" {
-		t.Fatalf("legacy manual fire result = %#v", result)
-	}
-}
-
 func TestScheduleFireRejectsMalformedManualFireEnvelope(t *testing.T) {
 	t.Parallel()
 
@@ -75,10 +57,12 @@ func TestScheduleFireRejectsMalformedManualFireEnvelope(t *testing.T) {
 		{"fired": int64(1), "target_id": "target"},
 		{"fired": int64(1), "schedule": map[string]any{}},
 		{"fired": int64(0), "skipped": int64(1), "schedule": map[string]any{}},
+		{"fired": int64(0), "skipped": int64(1), "target_id": "target", "reason": "overlap", "schedule": scheduleResponseWith("id", "schedule")},
+		{"fired": int64(1), "target_id": "target", "reason": "stale", "schedule": scheduleResponseWith("id", "schedule")},
 	}
 	for index, response := range tests {
 		client := NewClientWithExecutor(&fakeExecutor{value: response})
-		if _, err := client.ScheduleFireWithOptions(context.Background(), "schedule", ScheduleFireOptions{}); err == nil {
+		if _, err := client.ScheduleFire(context.Background(), "schedule", ScheduleFireOptions{}); err == nil {
 			t.Fatalf("malformed manual fire response %d was accepted", index)
 		}
 	}
@@ -88,7 +72,7 @@ func TestScheduleFireOptionsRejectInvalidTimesBeforeTransport(t *testing.T) {
 	t.Parallel()
 
 	exec := &fakeExecutor{}
-	_, err := NewClientWithExecutor(exec).ScheduleFireWithOptions(context.Background(), "schedule", ScheduleFireOptions{
+	_, err := NewClientWithExecutor(exec).ScheduleFire(context.Background(), "schedule", ScheduleFireOptions{
 		FireAtMS: Int64(-1),
 	})
 	if err == nil {

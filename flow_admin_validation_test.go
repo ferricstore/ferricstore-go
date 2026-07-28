@@ -48,8 +48,40 @@ func TestScheduleCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 			_, err := c.ScheduleCreate(ctx, "schedule", ScheduleOptions{EveryMS: Int64(1), Target: map[string]any{"type": "email", "id": "fixed"}})
 			return err
 		}},
+		{name: "create ambiguous target id", call: func(c *Client) error {
+			_, err := c.ScheduleCreate(ctx, "schedule", ScheduleOptions{Target: map[string]any{"type": "email", "id": "fixed", "id_prefix": "generated"}})
+			return err
+		}},
+		{name: "create timing field from another kind", call: func(c *Client) error {
+			_, err := c.ScheduleCreate(ctx, "schedule", ScheduleOptions{Kind: "one_shot", EveryMS: Int64(1), Target: map[string]any{"type": "email"}})
+			return err
+		}},
+		{name: "create ambiguous absolute start", call: func(c *Client) error {
+			_, err := c.ScheduleCreate(ctx, "schedule", ScheduleOptions{Kind: "interval", AtMS: Int64(1), StartAtMS: Int64(2), EveryMS: Int64(1), Target: map[string]any{"type": "email"}})
+			return err
+		}},
 		{name: "create invalid overlap policy", call: func(c *Client) error {
 			_, err := c.ScheduleCreate(ctx, "schedule", ScheduleOptions{EveryMS: Int64(1), OverlapPolicy: "race", Target: map[string]any{"type": "email"}})
+			return err
+		}},
+		{name: "create unused overlap retry", call: func(c *Client) error {
+			_, err := c.ScheduleCreate(ctx, "schedule", ScheduleOptions{EveryMS: Int64(1), OverlapPolicy: "allow", OverlapRetryMS: Int64(1), Target: map[string]any{"type": "email"}})
+			return err
+		}},
+		{name: "create one-shot overlap retry", call: func(c *Client) error {
+			_, err := c.ScheduleCreate(ctx, "schedule", ScheduleOptions{OverlapRetryMS: Int64(1), Target: map[string]any{"type": "email"}})
+			return err
+		}},
+		{name: "create invalid catch-up policy", call: func(c *Client) error {
+			_, err := c.ScheduleCreate(ctx, "schedule", ScheduleOptions{EveryMS: Int64(1), CatchupPolicy: "replay_all", Target: map[string]any{"type": "email"}})
+			return err
+		}},
+		{name: "create one-shot catch-up policy", call: func(c *Client) error {
+			_, err := c.ScheduleCreate(ctx, "schedule", ScheduleOptions{CatchupPolicy: "fire_once", Target: map[string]any{"type": "email"}})
+			return err
+		}},
+		{name: "create cron catch-up policy", call: func(c *Client) error {
+			_, err := c.ScheduleCreate(ctx, "schedule", ScheduleOptions{Cron: "*/5 * * * *", CatchupPolicy: "fire_once", Target: map[string]any{"type": "email"}})
 			return err
 		}},
 		{name: "create one-shot overlap policy", call: func(c *Client) error {
@@ -77,15 +109,17 @@ func TestScheduleCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 			return err
 		}},
 		{name: "status negative now", call: func(c *Client) error {
-			_, err := c.SchedulePause(ctx, "schedule", Int64(-1))
+			_, err := c.SchedulePause(ctx, "schedule", ScheduleStatusOptions{NowMS: Int64(-1)})
 			return err
 		}},
 		{name: "fire due negative block", call: func(c *Client) error {
-			_, err := c.ScheduleFireDue(ctx, nil, "worker", Int64(-1), Int(1))
+			_, err := c.ScheduleFireDue(ctx, ScheduleFireDueOptions{
+				Worker: "worker", BlockMS: Int64(-1), Limit: Int(1),
+			})
 			return err
 		}},
 		{name: "fire due non-positive limit", call: func(c *Client) error {
-			_, err := c.ScheduleFireDue(ctx, nil, "worker", nil, Int(0))
+			_, err := c.ScheduleFireDue(ctx, ScheduleFireDueOptions{Worker: "worker", Limit: Int(0)})
 			return err
 		}},
 		{name: "list invalid kind", call: func(c *Client) error {
@@ -94,6 +128,14 @@ func TestScheduleCommandsRejectInvalidArgumentsBeforeTransport(t *testing.T) {
 		}},
 		{name: "list negative range", call: func(c *Client) error {
 			_, err := c.ScheduleList(ctx, ScheduleListOptions{FromMS: Int64(-1)})
+			return err
+		}},
+		{name: "list invalid state", call: func(c *Client) error {
+			_, err := c.ScheduleList(ctx, ScheduleListOptions{State: "unknown"})
+			return err
+		}},
+		{name: "list inverted range", call: func(c *Client) error {
+			_, err := c.ScheduleList(ctx, ScheduleListOptions{FromMS: Int64(2), ToMS: Int64(1)})
 			return err
 		}},
 	}

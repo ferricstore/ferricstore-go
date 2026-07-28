@@ -83,21 +83,21 @@ func TestV080ScheduleRejectsContractViolationsBeforeTransport(t *testing.T) {
 		{
 			name: "pause now_ms exceeds exact integer",
 			call: func(client *Client) error {
-				_, err := client.SchedulePause(context.Background(), "schedule", &tooLarge)
+				_, err := client.SchedulePause(context.Background(), "schedule", ScheduleStatusOptions{NowMS: &tooLarge})
 				return err
 			},
 		},
 		{
 			name: "manual fire time exceeds exact integer",
 			call: func(client *Client) error {
-				_, err := client.ScheduleFireWithOptions(context.Background(), "schedule", ScheduleFireOptions{FireAtMS: &tooLarge})
+				_, err := client.ScheduleFire(context.Background(), "schedule", ScheduleFireOptions{FireAtMS: &tooLarge})
 				return err
 			},
 		},
 		{
 			name: "fire due lease exceeds exact integer",
 			call: func(client *Client) error {
-				_, err := client.ScheduleFireDueWithOptions(context.Background(), ScheduleFireDueOptions{LeaseMS: &tooLarge})
+				_, err := client.ScheduleFireDue(context.Background(), ScheduleFireDueOptions{LeaseMS: &tooLarge})
 				return err
 			},
 		},
@@ -133,7 +133,7 @@ func TestV080ScheduleTargetUsesClientCodecWithoutMutatingInput(t *testing.T) {
 	target := map[string]any{
 		"type": "job", "payload": payload, "values": values,
 	}
-	exec := &fakeExecutor{value: map[string]any{"id": "schedule", "kind": "one_shot", "status": "active"}}
+	exec := &fakeExecutor{value: oneShotScheduleResponse("schedule", "active")}
 	client := NewClientWithExecutor(exec, WithCodec(JSONCodec{}))
 
 	if _, err := client.ScheduleCreate(context.Background(), "schedule", ScheduleOptions{Target: target}); err != nil {
@@ -168,9 +168,9 @@ func TestV080ScheduleTargetResponseUsesClientCodecWithoutMutatingRaw(t *testing.
 		"type": "job", "payload": encodedPayload,
 		"values": map[string]any{"recipient": encodedRecipient},
 	}
-	exec := &fakeExecutor{value: map[string]any{
-		"id": "schedule", "kind": "one_shot", "state": "active", "target": rawTarget,
-	}}
+	response := oneShotScheduleResponse("schedule", "active")
+	response["target"] = rawTarget
+	exec := &fakeExecutor{value: response}
 	result, err := NewClientWithExecutor(exec, WithCodec(codec)).ScheduleGet(context.Background(), "schedule", nil)
 	if err != nil {
 		t.Fatal(err)

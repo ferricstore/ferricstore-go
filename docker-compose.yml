@@ -5,6 +5,7 @@ services:
       - "6388:6388"
     environment:
       FERRICSTORE_PROTECTED_MODE: "false"
+      FERRICSTORE_FLOW_SCHEDULER_ENABLED: "false"
     volumes:
       - ferricstore_data:/data
 

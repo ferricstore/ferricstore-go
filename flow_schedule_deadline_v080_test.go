@@ -10,9 +10,9 @@ func TestV080ScheduleUsesTypedDeadlineOptions(t *testing.T) {
 	t.Parallel()
 
 	exec := &fakeExecutor{values: []any{
-		map[string]any{"id": "created", "kind": "one_shot", "status": "active"},
-		map[string]any{"id": "get", "kind": "one_shot", "status": "active"},
-		map[string]any{"id": "paused", "kind": "one_shot", "status": "paused"},
+		oneShotScheduleResponse("created", "active"),
+		oneShotScheduleResponse("get", "active"),
+		oneShotScheduleResponse("paused", "paused"),
 		[]any{},
 	}}
 	client := NewClientWithExecutor(exec)
@@ -24,7 +24,7 @@ func TestV080ScheduleUsesTypedDeadlineOptions(t *testing.T) {
 	if _, err := client.ScheduleGet(context.Background(), "get", Int64(101)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.SchedulePauseWithOptions(context.Background(), "paused", ScheduleStatusOptions{
+	if _, err := client.SchedulePause(context.Background(), "paused", ScheduleStatusOptions{
 		NowMS: Int64(10), DeadlineMS: Int64(102),
 	}); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestV080ScheduleRejectsNegativeTypedDeadlinesBeforeTransport(t *testing.T) 
 			return err
 		},
 		func(client *Client) error {
-			_, err := client.ScheduleResumeWithOptions(context.Background(), "schedule", ScheduleStatusOptions{DeadlineMS: Int64(-1)})
+			_, err := client.ScheduleResume(context.Background(), "schedule", ScheduleStatusOptions{DeadlineMS: Int64(-1)})
 			return err
 		},
 		func(client *Client) error {

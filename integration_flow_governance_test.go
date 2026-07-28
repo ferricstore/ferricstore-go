@@ -52,7 +52,7 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 
 	scheduleID := "go-sdk:schedule:" + runID
 	scheduledFlowID := "go-sdk:scheduled:" + runID
-	_ = must[ScheduleResult](t)(client.ScheduleCreate(ctx, scheduleID, ScheduleOptions{
+	_ = must[ScheduleRecord](t)(client.ScheduleCreate(ctx, scheduleID, ScheduleOptions{
 		Kind: "one_shot",
 		AtMS: Int64(now + 60_000),
 		Target: map[string]any{
@@ -65,23 +65,61 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 		Overwrite: Bool(true),
 		NowMS:     Int64(now),
 	}))
-	if got := must[*ScheduleResult](t)(client.ScheduleGet(ctx, scheduleID, nil)); got == nil || got.ID == "" {
+	if got := must[*ScheduleRecord](t)(client.ScheduleGet(ctx, scheduleID, nil)); got == nil || got.ID == "" {
 		t.Fatalf("schedule get = %#v", got)
 	}
-	_ = must[ScheduleResult](t)(client.SchedulePause(ctx, scheduleID, Int64(now+1)))
-	_ = must[ScheduleResult](t)(client.ScheduleResume(ctx, scheduleID, Int64(now+2)))
-	requireValue(t, must[[]ScheduleResult](t)(client.ScheduleList(ctx, ScheduleListOptions{Count: Int(10)})))
-	_ = must[ScheduleResult](t)(client.ScheduleFire(ctx, scheduleID, Int64(now+3)))
-	_ = must[ScheduleResult](t)(client.ScheduleFireDue(ctx, Int64(now+4), "go-sdk-scheduler", nil, Int(1)))
+	_ = must[ScheduleRecord](t)(client.SchedulePause(ctx, scheduleID, ScheduleStatusOptions{NowMS: Int64(now + 1)}))
+	_ = must[ScheduleRecord](t)(client.ScheduleResume(ctx, scheduleID, ScheduleStatusOptions{NowMS: Int64(now + 2)}))
+	requireValue(t, must[[]ScheduleRecord](t)(client.ScheduleList(ctx, ScheduleListOptions{Count: Int(10)})))
+	_ = must[ScheduleFireResult](t)(client.ScheduleFire(ctx, scheduleID, ScheduleFireOptions{NowMS: Int64(now + 3)}))
+	_ = must[ScheduleFireDueResult](t)(client.ScheduleFireDue(ctx, ScheduleFireDueOptions{
+		NowMS: Int64(now + 4), Worker: "go-sdk-scheduler", Limit: Int(1),
+	}))
 	deleteScheduleID := "go-sdk:schedule-delete:" + runID
-	_ = must[ScheduleResult](t)(client.ScheduleCreate(ctx, deleteScheduleID, ScheduleOptions{
+	_ = must[ScheduleRecord](t)(client.ScheduleCreate(ctx, deleteScheduleID, ScheduleOptions{
 		Kind:      "one_shot",
 		AtMS:      Int64(now + 120_000),
 		Target:    map[string]any{"id": scheduledFlowID + ":delete", "type": typeName, "state": "scheduled", "partition_key": partition},
 		Overwrite: Bool(true),
 		NowMS:     Int64(now),
 	}))
-	_ = must[ScheduleResult](t)(client.ScheduleDelete(ctx, deleteScheduleID, Int64(now+5)))
+	if err := client.ScheduleDelete(ctx, deleteScheduleID, ScheduleStatusOptions{NowMS: Int64(now + 5)}); err != nil {
+		t.Fatal(err)
+	}
+
+	catchupScheduleID := "go-sdk:schedule-catchup:" + runID
+	catchupTargetPrefix := "go-sdk:scheduled-catchup:" + runID
+	catchupDue := now + 800
+	catchupEvery := int64(5)
+	catchupRecovery := catchupDue + 10*catchupEvery
+	createdCatchup := must[ScheduleRecord](t)(client.ScheduleCreate(ctx, catchupScheduleID, ScheduleOptions{
+		Kind:          "interval",
+		EveryMS:       Int64(catchupEvery),
+		StartAtMS:     Int64(catchupDue),
+		CatchupPolicy: "fire_once",
+		Target: map[string]any{
+			"id_prefix":     catchupTargetPrefix,
+			"type":          typeName,
+			"state":         "scheduled",
+			"partition_key": partition,
+		},
+		NowMS: Int64(now),
+	}))
+	if createdCatchup.CatchupPolicy != "fire_once" {
+		t.Fatalf("created catch-up policy = %q", createdCatchup.CatchupPolicy)
+	}
+	catchupSummary := must[ScheduleFireDueResult](t)(client.ScheduleFireDue(ctx, ScheduleFireDueOptions{
+		NowMS: Int64(catchupRecovery), Worker: "go-sdk-catchup-scheduler", Limit: Int(100),
+	}))
+	if catchupSummary.Coalesced < 10 || catchupSummary.Fired < 1 {
+		t.Fatalf("catch-up summary = %#v", catchupSummary)
+	}
+	storedCatchup := must[*ScheduleRecord](t)(client.ScheduleGet(ctx, catchupScheduleID, nil))
+	if storedCatchup == nil || storedCatchup.FireCount != 1 || storedCatchup.CoalescedCount != 10 ||
+		storedCatchup.LastCoalescedCount != 10 || scheduleInt64(storedCatchup.LastCatchupAtMS) != catchupRecovery ||
+		scheduleInt64(storedCatchup.NextRunAtMS) != catchupRecovery+catchupEvery {
+		t.Fatalf("stored catch-up schedule = %#v", storedCatchup)
+	}
 
 	gov := createAndClaim(t, ctx, client, typeName, runID, "governance", "queued", now, 30_000)
 	effectKey := "send-email"

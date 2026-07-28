@@ -6,20 +6,21 @@ import (
 	"testing"
 )
 
-func TestScheduleFireDueWithOptionsDecodesSchedulerSummary(t *testing.T) {
+func TestScheduleFireDueDecodesSchedulerSummary(t *testing.T) {
 	t.Parallel()
 
 	response := map[string]any{
 		"claimed":          int64(3),
 		"fired":            int64(1),
 		"skipped":          int64(1),
+		"coalesced":        int64(1_000_000),
 		"errors":           []any{[]any{"schedule-bad", "target failed"}},
 		"last_target_id":   "target-1",
 		"last_skip_reason": "overlap",
 	}
 	exec := &fakeExecutor{value: response}
 	client := NewClientWithExecutor(exec)
-	result, err := client.ScheduleFireDueWithOptions(context.Background(), ScheduleFireDueOptions{
+	result, err := client.ScheduleFireDue(context.Background(), ScheduleFireDueOptions{
 		NowMS:      Int64(10),
 		Worker:     "scheduler",
 		LeaseMS:    Int64(20),
@@ -30,7 +31,7 @@ func TestScheduleFireDueWithOptionsDecodesSchedulerSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Claimed != 3 || result.Fired != 1 || result.Skipped != 1 ||
+	if result.Claimed != 3 || result.Fired != 1 || result.Skipped != 1 || result.Coalesced != 1_000_000 ||
 		result.LastTargetID != "target-1" || result.LastSkipReason != "overlap" ||
 		!reflect.DeepEqual(result.Errors, []ScheduleFireDueError{{ID: "schedule-bad", Reason: "target failed"}}) {
 		t.Fatalf("decoded fire-due summary = %#v", result)
@@ -44,19 +45,27 @@ func TestScheduleFireDueWithOptionsDecodesSchedulerSummary(t *testing.T) {
 	}
 }
 
-func TestLegacyScheduleFireDueExposesTypedSummaryFields(t *testing.T) {
+func TestScheduleFireDueKeepsLaterClaimFailureSeparateFromScheduleOutcomes(t *testing.T) {
 	t.Parallel()
 
-	exec := &fakeExecutor{value: map[string]any{
-		"claimed": int64(1), "fired": int64(1), "skipped": int64(0), "errors": []any{},
-		"last_target_id": "target-1",
-	}}
-	result, err := NewClientWithExecutor(exec).ScheduleFireDue(context.Background(), nil, "scheduler", nil, Int(1))
+	response := map[string]any{
+		"claimed":        int64(1),
+		"fired":          int64(1),
+		"skipped":        int64(0),
+		"coalesced":      int64(0),
+		"errors":         []any{},
+		"claim_error":    "ERR claim unavailable",
+		"last_target_id": "daily:1000:1",
+	}
+
+	result, err := NewClientWithExecutor(&fakeExecutor{value: response}).ScheduleFireDue(
+		context.Background(), ScheduleFireDueOptions{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Claimed != 1 || result.Fired != 1 || result.Skipped != 0 || result.LastTargetID != "target-1" || len(result.Errors) != 0 {
-		t.Fatalf("legacy fire-due summary = %#v", result)
+	if result.ClaimError != "ERR claim unavailable" {
+		t.Fatalf("claim error = %q", result.ClaimError)
 	}
 }
 
@@ -70,32 +79,86 @@ func TestScheduleFireDueRejectsMalformedSchedulerSummary(t *testing.T) {
 		{
 			name: "negative count",
 			response: map[string]any{
-				"claimed": int64(-1), "fired": int64(0), "skipped": int64(0), "errors": []any{},
+				"claimed": int64(-1), "fired": int64(0), "skipped": int64(0), "coalesced": int64(0), "errors": []any{},
 			},
 		},
 		{
 			name: "count exceeds requested maximum",
 			response: map[string]any{
 				"claimed": int64(101), "fired": int64(101),
-				"skipped": int64(0), "errors": []any{},
+				"skipped": int64(0), "coalesced": int64(0), "errors": []any{},
 			},
 		},
 		{
 			name: "inconsistent outcomes",
 			response: map[string]any{
-				"claimed": int64(2), "fired": int64(1), "skipped": int64(0), "errors": []any{},
+				"claimed": int64(2), "fired": int64(1), "skipped": int64(0), "coalesced": int64(0), "errors": []any{},
 			},
 		},
 		{
 			name: "malformed error",
 			response: map[string]any{
-				"claimed": int64(1), "fired": int64(0), "skipped": int64(0), "errors": []any{[]any{"id"}},
+				"claimed": int64(1), "fired": int64(0), "skipped": int64(0), "coalesced": int64(0), "errors": []any{[]any{"id"}},
 			},
 		},
 		{
 			name: "missing errors",
 			response: map[string]any{
-				"claimed": int64(0), "fired": int64(0), "skipped": int64(0),
+				"claimed": int64(0), "fired": int64(0), "skipped": int64(0), "coalesced": int64(0),
+			},
+		},
+		{
+			name: "missing coalesced",
+			response: map[string]any{
+				"claimed": int64(0), "fired": int64(0), "skipped": int64(0), "errors": []any{},
+			},
+		},
+		{
+			name: "invalid claim error",
+			response: map[string]any{
+				"claimed": int64(0), "fired": int64(0), "skipped": int64(0), "coalesced": int64(0), "errors": []any{}, "claim_error": int64(7),
+			},
+		},
+		{
+			name: "negative coalesced",
+			response: map[string]any{
+				"claimed": int64(0), "fired": int64(0), "skipped": int64(0), "coalesced": int64(-1), "errors": []any{},
+			},
+		},
+		{
+			name: "coalesced exceeds exact integer range",
+			response: map[string]any{
+				"claimed": int64(0), "fired": int64(0), "skipped": int64(0), "coalesced": maxFlowExactIntegerV080 + 1, "errors": []any{},
+			},
+		},
+		{
+			name: "fired outcome missing target id",
+			response: map[string]any{
+				"claimed": int64(1), "fired": int64(1), "skipped": int64(0), "coalesced": int64(0), "errors": []any{},
+			},
+		},
+		{
+			name: "skipped outcome missing reason",
+			response: map[string]any{
+				"claimed": int64(1), "fired": int64(0), "skipped": int64(1), "coalesced": int64(0), "errors": []any{},
+			},
+		},
+		{
+			name: "stale target id without fired outcome",
+			response: map[string]any{
+				"claimed": int64(0), "fired": int64(0), "skipped": int64(0), "coalesced": int64(0), "errors": []any{}, "last_target_id": "target-1",
+			},
+		},
+		{
+			name: "stale skip reason without skipped outcome",
+			response: map[string]any{
+				"claimed": int64(0), "fired": int64(0), "skipped": int64(0), "coalesced": int64(0), "errors": []any{}, "last_skip_reason": "overlap",
+			},
+		},
+		{
+			name: "coalesced without successful outcome",
+			response: map[string]any{
+				"claimed": int64(1), "fired": int64(0), "skipped": int64(0), "coalesced": int64(1), "errors": []any{[]any{"schedule", "failed"}},
 			},
 		},
 	}
@@ -104,7 +167,7 @@ func TestScheduleFireDueRejectsMalformedSchedulerSummary(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			client := NewClientWithExecutor(&fakeExecutor{value: tt.response})
-			if _, err := client.ScheduleFireDueWithOptions(context.Background(), ScheduleFireDueOptions{}); err == nil {
+			if _, err := client.ScheduleFireDue(context.Background(), ScheduleFireDueOptions{}); err == nil {
 				t.Fatal("malformed scheduler summary was accepted")
 			}
 		})
@@ -115,7 +178,7 @@ func TestScheduleFireDueRejectsInvalidLeaseBeforeTransport(t *testing.T) {
 	t.Parallel()
 
 	exec := &fakeExecutor{}
-	_, err := NewClientWithExecutor(exec).ScheduleFireDueWithOptions(context.Background(), ScheduleFireDueOptions{LeaseMS: Int64(0)})
+	_, err := NewClientWithExecutor(exec).ScheduleFireDue(context.Background(), ScheduleFireDueOptions{LeaseMS: Int64(0)})
 	if err == nil {
 		t.Fatal("zero schedule lease succeeded")
 	}
