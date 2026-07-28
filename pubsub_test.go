@@ -171,7 +171,7 @@ func TestPubSubReconnectsAndReplaysSubscriptions(t *testing.T) {
 		errCh <- writeNativeTestResponse(writer, nativeFrame{opcode: nativeOpEvent, requestID: 0}, nativeStatusOK, []any{"message", "jobs", "after-reconnect"})
 	}()
 
-	pubsub := NewPubSub(listener.Addr().String(), WithNativeTimeout(500*time.Millisecond), WithNativeHeartbeat(0, 0))
+	pubsub := NewPubSub(listener.Addr().String(), WithNativeHeartbeat(0, 0))
 	defer func() { _ = pubsub.Close() }()
 	subscribeCtx, cancelSubscribe := context.WithTimeout(context.Background(), time.Second)
 	if _, err := pubsub.Subscribe(subscribeCtx, "jobs"); err != nil {
