@@ -193,11 +193,14 @@ func TestPubSubReconnectsAndReplaysSubscriptions(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	reconnectCtx, cancelReconnect := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancelReconnect()
-	if got, err := pubsub.exec.command(reconnectCtx, "PING"); err != nil || asString(got) != "PONG" {
+	got, err := pubsub.exec.command(reconnectCtx, "PING")
+	cancelReconnect()
+	if err != nil || asString(got) != "PONG" {
 		t.Fatalf("ordinary reconnecting command = %#v, %v", got, err)
 	}
-	message, err := pubsub.Next(reconnectCtx)
+	nextCtx, cancelNext := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelNext()
+	message, err := pubsub.Next(nextCtx)
 	if err != nil {
 		t.Fatal(err)
 	}

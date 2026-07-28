@@ -157,6 +157,83 @@ func waitForFlowQueryRecord(
 	}
 }
 
+func waitForScheduleFireDue(
+	t *testing.T,
+	ctx context.Context,
+	fire func() (ScheduleFireDueResult, error),
+) ScheduleFireDueResult {
+	t.Helper()
+	deadline := time.NewTimer(integrationProjectionTimeout)
+	defer deadline.Stop()
+	retry := time.NewTicker(integrationProjectionRetry)
+	defer retry.Stop()
+	var last ScheduleFireDueResult
+
+	for {
+		result, err := fire()
+		if err != nil {
+			t.Fatalf("FLOW.SCHEDULE.FIRE_DUE while waiting for projection: %v", err)
+		}
+		last = result
+		if result.ClaimError != "" || len(result.Errors) > 0 {
+			t.Fatalf("FLOW.SCHEDULE.FIRE_DUE failed while waiting for projection: %#v", result)
+		}
+		if result.Fired > 0 {
+			return result
+		}
+
+		select {
+		case <-ctx.Done():
+			t.Fatalf("FLOW.SCHEDULE.FIRE_DUE while waiting for projection: %v (last=%#v)", ctx.Err(), last)
+		case <-deadline.C:
+			t.Fatalf("FLOW.SCHEDULE.FIRE_DUE did not observe a due schedule within %s (last=%#v)", integrationProjectionTimeout, last)
+		case <-retry.C:
+		}
+	}
+}
+
+func waitForScheduleListRecord(
+	t *testing.T,
+	ctx context.Context,
+	id string,
+	list func() ([]ScheduleRecord, error),
+) []ScheduleRecord {
+	t.Helper()
+	deadline := time.NewTimer(integrationProjectionTimeout)
+	defer deadline.Stop()
+	retry := time.NewTicker(integrationProjectionRetry)
+	defer retry.Stop()
+	var last []ScheduleRecord
+	var lastErr error
+
+	for {
+		last, lastErr = list()
+		if lastErr == nil && hasScheduleID(last, id) {
+			return last
+		}
+		if lastErr != nil && !strings.Contains(lastErr.Error(), "flow schedule catalog is unavailable") {
+			t.Fatalf("FLOW.SCHEDULE.LIST while waiting for %q: %v", id, lastErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			t.Fatalf("FLOW.SCHEDULE.LIST while waiting for %q: %v (records=%#v, last_error=%v)", id, ctx.Err(), last, lastErr)
+		case <-deadline.C:
+			t.Fatalf("FLOW.SCHEDULE.LIST did not project %q within %s (records=%#v, last_error=%v)", id, integrationProjectionTimeout, last, lastErr)
+		case <-retry.C:
+		}
+	}
+}
+
+func hasScheduleID(records []ScheduleRecord, id string) bool {
+	for _, record := range records {
+		if record.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func waitForFlowQueryResult(
 	t *testing.T,
 	ctx context.Context,

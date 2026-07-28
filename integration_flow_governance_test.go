@@ -70,7 +70,9 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 	}
 	_ = must[ScheduleRecord](t)(client.SchedulePause(ctx, scheduleID, ScheduleStatusOptions{NowMS: Int64(now + 1)}))
 	_ = must[ScheduleRecord](t)(client.ScheduleResume(ctx, scheduleID, ScheduleStatusOptions{NowMS: Int64(now + 2)}))
-	requireValue(t, must[[]ScheduleRecord](t)(client.ScheduleList(ctx, ScheduleListOptions{Count: Int(10)})))
+	waitForScheduleListRecord(t, ctx, scheduleID, func() ([]ScheduleRecord, error) {
+		return client.ScheduleList(ctx, ScheduleListOptions{TargetType: typeName, Count: Int(10)})
+	})
 	_ = must[ScheduleFireResult](t)(client.ScheduleFire(ctx, scheduleID, ScheduleFireOptions{NowMS: Int64(now + 3)}))
 	_ = must[ScheduleFireDueResult](t)(client.ScheduleFireDue(ctx, ScheduleFireDueOptions{
 		NowMS: Int64(now + 4), Worker: "go-sdk-scheduler", Limit: Int(1),
@@ -89,7 +91,9 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 
 	catchupScheduleID := "go-sdk:schedule-catchup:" + runID
 	catchupTargetPrefix := "go-sdk:scheduled-catchup:" + runID
-	catchupDue := now + 800
+	// Keep the fixture ahead of wall clock so the embedded scheduler cannot race
+	// the explicit FIRE_DUE call that exercises catch-up accounting.
+	catchupDue := now + 5*60_000
 	catchupEvery := int64(5)
 	catchupRecovery := catchupDue + 10*catchupEvery
 	createdCatchup := must[ScheduleRecord](t)(client.ScheduleCreate(ctx, catchupScheduleID, ScheduleOptions{
@@ -113,9 +117,11 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 		createdCatchup.OverlapRetryMS != nil {
 		t.Fatalf("created recurrence config = %#v", createdCatchup)
 	}
-	catchupSummary := must[ScheduleFireDueResult](t)(client.ScheduleFireDue(ctx, ScheduleFireDueOptions{
-		NowMS: Int64(catchupRecovery), Worker: "go-sdk-catchup-scheduler", Limit: Int(100),
-	}))
+	catchupSummary := waitForScheduleFireDue(t, ctx, func() (ScheduleFireDueResult, error) {
+		return client.ScheduleFireDue(ctx, ScheduleFireDueOptions{
+			NowMS: Int64(catchupRecovery), Worker: "go-sdk-catchup-scheduler", Limit: Int(100),
+		})
+	})
 	if catchupSummary.Coalesced < 10 || catchupSummary.Fired < 1 {
 		t.Fatalf("catch-up summary = %#v", catchupSummary)
 	}
