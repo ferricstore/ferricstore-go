@@ -25,9 +25,9 @@ Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want 
 
 ## Compatibility
 
-Go SDK 0.11.4 requires FerricStore 0.11.4 or newer because schedule
-responses now use the complete recurrence contract. The native wire protocol
-remains v1.
+Go SDK 0.11.5 requires FerricStore 0.11.4 or newer. With FerricStore 0.11.5 it
+negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches. The
+native wire protocol and generic compatibility path remain v1.
 
 ## Client
 

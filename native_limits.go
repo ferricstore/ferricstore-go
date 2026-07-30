@@ -432,6 +432,12 @@ func (e *NativeExecutor) negotiatedPipelineLimits() (int, int) {
 	return frameBytes, pipelineCommands
 }
 
+func (e *NativeExecutor) supportsCompactStreamXAdd() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.compactStreamXAdd
+}
+
 func (e *NativeExecutor) acquireFlowCredit(ctx context.Context, expected net.Conn, lane uint32) (*nativeFlowController, error) {
 	e.mu.Lock()
 	if e.conn != expected {

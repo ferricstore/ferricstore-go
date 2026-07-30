@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.11.5 - 2026-07-30
+
+- Negotiate FerricStore 0.11.5's compact Stream producer capability and encode
+  homogeneous `XADD key * field value...` batches with mode 34 without
+  allocating during wire planning. Legacy servers, explicit IDs, trimming,
+  `NOMKSTREAM`, malformed pairs, and unsupported values retain the generic path.
+- Correct compact SET/GET pipeline frame-budget accounting to include the full
+  six-byte request header.
+- Retain FerricStore 0.11.4 as the minimum server and native wire protocol v1.
+
 ## 0.11.4 - 2026-07-28
 
 - Decode and validate the complete durable-schedule recurrence response,

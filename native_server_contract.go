@@ -40,6 +40,7 @@ type nativeHelloContract struct {
 	laneQueue            int
 	responseCodecs       nativeResponseCodecs
 	flowQuery            nativeFlowQueryContract
+	compactStreamXAdd    bool
 	events               map[string]struct{}
 	authRequired         bool
 }
@@ -83,6 +84,7 @@ func (e *NativeExecutor) applyHelloContractLocked(contract nativeHelloContract) 
 	e.maxDataLanes = contract.maxDataLanes
 	e.responseCodecs = contract.responseCodecs
 	e.flowQuery = contract.flowQuery
+	e.compactStreamXAdd = contract.compactStreamXAdd
 	e.nextLane.Store(0)
 	e.flow = newNativeFlowController(
 		contract.connectionCredits,
@@ -132,6 +134,13 @@ func parseNativeHelloContract(value any, configuredMaxResponseBytes int) (native
 	contract.flowQuery, err = parseNativeFlowQueryContract(capabilities)
 	if err != nil {
 		return nativeHelloContract{}, err
+	}
+	if pipeline, mapErr := optionalNativeCapabilityMap(capabilities, "pipeline"); mapErr != nil {
+		return nativeHelloContract{}, mapErr
+	} else if modes, modesErr := optionalNativeCapabilityMap(pipeline, "modes"); modesErr != nil {
+		return nativeHelloContract{}, modesErr
+	} else if mode, ok := optionalNativeCapabilityInteger(modes, "stream_xadd_auto", true); ok {
+		contract.compactStreamXAdd = mode == 34
 	}
 	limits, err := requiredNativeCapabilityMap(capabilities, "limits")
 	if err != nil {
