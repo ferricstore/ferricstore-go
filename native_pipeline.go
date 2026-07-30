@@ -13,8 +13,8 @@ type nativePipelineBodyProvider interface {
 }
 
 func (e *NativeExecutor) pipelineChunkWithoutGate(ctx context.Context, commands [][]any, laneID uint32, maxFrameBytes int) ([]pipelineItemResult, error) {
-	payload, flags, policy, err := nativePipelinePayloadWithExecutionPolicy(
-		commands, laneID, maxFrameBytes,
+	payload, flags, policy, err := nativePipelinePayloadWithCapabilities(
+		commands, laneID, maxFrameBytes, e.supportsCompactStreamXAdd(),
 	)
 	if err != nil {
 		var limitErr nativeEncodeLimitError
@@ -141,6 +141,14 @@ type nativeCompactPipelinePlan struct {
 	size     int
 }
 
+const (
+	nativeCompactPipelineHeaderBytes     = 6
+	nativeCompactSetPipelineValuesOnly   = 0x81
+	nativeCompactGetPipelineValuesOnly   = 0x82
+	nativeCompactStreamXAddValuesOnly    = 0x80 | 34
+	nativeCompactStreamXAddMaxFieldPairs = 1<<16 - 1
+)
+
 func compactPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompactPipelinePlan, bool, error) {
 	if len(commands) == 0 {
 		return nativeCompactPipelinePlan{}, false, nil
@@ -154,6 +162,8 @@ func compactPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompactPip
 		return compactSetPipelinePlanWithLimit(commands, limit)
 	case "GET":
 		return compactGetPipelinePlanWithLimit(commands, limit)
+	case "XADD":
+		return compactStreamXAddPipelinePlanWithLimit(commands, limit)
 	default:
 		return nativeCompactPipelinePlan{}, false, nil
 	}
@@ -172,7 +182,7 @@ func compactSetPipelinePayloadWithLimit(commands [][]any, limit int) ([]byte, bo
 }
 
 func compactSetPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompactPipelinePlan, bool, error) {
-	size := 5
+	size := nativeCompactPipelineHeaderBytes
 	if limit < size {
 		return nativeCompactPipelinePlan{}, true, nativeEncodeLimitError{limit: limit}
 	}
@@ -195,11 +205,11 @@ func compactSetPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompact
 		}
 		size = limit - (remaining - len(value))
 	}
-	return nativeCompactPipelinePlan{kind: 0x81, commands: commands, size: size}, true, nil
+	return nativeCompactPipelinePlan{kind: nativeCompactSetPipelineValuesOnly, commands: commands, size: size}, true, nil
 }
 
 func compactGetPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompactPipelinePlan, bool, error) {
-	size := 5
+	size := nativeCompactPipelineHeaderBytes
 	if limit < size {
 		return nativeCompactPipelinePlan{}, true, nativeEncodeLimitError{limit: limit}
 	}
@@ -217,7 +227,51 @@ func compactGetPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompact
 		}
 		size += 4 + len(key)
 	}
-	return nativeCompactPipelinePlan{kind: 0x82, commands: commands, size: size}, true, nil
+	return nativeCompactPipelinePlan{kind: nativeCompactGetPipelineValuesOnly, commands: commands, size: size}, true, nil
+}
+
+func compactStreamXAddPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompactPipelinePlan, bool, error) {
+	size := nativeCompactPipelineHeaderBytes
+	if limit < size {
+		return nativeCompactPipelinePlan{}, true, nativeEncodeLimitError{limit: limit}
+	}
+	for _, command := range commands {
+		if _, ok := compactStreamXAddPairCount(command); !ok {
+			return nativeCompactPipelinePlan{}, false, nil
+		}
+		key, ok := compactBytes(command[1])
+		if !ok {
+			return nativeCompactPipelinePlan{}, false, nil
+		}
+		remaining := limit - size
+		if remaining < 6 || len(key) > remaining-6 {
+			return nativeCompactPipelinePlan{}, true, nativeEncodeLimitError{limit: limit}
+		}
+		remaining -= 6 + len(key)
+		for _, rawValue := range command[3:] {
+			value, ok := compactBytes(rawValue)
+			if !ok {
+				return nativeCompactPipelinePlan{}, false, nil
+			}
+			if remaining < 4 || len(value) > remaining-4 {
+				return nativeCompactPipelinePlan{}, true, nativeEncodeLimitError{limit: limit}
+			}
+			remaining -= 4 + len(value)
+		}
+		size = limit - remaining
+	}
+	return nativeCompactPipelinePlan{
+		kind: nativeCompactStreamXAddValuesOnly, commands: commands, size: size,
+	}, true, nil
+}
+
+func compactStreamXAddPairCount(command []any) (int, bool) {
+	if len(command) < 5 || (len(command)-3)%2 != 0 ||
+		commandPart(command[0]) != "XADD" || commandPart(command[2]) != "*" {
+		return 0, false
+	}
+	pairCount := (len(command) - 3) / 2
+	return pairCount, pairCount <= nativeCompactStreamXAddMaxFieldPairs
 }
 
 func (p nativeCompactPipelinePlan) encode() []byte {
@@ -227,9 +281,17 @@ func (p nativeCompactPipelinePlan) encode() []byte {
 	for _, command := range p.commands {
 		key, _ := compactBytes(command[1])
 		payload = appendCompactBinary(payload, key)
-		if p.kind == 0x81 {
+		switch p.kind {
+		case nativeCompactSetPipelineValuesOnly:
 			value, _ := compactBytes(command[2])
 			payload = appendCompactBinary(payload, value)
+		case nativeCompactStreamXAddValuesOnly:
+			pairCount, _ := compactStreamXAddPairCount(command)
+			payload = appendUint16(payload, uint16(pairCount))
+			for _, rawValue := range command[3:] {
+				value, _ := compactBytes(rawValue)
+				payload = appendCompactBinary(payload, value)
+			}
 		}
 	}
 	return payload
@@ -251,6 +313,13 @@ func appendUint32(payload []byte, value uint32) []byte {
 	offset := len(payload)
 	payload = append(payload, 0, 0, 0, 0)
 	binary.BigEndian.PutUint32(payload[offset:offset+4], value)
+	return payload
+}
+
+func appendUint16(payload []byte, value uint16) []byte {
+	offset := len(payload)
+	payload = append(payload, 0, 0)
+	binary.BigEndian.PutUint16(payload[offset:offset+2], value)
 	return payload
 }
 

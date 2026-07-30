@@ -93,6 +93,7 @@ type NativeExecutor struct {
 	maxDataLanes         uint32
 	responseCodecs       nativeResponseCodecs
 	flowQuery            nativeFlowQueryContract
+	compactStreamXAdd    bool
 	flow                 *nativeFlowController
 	replayWindowUpdate   map[string]any
 	connectInFlight      *nativeConnectAttempt
@@ -409,8 +410,21 @@ func nativePipelinePayloadWithExecutionPolicy(
 	laneID uint32,
 	maxFrameBytes int,
 ) (any, byte, nativeCommandExecutionPolicy, error) {
-	if payload, ok, err := compactPipelinePlanWithLimit(commands, maxFrameBytes); ok || err != nil {
-		return payload, nativeFlagCustomPayload, nativeCommandExecutionPolicy{}, err
+	return nativePipelinePayloadWithCapabilities(commands, laneID, maxFrameBytes, true)
+}
+
+func nativePipelinePayloadWithCapabilities(
+	commands [][]any,
+	laneID uint32,
+	maxFrameBytes int,
+	compactStreamXAdd bool,
+) (any, byte, nativeCommandExecutionPolicy, error) {
+	allowCompact := compactStreamXAdd || len(commands) == 0 || len(commands[0]) == 0 ||
+		commandPart(commands[0][0]) != "XADD"
+	if allowCompact {
+		if payload, ok, err := compactPipelinePlanWithLimit(commands, maxFrameBytes); ok || err != nil {
+			return payload, nativeFlagCustomPayload, nativeCommandExecutionPolicy{}, err
+		}
 	}
 	items := make([]any, 0, len(commands))
 	var policy nativeCommandExecutionPolicy
