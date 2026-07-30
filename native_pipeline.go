@@ -281,10 +281,11 @@ func (p nativeCompactPipelinePlan) encode() []byte {
 	for _, command := range p.commands {
 		key, _ := compactBytes(command[1])
 		payload = appendCompactBinary(payload, key)
-		if p.kind == nativeCompactSetPipelineValuesOnly {
+		switch p.kind {
+		case nativeCompactSetPipelineValuesOnly:
 			value, _ := compactBytes(command[2])
 			payload = appendCompactBinary(payload, value)
-		} else if p.kind == nativeCompactStreamXAddValuesOnly {
+		case nativeCompactStreamXAddValuesOnly:
 			pairCount, _ := compactStreamXAddPairCount(command)
 			payload = appendUint16(payload, uint16(pairCount))
 			for _, rawValue := range command[3:] {
