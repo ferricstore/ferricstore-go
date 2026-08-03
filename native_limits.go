@@ -438,6 +438,12 @@ func (e *NativeExecutor) supportsCompactStreamXAdd() bool {
 	return e.compactStreamXAdd
 }
 
+func (e *NativeExecutor) supportsCompactPubSubPublish() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.compactPubSubPublish
+}
+
 func (e *NativeExecutor) acquireFlowCredit(ctx context.Context, expected net.Conn, lane uint32) (*nativeFlowController, error) {
 	e.mu.Lock()
 	if e.conn != expected {

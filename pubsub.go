@@ -109,7 +109,7 @@ type FlowWakeSubscriptionOptions struct {
 // NewPubSub creates an isolated native protocol connection for long-lived pub/sub use.
 func NewPubSub(addr string, opts ...NativeOption) *PubSub {
 	exec := NewNativeExecutor(addr, opts...)
-	exec.enableEventDelivery()
+	exec.enablePubSubBatchDelivery()
 	return newPubSub(exec, true)
 }
 
@@ -119,7 +119,7 @@ func NewPubSubFromURL(rawurl string, opts ...NativeOption) (*PubSub, error) {
 	if err != nil {
 		return nil, err
 	}
-	exec.enableEventDelivery()
+	exec.enablePubSubBatchDelivery()
 	return newPubSub(exec, true), nil
 }
 
@@ -131,7 +131,7 @@ func (c *Client) OpenPubSub() (*PubSub, error) {
 	exec := eventExecutor(c.exec)
 	native, ok := exec.(*NativeExecutor)
 	if ok {
-		native.enableEventDelivery()
+		native.enablePubSubBatchDelivery()
 		return newPubSub(native, false), nil
 	}
 	topology, ok := exec.(*TopologyNativeExecutor)
@@ -140,7 +140,7 @@ func (c *Client) OpenPubSub() (*PubSub, error) {
 		if err != nil {
 			return nil, err
 		}
-		control.enableEventDelivery()
+		control.enablePubSubBatchDelivery()
 		pubsub := newPubSub(control, false)
 		pubsub.selectExecutor = topology
 		return pubsub, nil

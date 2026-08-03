@@ -517,5 +517,17 @@ func serveNativeStartup(reader *bufio.Reader, writer *bufio.Writer) error {
 	if err != nil {
 		return err
 	}
+	if startup.opcode == nativeOpOptions {
+		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{}); err != nil {
+			return err
+		}
+		startup, err = readNativeRequestFrame(reader)
+		if err != nil {
+			return err
+		}
+	}
+	if startup.opcode != nativeOpHello {
+		return fmt.Errorf("startup opcode = %d, want HELLO", startup.opcode)
+	}
 	return writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true})
 }

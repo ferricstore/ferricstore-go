@@ -43,6 +43,7 @@ const (
 	nativeOpHello             = 0x0001
 	nativeOpAuth              = 0x0002
 	nativeOpPing              = 0x0003
+	nativeOpOptions           = 0x000B
 	nativeOpShards            = 0x0007
 	nativeOpGoAway            = 0x000A
 	nativeOpStartup           = 0x000C
@@ -93,6 +94,7 @@ type NativeExecutor struct {
 	maxDataLanes         uint32
 	responseCodecs       nativeResponseCodecs
 	flowQuery            nativeFlowQueryContract
+	compactPubSubPublish bool
 	compactStreamXAdd    bool
 	flow                 *nativeFlowController
 	replayWindowUpdate   map[string]any
@@ -410,7 +412,7 @@ func nativePipelinePayloadWithExecutionPolicy(
 	laneID uint32,
 	maxFrameBytes int,
 ) (any, byte, nativeCommandExecutionPolicy, error) {
-	return nativePipelinePayloadWithCapabilities(commands, laneID, maxFrameBytes, true)
+	return nativePipelinePayloadWithCapabilities(commands, laneID, maxFrameBytes, true, true)
 }
 
 func nativePipelinePayloadWithCapabilities(
@@ -418,9 +420,14 @@ func nativePipelinePayloadWithCapabilities(
 	laneID uint32,
 	maxFrameBytes int,
 	compactStreamXAdd bool,
+	compactPubSubPublish bool,
 ) (any, byte, nativeCommandExecutionPolicy, error) {
-	allowCompact := compactStreamXAdd || len(commands) == 0 || len(commands[0]) == 0 ||
-		commandPart(commands[0][0]) != "XADD"
+	first := ""
+	if len(commands) > 0 && len(commands[0]) > 0 {
+		first = commandPart(commands[0][0])
+	}
+	allowCompact := (first != "XADD" || compactStreamXAdd) &&
+		(first != "PUBLISH" || compactPubSubPublish)
 	if allowCompact {
 		if payload, ok, err := compactPipelinePlanWithLimit(commands, maxFrameBytes); ok || err != nil {
 			return payload, nativeFlagCustomPayload, nativeCommandExecutionPolicy{}, err

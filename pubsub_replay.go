@@ -236,7 +236,7 @@ func (p *PubSub) ensureCurrentExecutor(ctx context.Context) (*NativeExecutor, er
 	if replacement == nil {
 		return nil, errors.New("topology pubsub selected a nil native executor")
 	}
-	replacement.enableEventDelivery()
+	replacement.enablePubSubBatchDelivery()
 	p.currentExec.Store(replacement)
 	return replacement, nil
 }

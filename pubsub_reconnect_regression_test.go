@@ -86,12 +86,7 @@ func acceptNativePubSubTestConnection(listener net.Listener) (net.Conn, *bufio.R
 		return nil, nil, nil, err
 	}
 	reader, writer := bufio.NewReader(conn), bufio.NewWriter(conn)
-	startup, err := readNativeRequestFrame(reader)
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, nil, err
-	}
-	if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+	if err := serveNativeStartup(reader, writer); err != nil {
 		_ = conn.Close()
 		return nil, nil, nil, err
 	}
