@@ -101,7 +101,7 @@ func TestCompactStreamXAddPipelineRequiresAdvertisedMode(t *testing.T) {
 	commands := [][]any{{"XADD", "stream", "*", "field", "value"}}
 
 	payload, flags, _, err := nativePipelinePayloadWithCapabilities(
-		commands, 1, nativeDefaultRequestFrameBytes, false,
+		commands, 1, nativeDefaultRequestFrameBytes, false, true,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestCompactStreamXAddPipelineRequiresAdvertisedMode(t *testing.T) {
 	}
 
 	_, flags, _, err = nativePipelinePayloadWithCapabilities(
-		commands, 1, nativeDefaultRequestFrameBytes, true,
+		commands, 1, nativeDefaultRequestFrameBytes, true, true,
 	)
 	if err != nil {
 		t.Fatal(err)

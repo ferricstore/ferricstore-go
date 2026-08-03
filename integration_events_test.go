@@ -40,6 +40,23 @@ func TestIntegrationNativePubSubAndFlowWakeEvents(t *testing.T) {
 	if message.Kind != "message" || message.Channel != channel || asString(message.Payload) != "hello" {
 		t.Fatalf("unexpected pubsub message: %#v", message)
 	}
+	published := must[[]any](t)(client.Pipeline(ctx, [][]any{
+		{"PUBLISH", channel, "one"},
+		{"PUBLISH", channel, "two"},
+		{"PUBLISH", channel, "three"},
+	}))
+	if len(published) != 3 {
+		t.Fatalf("compact PUBLISH pipeline returned %d results", len(published))
+	}
+	for index, want := range []string{"one", "two", "three"} {
+		message, err := pubsub.Next(ctx)
+		if err != nil {
+			t.Fatalf("compact PUBLISH message %d: %v", index, err)
+		}
+		if message.Kind != "message" || message.Channel != channel || asString(message.Payload) != want {
+			t.Fatalf("compact PUBLISH message %d = %#v; want %q", index, message, want)
+		}
+	}
 	unack, err := pubsub.Unsubscribe(ctx, channel)
 	if err != nil {
 		t.Fatal(err)

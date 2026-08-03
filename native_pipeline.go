@@ -14,7 +14,8 @@ type nativePipelineBodyProvider interface {
 
 func (e *NativeExecutor) pipelineChunkWithoutGate(ctx context.Context, commands [][]any, laneID uint32, maxFrameBytes int) ([]pipelineItemResult, error) {
 	payload, flags, policy, err := nativePipelinePayloadWithCapabilities(
-		commands, laneID, maxFrameBytes, e.supportsCompactStreamXAdd(),
+		commands, laneID, maxFrameBytes,
+		e.supportsCompactStreamXAdd(), e.supportsCompactPubSubPublish(),
 	)
 	if err != nil {
 		var limitErr nativeEncodeLimitError
@@ -146,6 +147,7 @@ const (
 	nativeCompactSetPipelineValuesOnly   = 0x81
 	nativeCompactGetPipelineValuesOnly   = 0x82
 	nativeCompactStreamXAddValuesOnly    = 0x80 | 34
+	nativeCompactPubSubPublishValuesOnly = 0x80 | 35
 	nativeCompactStreamXAddMaxFieldPairs = 1<<16 - 1
 )
 
@@ -164,9 +166,40 @@ func compactPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompactPip
 		return compactGetPipelinePlanWithLimit(commands, limit)
 	case "XADD":
 		return compactStreamXAddPipelinePlanWithLimit(commands, limit)
+	case "PUBLISH":
+		return compactPubSubPublishPipelinePlanWithLimit(commands, limit)
 	default:
 		return nativeCompactPipelinePlan{}, false, nil
 	}
+}
+
+func compactPubSubPublishPipelinePlanWithLimit(commands [][]any, limit int) (nativeCompactPipelinePlan, bool, error) {
+	size := nativeCompactPipelineHeaderBytes
+	if limit < size {
+		return nativeCompactPipelinePlan{}, true, nativeEncodeLimitError{limit: limit}
+	}
+	for _, command := range commands {
+		if len(command) != 3 || commandPart(command[0]) != "PUBLISH" {
+			return nativeCompactPipelinePlan{}, false, nil
+		}
+		channel, channelOK := compactBytes(command[1])
+		message, messageOK := compactBytes(command[2])
+		if !channelOK || !messageOK {
+			return nativeCompactPipelinePlan{}, false, nil
+		}
+		remaining := limit - size
+		if remaining < 8 || len(channel) > remaining-8 {
+			return nativeCompactPipelinePlan{}, true, nativeEncodeLimitError{limit: limit}
+		}
+		remaining -= 8 + len(channel)
+		if len(message) > remaining {
+			return nativeCompactPipelinePlan{}, true, nativeEncodeLimitError{limit: limit}
+		}
+		size = limit - (remaining - len(message))
+	}
+	return nativeCompactPipelinePlan{
+		kind: nativeCompactPubSubPublishValuesOnly, commands: commands, size: size,
+	}, true, nil
 }
 
 func compactSetPipelinePayload(commands [][]any) ([]byte, bool, error) {
@@ -282,7 +315,7 @@ func (p nativeCompactPipelinePlan) encode() []byte {
 		key, _ := compactBytes(command[1])
 		payload = appendCompactBinary(payload, key)
 		switch p.kind {
-		case nativeCompactSetPipelineValuesOnly:
+		case nativeCompactSetPipelineValuesOnly, nativeCompactPubSubPublishValuesOnly:
 			value, _ := compactBytes(command[2])
 			payload = appendCompactBinary(payload, value)
 		case nativeCompactStreamXAddValuesOnly:

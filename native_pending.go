@@ -118,6 +118,12 @@ func (e *NativeExecutor) scheduleGoAwayDrain(conn net.Conn, done <-chan struct{}
 }
 
 func (e *NativeExecutor) deliverEvent(value any) {
+	for _, event := range expandNativePubSubBatch(value) {
+		e.deliverSingleEvent(event)
+	}
+}
+
+func (e *NativeExecutor) deliverSingleEvent(value any) {
 	size := nativeBufferedEventSize(value)
 	e.mu.Lock()
 	events := e.events
@@ -153,6 +159,18 @@ func (e *NativeExecutor) enableEventDelivery() {
 	e.eventDeliveryEnabled = true
 	if e.events == nil {
 		e.events = make(chan nativeQueuedEvent, nativeEventBufferCapacity)
+	}
+}
+
+func (e *NativeExecutor) enablePubSubBatchDelivery() {
+	e.enableEventDelivery()
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.isClosed && e.conn == nil && e.connectInFlight == nil {
+		e.opts.pubSubBatchCodec = true
 	}
 }
 

@@ -175,7 +175,17 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 	}
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
-	hello := nativeHelloPayload(options.ClientName)
+	var optionsResponse any
+	if options.pubSubBatchCodec {
+		optionsResponse, err = e.nativeHandshakeRequest(
+			ctx, options.Timeout, conn, reader, writer,
+			nativeUnauthenticatedFrameBytes, nativeOpOptions, map[string]any{}, options.MaxResponseBytes,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	hello := nativeHelloPayload(options.ClientName, optionsResponse)
 	helloResponse, err := e.nativeHandshakeRequest(
 		ctx, options.Timeout, conn, reader, writer,
 		nativeUnauthenticatedFrameBytes, nativeOpHello, hello, options.MaxResponseBytes,
@@ -228,17 +238,6 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 		conn: conn, reader: reader, writer: writer,
 		helloResponse: helloResponse, windowResponse: windowResponse, contract: contract,
 	}, nil
-}
-
-func nativeHelloPayload(clientName string) map[string]any {
-	name := nativeClientName(clientName)
-	return map[string]any{
-		"client_name":             name,
-		"driver_name":             name,
-		"compression":             "none",
-		"compact_flow_responses":  false,
-		"compact_response_codecs": []any{"flow_query_result_v1"},
-	}
 }
 
 func (e *NativeExecutor) nativeHandshakeRequest(ctx context.Context, timeout time.Duration, conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, maxFrameBytes int, opcode uint16, payload any, maxResponseBytes ...int) (any, error) {
