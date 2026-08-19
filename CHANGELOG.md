@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.11.6 - 2026-08-19
+
+- Validate the unchanged native protocol v1 and FerricStore 0.11.4 compatibility
+  floor against FerricStore 0.11.6, including single-node and multi-node
+  cluster integration.
+- Move released-server integration from GHCR to the immutable FerricStore
+  0.11.6 image on Quay.io.
+- Update the verification toolchain to Go 1.26.6, which contains the standard
+  library fixes for GO-2026-6090 and GO-2026-5972.
+
 ## 0.11.5 - 2026-08-03
 
 - Negotiate FerricStore 0.11.5's compact Stream producer capability and encode

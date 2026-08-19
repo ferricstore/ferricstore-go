@@ -20,12 +20,12 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned tested image, `ghcr.io/ferricstore/ferricstore:0.11.5`, by default and exposes the native protocol on `127.0.0.1:6388`.
-Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
+The compose file uses the SDK's pinned tested image, `quay.io/ferricstore/ferricstore:0.11.6`, by default and exposes the native protocol on `127.0.0.1:6388`.
+Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
-Go SDK 0.11.5 requires FerricStore 0.11.4 or newer. With FerricStore 0.11.5 it
+Go SDK 0.11.6 requires FerricStore 0.11.4 or newer. With FerricStore 0.11.6 it
 negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches,
 compact Pub/Sub mode 35 for homogeneous `PUBLISH` batches, and ordered
 `pubsub_batch_v1` receive expansion. The native wire protocol and generic
@@ -560,7 +560,7 @@ and is deprecated.
 
 ## Toolchain
 
-The module requires Go 1.24 or newer. This repo pins Go 1.26.5 for development and release verification with mise:
+The module requires Go 1.24 or newer. This repo pins Go 1.26.6 for development and release verification with mise:
 
 ```bash
 brew install mise
