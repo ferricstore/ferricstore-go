@@ -29,14 +29,14 @@ Go modules are released by pushing a semver tag.
 5. Tag:
 
    ```bash
-   git tag v0.11.9
+   git tag v0.11.10
    git push origin main --tags
    ```
 
 6. Verify the module is available:
 
    ```bash
-   GOPROXY=https://proxy.golang.org go list -m github.com/ferricstore/ferricstore-go@v0.11.9
+   GOPROXY=https://proxy.golang.org go list -m github.com/ferricstore/ferricstore-go@v0.11.10
    ```
 
 The GitHub release workflow creates release notes for pushed `v*` tags.

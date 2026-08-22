@@ -17,11 +17,39 @@ const (
 	httpMapTag         = "$ferricstore_map"
 )
 
+var errHTTPRequestEncodingBudget = errors.New("HTTP command exceeds request encoding budget")
+
+type httpEncodeState struct {
+	remaining int64
+}
+
+func newHTTPEncodeState(limit int64) *httpEncodeState {
+	return &httpEncodeState{remaining: min(limit, int64(nativeMaxContainerItems))}
+}
+
+func (s *httpEncodeState) consume(count int) error {
+	if count < 0 || int64(count) > s.remaining {
+		return errHTTPRequestEncodingBudget
+	}
+	s.remaining -= int64(count)
+	return nil
+}
+
+func (s *httpEncodeState) require(count int) error {
+	if count < 0 || int64(count) > s.remaining {
+		return errHTTPRequestEncodingBudget
+	}
+	return nil
+}
+
 var httpConnectionAffineCommands = map[string]struct{}{
-	"AUTH": {}, "BLMOVE": {}, "BLMPOP": {}, "BLPOP": {}, "BRPOP": {}, "CLIENT": {},
-	"DISCARD": {}, "EXEC": {}, "HELLO": {}, "MULTI": {}, "PSUBSCRIBE": {},
-	"PUNSUBSCRIBE": {}, "QUIT": {}, "SELECT": {}, "SUBSCRIBE": {}, "UNSUBSCRIBE": {},
-	"UNWATCH": {}, "WATCH": {}, "XREAD": {}, "XREADGROUP": {},
+	"ASKING": {}, "AUTH": {}, "BACKPRESSURE": {}, "CLIENT": {}, "CLIENT.INFO": {}, "CLIENT.SETNAME": {},
+	"DISCARD": {}, "EVENT": {}, "EXEC": {}, "GOAWAY": {}, "HELLO": {}, "MONITOR": {}, "MULTI": {},
+	"OPTIONS": {}, "PIPELINE": {}, "PSUBSCRIBE": {}, "PSYNC": {}, "PUNSUBSCRIBE": {}, "QUIT": {},
+	"READONLY": {}, "READWRITE": {}, "REPLCONF": {}, "RESET": {}, "ROUTE": {}, "ROUTE_BATCH": {},
+	"SANDBOX": {}, "SELECT": {}, "SHARDS": {}, "SSUBSCRIBE": {}, "STARTUP": {}, "SUBSCRIBE": {},
+	"SUBSCRIBE_EVENTS": {}, "SUNSUBSCRIBE": {}, "SYNC": {}, "UNSUBSCRIBE": {}, "UNSUBSCRIBE_EVENTS": {},
+	"UNWATCH": {}, "WATCH": {}, "WINDOW_UPDATE": {},
 }
 
 // HTTPCommandDisposition reports whether a command can run through the
@@ -49,13 +77,33 @@ var httpStructuredFlowCommands = map[string]struct{}{
 	"FLOW.LIMIT.GET": {}, "FLOW.LIMIT.LIST": {},
 }
 
-func encodeHTTPCommand(args []any) (any, error) {
+func encodeHTTPCommandWithState(args []any, state *httpEncodeState) (any, error) {
 	if err := validateCommandArgs(args); err != nil {
 		return nil, err
 	}
+	if err := state.consume(1); err != nil {
+		return nil, err
+	}
 	name := strings.ToUpper(commandPart(args[0]))
-	if HTTPCommandDisposition(name) == "native_only" {
-		return nil, fmt.Errorf("%w: %s", ErrHTTPConnectionAffineCommand, name)
+	if err := state.consume(len(name)); err != nil {
+		return nil, err
+	}
+	effectiveName := httpEffectiveCommandName(args)
+	if HTTPCommandDisposition(effectiveName) == "native_only" {
+		return nil, fmt.Errorf("%w: %s", ErrHTTPConnectionAffineCommand, effectiveName)
+	}
+	if name == "COMMAND_EXEC" {
+		command, err := buildNativeCommand(args)
+		if err != nil {
+			return nil, err
+		}
+		payload, err := encodeHTTPValueWithState(command.payload, state)
+		if err != nil {
+			return nil, fmt.Errorf("COMMAND_EXEC HTTP payload: %w", err)
+		}
+		return map[string]any{
+			"command": "COMMAND_EXEC", "opcode": command.opcode, "payload": payload,
+		}, nil
 	}
 	if _, structured := httpStructuredFlowCommands[name]; structured {
 		command, err := buildNativeCommand(args)
@@ -68,7 +116,7 @@ func encodeHTTPCommand(args []any) (any, error) {
 				return nil, err
 			}
 		}
-		payload, err := encodeHTTPValue(command.payload)
+		payload, err := encodeHTTPValueWithState(command.payload, state)
 		if err != nil {
 			return nil, fmt.Errorf("%s HTTP payload: %w", name, err)
 		}
@@ -77,7 +125,7 @@ func encodeHTTPCommand(args []any) (any, error) {
 	encoded := make([]any, len(args))
 	encoded[0] = name
 	for index := 1; index < len(args); index++ {
-		value, err := encodeHTTPValue(args[index])
+		value, err := encodeHTTPValueWithState(args[index], state)
 		if err != nil {
 			return nil, fmt.Errorf("%s argument %d: %w", name, index, err)
 		}
@@ -86,14 +134,26 @@ func encodeHTTPCommand(args []any) (any, error) {
 	return encoded, nil
 }
 
+func httpEffectiveCommandName(args []any) string {
+	canonical := canonicalCommandArgs(args)
+	if len(canonical) == 0 {
+		return ""
+	}
+	return commandPart(canonical[0])
+}
+
 func encodeHTTPValue(value any) (any, error) {
+	return encodeHTTPValueWithState(value, newHTTPEncodeState(nativeMaxContainerItems))
+}
+
+func encodeHTTPValueWithState(value any, state *httpEncodeState) (any, error) {
 	if wrapped, ok := value.(nativeJSONCommandArg); ok {
 		value = wrapped.value
 	}
-	return encodeHTTPReflect(reflect.ValueOf(value), 0)
+	return encodeHTTPReflect(reflect.ValueOf(value), state, 0)
 }
 
-func encodeHTTPReflect(value reflect.Value, depth int) (any, error) {
+func encodeHTTPReflect(value reflect.Value, state *httpEncodeState, depth int) (any, error) {
 	if depth > nativeMaxEncodeDepth {
 		return nil, errors.New("HTTP command value exceeds maximum nesting depth")
 	}
@@ -104,15 +164,24 @@ func encodeHTTPReflect(value reflect.Value, depth int) (any, error) {
 		if value.IsNil() {
 			return nil, nil
 		}
-		return encodeHTTPReflect(value.Elem(), depth)
+		return encodeHTTPReflect(value.Elem(), state, depth+1)
+	}
+	if err := state.consume(1); err != nil {
+		return nil, err
 	}
 	if value.Type() == reflect.TypeFor[[]byte]() {
+		if err := state.consume(value.Len()); err != nil {
+			return nil, err
+		}
 		return map[string]any{httpBytesTag: base64.StdEncoding.EncodeToString(value.Bytes())}, nil
 	}
 	switch value.Kind() {
 	case reflect.Bool:
 		return value.Bool(), nil
 	case reflect.String:
+		if err := state.consume(value.Len()); err != nil {
+			return nil, err
+		}
 		return value.String(), nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return value.Int(), nil
@@ -125,9 +194,12 @@ func encodeHTTPReflect(value reflect.Value, depth int) (any, error) {
 		}
 		return number, nil
 	case reflect.Slice, reflect.Array:
+		if err := state.require(value.Len()); err != nil {
+			return nil, err
+		}
 		items := make([]any, value.Len())
 		for index := range value.Len() {
-			item, err := encodeHTTPReflect(value.Index(index), depth+1)
+			item, err := encodeHTTPReflect(value.Index(index), state, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -135,14 +207,17 @@ func encodeHTTPReflect(value reflect.Value, depth int) (any, error) {
 		}
 		return items, nil
 	case reflect.Map:
+		if value.Len() > int(state.remaining/2) {
+			return nil, errHTTPRequestEncodingBudget
+		}
 		pairs := make([]any, 0, value.Len())
 		iterator := value.MapRange()
 		for iterator.Next() {
-			key, err := encodeHTTPReflect(iterator.Key(), depth+1)
+			key, err := encodeHTTPReflect(iterator.Key(), state, depth+1)
 			if err != nil {
 				return nil, err
 			}
-			item, err := encodeHTTPReflect(iterator.Value(), depth+1)
+			item, err := encodeHTTPReflect(iterator.Value(), state, depth+1)
 			if err != nil {
 				return nil, err
 			}

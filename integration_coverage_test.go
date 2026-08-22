@@ -28,6 +28,8 @@ type integrationTrackingExecutor struct {
 	inner Executor
 }
 
+func (*integrationTrackingExecutor) supportsNativeRequestContextArguments() {}
+
 func (e *integrationTrackingExecutor) Do(ctx context.Context, args ...any) (any, error) {
 	value, err := e.inner.Do(ctx, args...)
 	if err == nil {

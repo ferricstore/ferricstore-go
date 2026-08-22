@@ -102,8 +102,9 @@ func WithHTTPMaxBatchCommands(limit int) HTTPOption {
 	return func(options *httpOptions) { options.MaxBatchCommands = limit }
 }
 
-// WithHTTPMaxConnections bounds active and idle connections to one endpoint.
-// Waiting for capacity is included in the command timeout.
+// WithHTTPMaxConnections bounds active and idle SDK-owned connections to one
+// endpoint. Waiting for capacity is included in the command timeout. A client
+// supplied with WithHTTPClient retains its caller-managed transport limits.
 func WithHTTPMaxConnections(limit int) HTTPOption {
 	return func(options *httpOptions) { options.MaxConnections = limit }
 }

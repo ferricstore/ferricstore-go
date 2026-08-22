@@ -92,6 +92,54 @@ func TestURLParseErrorsDoNotExposeCredentials(t *testing.T) {
 	}
 }
 
+func TestHTTPURLParseErrorsDoNotExposeCredentials(t *testing.T) {
+	t.Parallel()
+
+	const rawURL = "https://sdk-user:super-secret@example.com/%zz"
+	for name, construct := range map[string]func() error{
+		"executor": func() error {
+			_, err := NewHTTPExecutorFromURL(rawURL)
+			return err
+		},
+		"client": func() error {
+			_, err := NewClientFromURL(rawURL)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := construct()
+			if err == nil {
+				t.Fatal("malformed HTTP URL succeeded")
+			}
+			message := err.Error()
+			if strings.Contains(message, "sdk-user") || strings.Contains(message, "super-secret") {
+				t.Fatalf("HTTP URL parse error exposed credentials: %q", message)
+			}
+		})
+	}
+}
+
+func TestHTTPURLRejectsInvalidPorts(t *testing.T) {
+	t.Parallel()
+
+	for _, rawURL := range []string{
+		"http://localhost:",
+		"http://localhost:0",
+		"http://localhost:65536",
+		"http://localhost:not-a-port",
+	} {
+		t.Run(rawURL, func(t *testing.T) {
+			executor, err := NewHTTPExecutorFromURL(rawURL)
+			if executor != nil {
+				_ = executor.Close()
+			}
+			if err == nil {
+				t.Fatalf("NewHTTPExecutorFromURL(%q) succeeded", rawURL)
+			}
+		})
+	}
+}
+
 func TestNativeTimeoutOptionNormalizesNegativeDuration(t *testing.T) {
 	t.Parallel()
 

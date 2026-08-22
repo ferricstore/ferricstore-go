@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const pinnedIntegrationServerVersion = "0.11.8"
+const pinnedIntegrationServerVersion = "0.11.10"
 
 func TestIntegrationDockerScriptDefaultsToPinnedFerricStore(t *testing.T) {
 	compose, err := os.ReadFile("docker-compose.yml")
@@ -35,6 +35,13 @@ func TestIntegrationDockerScriptDefaultsToPinnedFerricStore(t *testing.T) {
 		}
 		if !strings.Contains(string(body), pinnedImage) {
 			t.Fatalf("%s should use the pinned integration image %s", path, pinnedImage)
+		}
+		for _, image := range regexp.MustCompile(
+			`quay\.io/ferricstore/ferricstore:[^@[:space:]]+@sha256:[0-9a-f]{64}`,
+		).FindAllString(string(body), -1) {
+			if image != pinnedImage {
+				t.Fatalf("%s contains stale latest-server image %s, want %s", path, image, pinnedImage)
+			}
 		}
 	}
 }

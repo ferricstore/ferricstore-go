@@ -97,8 +97,8 @@ jobs:
         include:
           - server-version: "0.11.4"
             image: ghcr.io/ferricstore/ferricstore:0.11.4@sha256:ee49d39e3b15cd6298537a88818647e71bcfc7571921e88bcf3a201311c690fc
-          - server-version: "0.11.8"
-            image: quay.io/ferricstore/ferricstore:0.11.8@sha256:d472b337fcec536b46e4ba7549689bc5c7fc67948071f6e39cc13ca0e8879ce2
+          - server-version: "0.11.10"
+            image: quay.io/ferricstore/ferricstore:0.11.10@sha256:3af390b7429ea3fea2983938eb7adcdd3e8005d06c67473f769f29ebd48e8ab3
     env:
       FERRICSTORE_IMAGE: ${{ matrix.image }}
     steps:

@@ -20,12 +20,14 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned tested image, `quay.io/ferricstore/ferricstore:0.11.8`, by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned tested image, `quay.io/ferricstore/ferricstore:0.11.10`, by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
-Go SDK 0.11.9 requires FerricStore 0.11.4 or newer. With FerricStore 0.11.8 it
+Go SDK 0.11.10 requires FerricStore 0.11.4 or newer for native TCP. The HTTP
+transport requires the stateless gateway shipped by FerricStore OSS 0.11.10 and
+ferricstore-http 0.1.1 or newer. With FerricStore 0.11.10 the native transport
 negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches,
 compact Pub/Sub mode 35 for homogeneous `PUBLISH` batches, and ordered
 `pubsub_batch_v1` receive expansion. The native wire protocol and generic
@@ -82,12 +84,17 @@ including per-command errors. Request, response, batch, connection, and whole
 request deadline limits are configurable with `WithHTTP*` options.
 
 The HTTP endpoint is stateless. Commands that need one persistent connection
-(`AUTH`, `CLIENT`, transactions, Pub/Sub subscriptions, blocking list/stream
-reads, and `WATCH`) return `ErrHTTPConnectionAffineCommand` before network I/O;
-use `ferric://` or `ferrics://` for those commands. Redirects are followed and
-caller-supplied authentication and custom headers are retained, including
-across origins. Only enable redirects to endpoints you trust, or supply a
-custom `http.Client` with a stricter `CheckRedirect` policy.
+(`AUTH`, `CLIENT`, transactions, Pub/Sub/event subscriptions, `WATCH`, monitor
+or replication streams, and native negotiation/routing controls) return
+`ErrHTTPConnectionAffineCommand` before network I/O; use `ferric://` or
+`ferrics://` for those commands. Blocking list/stream reads remain supported as
+one long-lived HTTP request; their server wait extends (or, for an indefinite
+wait, disables) the SDK's default timeout while the caller context stays
+authoritative. `CommandExec` and its optional request context
+are carried in a structured envelope rather than exposed as a user command.
+Redirects are followed and caller-supplied authentication and custom headers
+are retained, including across origins. Only enable redirects to endpoints you
+trust, or supply a custom `http.Client` with a stricter `CheckRedirect` policy.
 
 Avoid putting production passwords in URLs because URLs are commonly copied into logs, shell history, and process metadata.
 
@@ -613,7 +620,7 @@ For release gating against a server image that should support every current comm
 enable strict command coverage:
 
 ```bash
-FERRICSTORE_STRICT_COMMAND_COVERAGE=1 FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version> ./scripts/integration-docker.sh
+FERRICSTORE_STRICT_COMMAND_COVERAGE=1 FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version> ./scripts/integration-docker.sh
 ```
 
 ## Examples

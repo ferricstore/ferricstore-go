@@ -1,20 +1,249 @@
 package ferricstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestHTTPRejectsNativeControlsAndWrappedSessionCommandsBeforeNetwork(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests.Add(1)
+	}))
+	defer server.Close()
+	executor, err := NewHTTPExecutorFromURL(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = executor.Close() }()
+
+	tests := [][]any{
+		{"BACKPRESSURE"},
+		{"ASKING"},
+		{"EVENT"},
+		{"GOAWAY"},
+		{"OPTIONS"},
+		{"MONITOR"},
+		{"PIPELINE"},
+		{"PSYNC"},
+		{"READONLY"},
+		{"READWRITE"},
+		{"REPLCONF"},
+		{"RESET"},
+		{"ROUTE"},
+		{"ROUTE_BATCH"},
+		{"SANDBOX"},
+		{"SHARDS"},
+		{"SSUBSCRIBE", "shard-events"},
+		{"STARTUP"},
+		{"SUBSCRIBE_EVENTS"},
+		{"UNSUBSCRIBE_EVENTS"},
+		{"SUNSUBSCRIBE", "shard-events"},
+		{"SYNC"},
+		{"WINDOW_UPDATE"},
+		{"COMMAND_EXEC", "MULTI"},
+		{"COMMAND_EXEC", "SUBSCRIBE", "events"},
+		{"COMMAND_EXEC", "ASKING"},
+		{"COMMAND_EXEC", "MONITOR"},
+		{"COMMAND_EXEC", "READONLY"},
+		{"COMMAND_EXEC", "READWRITE"},
+		{"COMMAND_EXEC", "REPLCONF", "listening-port", 6388},
+		{"COMMAND_EXEC", "SYNC"},
+		{"COMMAND_EXEC", "PSYNC", "?", -1},
+		{"COMMAND_EXEC", "SSUBSCRIBE", "shard-events"},
+		{"COMMAND_EXEC", "SUNSUBSCRIBE", "shard-events"},
+	}
+	for _, args := range tests {
+		name := commandPart(args[0])
+		t.Run(name+"_wrapped_"+commandPart(args[min(1, len(args)-1)]), func(t *testing.T) {
+			if _, err := executor.Do(context.Background(), args...); !errors.Is(err, ErrHTTPConnectionAffineCommand) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("requests = %d", requests.Load())
+	}
+}
+
+func TestHTTPSupportsLongLivedBlockingCommands(t *testing.T) {
+	var commands []string
+	client := &http.Client{Transport: httpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var envelope map[string]any
+		if err := decodeTestJSON(request.Body, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		command := envelope["commands"].([]any)[0].([]any)
+		commands = append(commands, commandPart(command[0]))
+		return testHTTPResponse(http.StatusOK, httpSuccessEnvelope(nil)), nil
+	})}
+	executor, err := NewHTTPExecutorFromURL("http://example.com", WithHTTPClient(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = executor.Close() }()
+
+	for _, args := range [][]any{
+		{"BLPOP", "queue", 1},
+		{"BRPOP", "queue", 1},
+		{"BLMOVE", "source", "destination", "LEFT", "RIGHT", 1},
+		{"BLMPOP", 1, 1, "queue", "LEFT"},
+		{"XREAD", "BLOCK", 1, "STREAMS", "events", "$"},
+		{"XREADGROUP", "GROUP", "workers", "one", "BLOCK", 1, "STREAMS", "events", ">"},
+	} {
+		if _, err := executor.Do(context.Background(), args...); err != nil {
+			t.Fatalf("%s: %v", args[0], err)
+		}
+	}
+	if len(commands) != 6 {
+		t.Fatalf("commands = %#v", commands)
+	}
+}
+
+func TestHTTPDispositionKeepsEveryLongLivedSingleRequestCommandSupported(t *testing.T) {
+	for _, command := range []string{
+		"BLMOVE", "BLMPOP", "BLPOP", "BRPOP", "BRPOPLPUSH", "BZMPOP", "BZPOPMAX", "BZPOPMIN",
+		"XREAD", "XREADGROUP",
+	} {
+		if got := HTTPCommandDisposition(command); got != "supported" {
+			t.Errorf("%s disposition = %q, want supported", command, got)
+		}
+	}
+}
+
+func TestHTTPBlockingCommandsExtendOrDisableDefaultTimeout(t *testing.T) {
+	var remaining []time.Duration
+	client := &http.Client{Transport: httpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if deadline, ok := request.Context().Deadline(); ok {
+			remaining = append(remaining, time.Until(deadline))
+		} else {
+			remaining = append(remaining, 0)
+		}
+		return testHTTPResponse(http.StatusOK, httpSuccessEnvelope(nil)), nil
+	})}
+	executor, err := NewHTTPExecutorFromURL(
+		"http://example.com", WithHTTPClient(client), WithHTTPTimeout(2*time.Second),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = executor.Close() }()
+	if _, err := executor.Do(context.Background(), "PING"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Do(context.Background(), "BLPOP", "queue", 5); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Do(context.Background(), "XREAD", "BLOCK", 0, "STREAMS", "events", "$"); err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 3 || remaining[0] <= time.Second || remaining[0] > 2*time.Second ||
+		remaining[1] <= 6*time.Second || remaining[1] > 7*time.Second || remaining[2] != 0 {
+		t.Fatalf("request timeouts = %v", remaining)
+	}
+}
+
+func TestHTTPCommandExecUsesStructuredDescriptorAndPreservesRequestContext(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := decodeTestJSON(request.Body, &received); err != nil {
+			t.Fatal(err)
+		}
+		writeHTTPJSON(t, writer, http.StatusOK, httpSuccessEnvelope("value"))
+	}))
+	defer server.Close()
+	client, err := NewClientFromURL(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+
+	value, err := client.CommandExecWithContext(
+		context.Background(), "GET", &RequestContext{Subject: "worker", Tenant: "tenant-a"}, "key",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asString(value) != "value" {
+		t.Fatalf("value = %#v", value)
+	}
+	command, ok := received["commands"].([]any)[0].(map[string]any)
+	if !ok {
+		t.Fatalf("command = %#v, want structured descriptor", received["commands"])
+	}
+	if command["command"] != "COMMAND_EXEC" || command["opcode"] != float64(nativeOpCommandExec) {
+		t.Fatalf("descriptor = %#v", command)
+	}
+	payload, err := decodeHTTPValue(command["payload"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping, ok := payload.(map[string]any)
+	if !ok || asString(mapping["command"]) != "GET" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	args, ok := mapping["args"].([]any)
+	if !ok || len(args) != 1 || asString(args[0]) != "key" {
+		t.Fatalf("args = %#v", mapping["args"])
+	}
+	requestContext, ok := mapping["request_context"].(map[string]any)
+	if !ok || asString(requestContext["subject"]) != "worker" || asString(requestContext["tenant"]) != "tenant-a" {
+		t.Fatalf("request_context = %#v", mapping["request_context"])
+	}
+}
+
+func TestHTTPEncodingBoundsPointerIndirection(t *testing.T) {
+	value := any("leaf")
+	for range nativeMaxEncodeDepth + 2 {
+		next := value
+		value = &next
+	}
+	if _, err := encodeHTTPValue(value); err == nil || !strings.Contains(err.Error(), "nesting depth") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestHTTPCanceledContextIsNotReportedAsRetryable(t *testing.T) {
+	executor, err := NewHTTPExecutorFromURL("http://127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = executor.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = executor.Do(ctx, "PING")
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Code != "transport_canceled" || httpErr.Retryable {
+		t.Fatalf("error = %#v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error does not preserve context cancellation: %v", err)
+	}
+}
+
+func TestHTTPRetryAfterSupportsHTTPDate(t *testing.T) {
+	now := time.Date(2026, time.August, 22, 12, 0, 0, 0, time.UTC)
+	if got := parseHTTPRetryAfter(now.Add(3*time.Second).Format(http.TimeFormat), now); got != 3_000 {
+		t.Fatalf("Retry-After date = %dms, want 3000ms", got)
+	}
+	if got := parseHTTPRetryAfter("7", now); got != 7_000 {
+		t.Fatalf("Retry-After seconds = %dms, want 7000ms", got)
+	}
+}
 
 func TestHTTP2MultiplexesConcurrentCommandsOnOneConnection(t *testing.T) {
 	var connections atomic.Int32
@@ -62,6 +291,64 @@ func TestHTTP2MultiplexesConcurrentCommandsOnOneConnection(t *testing.T) {
 	wait.Wait()
 	if connections.Load() != 1 || maximum.Load() <= 1 {
 		t.Fatalf("connections=%d max concurrent streams=%d", connections.Load(), maximum.Load())
+	}
+}
+
+func TestHTTP2CanBeDisabledForTLSConnections(t *testing.T) {
+	var protocol string
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		protocol = request.Proto
+		writeHTTPJSON(t, writer, http.StatusOK, httpSuccessEnvelope("PONG"))
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+	tlsConfig := server.Client().Transport.(*http.Transport).TLSClientConfig
+	executor, err := NewHTTPExecutorFromURL(
+		server.URL, WithHTTPTLSConfig(tlsConfig), WithHTTP2(false),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = executor.Close() }()
+	if _, err := executor.Do(context.Background(), "PING"); err != nil {
+		t.Fatal(err)
+	}
+	if protocol != "HTTP/1.1" {
+		t.Fatalf("protocol = %q, want HTTP/1.1", protocol)
+	}
+}
+
+func TestHTTPMaxConnectionsBoundsHTTP1Concurrency(t *testing.T) {
+	var active atomic.Int32
+	var maximum atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		current := active.Add(1)
+		for current > maximum.Load() && !maximum.CompareAndSwap(maximum.Load(), current) {
+		}
+		time.Sleep(20 * time.Millisecond)
+		active.Add(-1)
+		writeHTTPJSON(t, writer, http.StatusOK, httpSuccessEnvelope("PONG"))
+	}))
+	defer server.Close()
+	executor, err := NewHTTPExecutorFromURL(server.URL, WithHTTPMaxConnections(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = executor.Close() }()
+	var wait sync.WaitGroup
+	for range 12 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			if _, err := executor.Do(context.Background(), "PING"); err != nil {
+				t.Errorf("PING: %v", err)
+			}
+		}()
+	}
+	wait.Wait()
+	if maximum.Load() != 2 {
+		t.Fatalf("maximum concurrent requests = %d, want 2", maximum.Load())
 	}
 }
 
@@ -205,6 +492,13 @@ func TestHTTPEnforcesRequestBatchAndConnectionLimits(t *testing.T) {
 	if requests.Load() != 0 {
 		t.Fatal("oversized request reached the server")
 	}
+	var httpErr *HTTPError
+	if _, err := executor.Do(context.Background(), "CUSTOM", make([]any, 33)); !errors.As(err, &httpErr) || httpErr.Code != "request_too_large" {
+		t.Fatalf("oversized container error = %#v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatal("oversized container reached the server")
+	}
 	_ = executor.Close()
 
 	if _, err := NewHTTPExecutorFromURL(server.URL, WithHTTPMaxBatchCommands(0)); err == nil {
@@ -292,4 +586,20 @@ func httpSuccessEnvelope(value any) map[string]any {
 func decodeTestJSON(reader io.Reader, value any) error {
 	decoder := json.NewDecoder(reader)
 	return decoder.Decode(value)
+}
+
+type httpRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn httpRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+func testHTTPResponse(status int, value any) *http.Response {
+	body, _ := json.Marshal(value)
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
 }
