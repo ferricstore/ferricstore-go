@@ -5,7 +5,7 @@
 ## 0.11.7 - 2026-08-22
 
 - Validate the unchanged native protocol v1 and FerricStore 0.11.4
-  compatibility floor against FerricStore 0.11.7, including single-node,
+  compatibility floor against FerricStore 0.11.8, including single-node,
   authenticated, and multi-node cluster integration.
 - Keep the existing native TCP command, pipeline, topology, and Flow query
   behavior unchanged while FerricStore adds transport-neutral gateway support.
