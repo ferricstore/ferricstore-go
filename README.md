@@ -25,7 +25,7 @@ Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want 
 
 ## Compatibility
 
-Go SDK 0.11.7 requires FerricStore 0.11.4 or newer. With FerricStore 0.11.8 it
+Go SDK 0.11.9 requires FerricStore 0.11.4 or newer. With FerricStore 0.11.8 it
 negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches,
 compact Pub/Sub mode 35 for homogeneous `PUBLISH` batches, and ordered
 `pubsub_batch_v1` receive expansion. The native wire protocol and generic
@@ -60,6 +60,34 @@ client, err := ferricstore.NewClientFromURL(
 	),
 )
 ```
+
+Use an `http://` or `https://` URL to send the same commands through a
+FerricStore HTTP server. HTTP/1.1 uses persistent keep-alive connections and
+HTTPS negotiates HTTP/2 by default when the server offers it:
+
+```go
+client, err := ferricstore.NewClientFromURL(
+	"https://ferricstore-http.example.com",
+	ferricstore.WithHTTPOptions(
+		ferricstore.WithHTTPBasicAuth("default", password),
+		ferricstore.WithHTTP2(true),
+	),
+)
+```
+
+Bearer authentication is available through `WithHTTPBearerToken`. Basic
+username/password authentication is accepted only with `https://`; an empty
+username means `default`. A `Pipeline` is encoded as one ordered HTTP request,
+including per-command errors. Request, response, batch, connection, and whole
+request deadline limits are configurable with `WithHTTP*` options.
+
+The HTTP endpoint is stateless. Commands that need one persistent connection
+(`AUTH`, `CLIENT`, transactions, Pub/Sub subscriptions, blocking list/stream
+reads, and `WATCH`) return `ErrHTTPConnectionAffineCommand` before network I/O;
+use `ferric://` or `ferrics://` for those commands. Redirects are followed and
+caller-supplied authentication and custom headers are retained, including
+across origins. Only enable redirects to endpoints you trust, or supply a
+custom `http.Client` with a stricter `CheckRedirect` policy.
 
 Avoid putting production passwords in URLs because URLs are commonly copied into logs, shell history, and process metadata.
 

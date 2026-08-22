@@ -52,6 +52,61 @@ func TestLimitResultDecodesConfigurationAndReservationIDs(t *testing.T) {
 	}
 }
 
+func TestLimitResultDecodesHTTPIntegerLeaseMapKeys(t *testing.T) {
+	lease := map[string]any{
+		"shard_id": int64(0), "epoch": int64(2), "expires_at_ms": int64(5_000),
+		"available": int64(3), "in_use": int64(2), "pending_reclaim": int64(0),
+		"drain_rate": 0.25, "last_spend_at_ms": int64(1_500),
+	}
+	result, err := limitResult(map[string]any{
+		"owner": map[string]any{
+			"scope": "tenant", "limit": int64(10), "free": int64(5), "epoch": int64(2),
+			"leases": map[any]any{int64(0): lease},
+		},
+		"lease": lease,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Leases) != 1 || result.Leases[0].ShardID != 0 {
+		t.Fatalf("limit leases = %#v", result.Leases)
+	}
+}
+
+func TestLimitCollectionsDecodeHTTPIntegerLeaseMapKeys(t *testing.T) {
+	lease := map[string]any{"shard_id": int64(0)}
+	limit := map[string]any{
+		"scope":  "tenant",
+		"leases": map[any]any{int64(0): lease},
+	}
+
+	listValue, err := normalizeLimitListLeaseKeys([]any{limit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	maps, err := mapList(listValue, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := limitResultFromMap(maps[0])
+	if err != nil || len(result.Leases) != 1 {
+		t.Fatalf("limit list result=%#v error=%v", result, err)
+	}
+
+	overviewValue, err := normalizeGovernanceLimitLeaseKeys(map[string]any{"limits": []any{limit}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overviewMap, err := nativeMap(overviewValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overview, err := governanceOverviewFromMap(overviewMap)
+	if err != nil || len(overview.Limits) != 1 || len(overview.Limits[0].Leases) != 1 {
+		t.Fatalf("governance overview=%#v error=%v", overview, err)
+	}
+}
+
 func TestBudgetAndLimitResultsRejectIntegrityViolations(t *testing.T) {
 	tests := []struct {
 		name string
