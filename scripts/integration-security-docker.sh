@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-image="${FERRICSTORE_IMAGE:-quay.io/ferricstore/ferricstore:0.11.6@sha256:0d615217030ecfc3bb21109109d4dd23fd615b994d2e3b28e037692dce937fdf}"
+image="${FERRICSTORE_IMAGE:-quay.io/ferricstore/ferricstore:0.11.7@sha256:4e54e6846e168eb52deb24fb780edeb8c5bc94907812958cfd7ba048c657eedf}"
 suffix="$$-$RANDOM"
 bootstrap_name="ferricstore-go-security-bootstrap-$suffix"
 server_name="ferricstore-go-security-$suffix"
