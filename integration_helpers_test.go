@@ -4,6 +4,9 @@ package ferricstore
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -99,11 +102,53 @@ func TestIntegrationContextOutlivesIndependentProjectionWaits(t *testing.T) {
 }
 
 func integrationClient(codec Codec) *Client {
+	if rawURL := os.Getenv("FERRICSTORE_URL"); strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {
+		return newIntegrationHTTPTrackedClient(rawURL, codec)
+	}
 	return newIntegrationTrackedClient(integrationAddress(), codec)
 }
 
 func integrationDirectClient(codec Codec) *Client {
+	if rawURL := os.Getenv("FERRICSTORE_URL"); strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {
+		client, err := NewClientFromURL(rawURL, WithCodec(codec), WithHTTPOptions(integrationHTTPOptions()...))
+		if err != nil {
+			panic(fmt.Sprintf("create HTTP integration client: %v", err))
+		}
+		return client
+	}
 	return NewClient(integrationAddress(), WithCodec(codec))
+}
+
+func integrationHTTPOptions() []HTTPOption {
+	options := []HTTPOption{WithHTTP2(true)}
+	if password := os.Getenv("FERRICSTORE_PASSWORD"); password != "" {
+		options = append(options, WithHTTPBasicAuth(os.Getenv("FERRICSTORE_USERNAME"), password))
+	}
+	if path := os.Getenv("FERRICSTORE_CA_FILE"); path != "" {
+		certificate, err := os.ReadFile(path)
+		if err != nil {
+			panic(fmt.Sprintf("read HTTP integration CA: %v", err))
+		}
+		roots := x509.NewCertPool()
+		added := roots.AppendCertsFromPEM(certificate)
+		for remaining := certificate; !added; {
+			block, rest := pem.Decode(remaining)
+			if block == nil {
+				break
+			}
+			parsed, parseErr := x509.ParseCertificate(block.Bytes)
+			if parseErr == nil {
+				roots.AddCert(parsed)
+				added = true
+			}
+			remaining = rest
+		}
+		if !added {
+			panic("HTTP integration CA file has no certificates")
+		}
+		options = append(options, WithHTTPTLSConfig(&tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}))
+	}
+	return options
 }
 
 func integrationAddress() string {

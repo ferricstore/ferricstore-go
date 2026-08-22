@@ -109,6 +109,9 @@ func TestIntegrationFlowAttributesSchedulesAndGovernance(t *testing.T) {
 		},
 		NowMS: Int64(now),
 	}))
+	defer func() {
+		_ = client.ScheduleDelete(ctx, catchupScheduleID, ScheduleStatusOptions{NowMS: Int64(catchupRecovery + 1)})
+	}()
 	if createdCatchup.CatchupPolicy != "fire_once" {
 		t.Fatalf("created catch-up policy = %q", createdCatchup.CatchupPolicy)
 	}
