@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.11.9 - 2026-08-22
+
+- Add stateless HTTP and HTTPS transports behind the existing command, Flow,
+  and pipeline APIs while retaining native TCP as the default.
+- Reuse HTTP/1.1 connections, negotiate and multiplex HTTP/2 over TLS, preserve
+  caller headers across redirects, and bound batches, bodies, responses, and
+  whole-request deadlines.
+- Encode typed Flow commands through transport-neutral native descriptors,
+  reject connection-affine operations locally, and cover the exact 67-command
+  Flow surface against FerricStore HTTP and OSS 0.11.9.
+- Preserve the FerricStore 0.11.4 native compatibility floor and native wire
+  protocol v1.
+
 ## 0.11.7 - 2026-08-22
 
 - Validate the unchanged native protocol v1 and FerricStore 0.11.4

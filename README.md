@@ -25,7 +25,7 @@ Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want 
 
 ## Compatibility
 
-Go SDK 0.11.7 requires FerricStore 0.11.4 or newer. With FerricStore 0.11.8 it
+Go SDK 0.11.9 requires FerricStore 0.11.4 or newer. With FerricStore 0.11.8 it
 negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches,
 compact Pub/Sub mode 35 for homogeneous `PUBLISH` batches, and ordered
 `pubsub_batch_v1` receive expansion. The native wire protocol and generic
