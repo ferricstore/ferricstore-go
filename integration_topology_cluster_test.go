@@ -92,12 +92,7 @@ func TestIntegrationClusterTopologyRoutingAndFailover(t *testing.T) {
 
 	topology := newClusterTopology(t, CrossShardWriteReject)
 	defer topology.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := topology.RefreshTopology(ctx); err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	cancel()
+	waitForCluster(t, 10*time.Second, topology.RefreshTopology)
 	keys := clusterKeysByShard(t, topology, 3)
 
 	for _, target := range []struct {
@@ -158,9 +153,7 @@ func TestIntegrationClusterTopologyRoutingAndFailover(t *testing.T) {
 
 	partial := newClusterTopology(t, CrossShardWritePerShard)
 	defer partial.Close()
-	if err := partial.RefreshTopology(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	waitForCluster(t, 10*time.Second, partial.RefreshTopology)
 	partialClient := NewClientWithExecutor(partial, WithCodec(StringCodec{}))
 	for shard := 0; shard < 3; shard++ {
 		if err := partialClient.KV().Set(context.Background(), keys[shard], "before-pause"); err != nil {
@@ -173,7 +166,7 @@ func TestIntegrationClusterTopologyRoutingAndFailover(t *testing.T) {
 		t.Fatal("FERRICSTORE_CLUSTER_FAILURE_CONTAINER is required")
 	}
 	runDockerClusterCommand(t, 10*time.Second, "pause", container)
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	deleted, err := partialClient.Delete(ctx, keys[2], keys[1])
 	cancel()
 	var partialErr *TopologyPartialWriteError

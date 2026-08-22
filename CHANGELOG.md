@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.11.10 - 2026-08-23
+
+- Reject native control and event-subscription commands over stateless HTTP,
+  including cluster-mode, monitor, replication-stream, sharded Pub/Sub, and
+  connection-affine commands wrapped by `CommandExec`.
+- Preserve `CommandExec` request context through the HTTP structured envelope,
+  bound pointer indirection and pre-allocation item counts, distinguish caller
+  cancellation from retryable transport failures, and parse both forms of the
+  standard `Retry-After` header.
+- Keep blocking list and stream reads available as long-lived HTTP requests and
+  preserve their native timeout-budget semantics.
+- Redact malformed HTTP URLs, validate TCP port ranges, and restore a clean
+  lint gate for HTTP response cleanup.
+- Add HTTP envelope fuzz coverage and allocation/runtime benchmark gates for
+  100-command encode/decode paths.
+- Drain a final buffered TCP Pub/Sub event before reconnect/replay so an event
+  immediately followed by EOF cannot be stranded behind a new handshake.
+- Validate the current native integration surface against the immutable
+  FerricStore 0.11.10 multi-architecture image while retaining FerricStore
+  0.11.4 as the minimum supported native server and native wire protocol v1.
+
 ## 0.11.9 - 2026-08-22
 
 - Add stateless HTTP and HTTPS transports behind the existing command, Flow,

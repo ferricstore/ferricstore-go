@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -161,11 +160,8 @@ func NewClient(addr string, opts ...ClientOption) *Client {
 }
 
 func NewClientFromURL(rawurl string, opts ...ClientOption) (*Client, error) {
-	parsed, err := url.Parse(rawurl)
-	if err != nil {
-		return nil, fmt.Errorf("parse FerricStore URL: %w", err)
-	}
-	switch strings.ToLower(parsed.Scheme) {
+	scheme, _, _ := strings.Cut(rawurl, ":")
+	switch strings.ToLower(scheme) {
 	case "http", "https":
 		exec, err := NewHTTPExecutorFromURL(rawurl)
 		if err != nil {

@@ -11,6 +11,8 @@ type integrationHTTPTrackingExecutor struct {
 	inner *HTTPExecutor
 }
 
+func (*integrationHTTPTrackingExecutor) supportsNativeRequestContextArguments() {}
+
 func (e *integrationHTTPTrackingExecutor) Do(ctx context.Context, args ...any) (any, error) {
 	value, err := e.inner.Do(ctx, args...)
 	if err == nil {

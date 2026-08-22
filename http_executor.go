@@ -140,6 +140,8 @@ func (e *HTTPExecutor) Pipeline(ctx context.Context, commands [][]any) ([]any, e
 	return pipelineResultValues(results)
 }
 
+func (*HTTPExecutor) supportsNativeRequestContextArguments() {}
+
 func (e *HTTPExecutor) pipelineDetailed(
 	ctx context.Context,
 	commands [][]any,
@@ -179,9 +181,13 @@ func (e *HTTPExecutor) executeBatch(
 		)}
 	}
 	encoded := make([]any, len(commands))
+	encodeState := newHTTPEncodeState(options.MaxRequestBytes)
 	for index, command := range commands {
-		encoded[index], err = encodeHTTPCommand(command)
+		encoded[index], err = encodeHTTPCommandWithState(command, encodeState)
 		if err != nil {
+			if errors.Is(err, errHTTPRequestEncodingBudget) {
+				return nil, &HTTPError{Code: "request_too_large", Message: "FerricStore HTTP request exceeds max request bytes"}
+			}
 			return nil, err
 		}
 	}
@@ -192,7 +198,11 @@ func (e *HTTPExecutor) executeBatch(
 	if int64(len(body)) > options.MaxRequestBytes {
 		return nil, &HTTPError{Code: "request_too_large", Message: "FerricStore HTTP request exceeds max request bytes"}
 	}
-	requestContext, cancel := context.WithTimeout(ctx, options.Timeout)
+	effectiveTimeout := nativeEffectiveTimeout(options.Timeout, pipelineBlockingBudget(commands))
+	requestContext, cancel := context.WithCancel(ctx)
+	if effectiveTimeout > 0 {
+		requestContext, cancel = context.WithTimeout(ctx, effectiveTimeout)
+	}
 	defer cancel()
 	request, err := http.NewRequestWithContext(
 		requestContext, http.MethodPost, e.baseURL+"/v1/commands", bytes.NewReader(body),
@@ -205,13 +215,12 @@ func (e *HTTPExecutor) executeBatch(
 	request.Header.Set("Accept", "application/json")
 	response, err := client.Do(request)
 	if err != nil {
-		code := "transport_error"
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(requestContext.Err(), context.DeadlineExceeded) {
-			code = "transport_timeout"
+		code, retryable := classifyHTTPTransportError(err, requestContext.Err())
+		return nil, &HTTPError{
+			Code: code, Message: "FerricStore HTTP request failed", Retryable: retryable, Cause: err,
 		}
-		return nil, &HTTPError{Code: code, Message: "FerricStore HTTP request failed", Retryable: true, Cause: err}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	decoded, err := readHTTPResponse(response, options.MaxResponseBytes, requestContext)
 	if err != nil {
 		if response.StatusCode != http.StatusOK {
@@ -257,13 +266,10 @@ func readHTTPResponse(response *http.Response, limit int64, ctx context.Context)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		code := "transport_error"
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			code = "transport_timeout"
-		}
+		code, retryable := classifyHTTPTransportError(err, ctx.Err())
 		return nil, &HTTPError{
 			StatusCode: response.StatusCode, Code: code,
-			Message: "FerricStore HTTP response read failed", Retryable: true, Cause: err,
+			Message: "FerricStore HTTP response read failed", Retryable: retryable, Cause: err,
 		}
 	}
 	if int64(len(body)) > limit {
@@ -323,11 +329,34 @@ func topLevelHTTPError(response *http.Response, envelope map[string]any) error {
 	details, _ := envelope["error"].(map[string]any)
 	errorValue := newHTTPError(response.StatusCode, details, "http_"+strconv.Itoa(response.StatusCode))
 	if errorValue.RetryAfterMS == 0 {
-		if seconds, err := strconv.ParseInt(response.Header.Get("Retry-After"), 10, 64); err == nil && seconds > 0 {
-			errorValue.RetryAfterMS = seconds * 1000
-		}
+		errorValue.RetryAfterMS = parseHTTPRetryAfter(response.Header.Get("Retry-After"), time.Now())
 	}
 	return errorValue
+}
+
+func classifyHTTPTransportError(err, contextErr error) (string, bool) {
+	switch {
+	case errors.Is(err, context.Canceled) || errors.Is(contextErr, context.Canceled):
+		return "transport_canceled", false
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(contextErr, context.DeadlineExceeded):
+		return "transport_timeout", true
+	default:
+		return "transport_error", true
+	}
+}
+
+func parseHTTPRetryAfter(value string, now time.Time) int64 {
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		if seconds > (1<<63-1)/1_000 {
+			return 1<<63 - 1
+		}
+		return seconds * 1_000
+	}
+	date, err := http.ParseTime(value)
+	if err != nil || !date.After(now) {
+		return 0
+	}
+	return date.Sub(now).Milliseconds()
 }
 
 func newHTTPError(status int, details map[string]any, fallbackCode string) *HTTPError {
@@ -400,7 +429,9 @@ func preserveHTTPRedirectHeaders(request *http.Request, via []*http.Request) err
 func parseHTTPBaseURL(rawURL string) (string, bool, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return "", false, fmt.Errorf("parse FerricStore HTTP URL: %w", err)
+		// net/url includes the complete input in parse errors. HTTP URLs may
+		// contain mistakenly embedded credentials, so do not disclose it.
+		return "", false, errors.New("invalid FerricStore HTTP URL")
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {
@@ -408,6 +439,15 @@ func parseHTTPBaseURL(rawURL string) (string, bool, error) {
 	}
 	if parsed.Hostname() == "" {
 		return "", false, errors.New("FerricStore HTTP URL must include a host")
+	}
+	rawPort := parsed.Port()
+	if rawPort != "" {
+		port, portErr := strconv.Atoi(rawPort)
+		if portErr != nil || port < 1 || port > 65_535 {
+			return "", false, errors.New("FerricStore HTTP URL port is outside the TCP port range")
+		}
+	} else if strings.HasSuffix(parsed.Host, ":") {
+		return "", false, errors.New("FerricStore HTTP URL has an empty port")
 	}
 	if parsed.User != nil {
 		return "", false, errors.New("FerricStore HTTP credentials must use explicit options, not URL user info")
