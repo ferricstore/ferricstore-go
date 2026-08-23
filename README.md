@@ -20,14 +20,14 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned tested image, `quay.io/ferricstore/ferricstore:0.11.10`, by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned tested FerricStore 0.11.11 image by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
-Go SDK 0.11.10 requires FerricStore 0.11.4 or newer for native TCP. The HTTP
-transport requires the stateless gateway shipped by FerricStore OSS 0.11.10 and
-ferricstore-http 0.1.1 or newer. With FerricStore 0.11.10 the native transport
+Go SDK 0.11.11 requires FerricStore 0.11.4 or newer for native TCP. The HTTP
+transport requires the stateless gateway shipped by FerricStore OSS 0.11.11 or
+newer. With FerricStore 0.11.11 the native transport
 negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches,
 compact Pub/Sub mode 35 for homogeneous `PUBLISH` batches, and ordered
 `pubsub_batch_v1` receive expansion. The native wire protocol and generic
@@ -97,6 +97,20 @@ are retained, including across origins. Only enable redirects to endpoints you
 trust, or supply a custom `http.Client` with a stricter `CheckRedirect` policy.
 
 Avoid putting production passwords in URLs because URLs are commonly copied into logs, shell history, and process metadata.
+
+To run the complete HTTP-compatible integration surface against a real TLS
+listener with ACL authentication, use:
+
+```bash
+FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.11@sha256:d9f488539f0d6c1a513d2315e7a9c2947cc795b393f3774c9de8ba5e5b5c21b5 \
+  ./scripts/integration-http-tls.sh
+```
+
+The runner creates a private test CA, verifies that unauthenticated access and
+a restricted user's forbidden `SET` are rejected, and configures
+`FERRICSTORE_USERNAME`, `FERRICSTORE_PASSWORD`, and `FERRICSTORE_CA_FILE` for
+the SDK. Connection-affine transaction, subscription, and reconnect scenarios
+remain in the native integration suite.
 
 Default client behavior matches the Python SDK:
 

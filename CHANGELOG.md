@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.11.11 - 2026-08-23
+
+- Run the complete HTTP-compatible integration surface against an authenticated
+  TLS listener in pull-request and release gates, with architecture contracts
+  that preserve the stateless/native transport boundary and catalog coverage
+  for every command classified as HTTP-supported.
+- Decode structured `FLOW.QUERY` diagnostics returned by the HTTP gateway with
+  the same validated error types and retry metadata as native TCP.
+- Reject direct and `COMMAND_EXEC`-wrapped `FETCH_OR_COMPUTE*` commands locally
+  because their ownership lifecycle requires a persistent native session.
+- Serialize canonical native URLs through `net/url` so escaped host bytes and
+  IPv6 zone identifiers remain valid and round-trip safely.
+- Document the reproducible HTTPS integration runner, keep its temporary TLS
+  directory owner-only, and delete the CA key before the container starts.
+- Keep example failure output operation-specific and value-free so configured
+  credentials and untrusted server responses cannot reach application logs.
+
 ## 0.11.10 - 2026-08-23
 
 - Reject native control and event-subscription commands over stateless HTTP,

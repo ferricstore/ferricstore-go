@@ -8,6 +8,9 @@ import (
 )
 
 func TestIntegrationNativePubSubAndFlowWakeEvents(t *testing.T) {
+	if integrationUsesHTTP() {
+		t.Skip("Pub/Sub and Flow wake subscriptions require a persistent native session")
+	}
 	ctx, cancel := integrationContext(t)
 	defer cancel()
 

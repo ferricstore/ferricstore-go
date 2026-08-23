@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"os"
 
 	ferricstore "github.com/ferricstore/ferricstore-go"
 )
@@ -21,7 +21,8 @@ func main() {
 		Idempotent:   ferricstore.Bool(true),
 	})
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "flow creation failed")
+		os.Exit(1)
 	}
 
 	jobs, err := client.ClaimDue(ctx, ferricstore.ClaimDueOptions{
@@ -32,7 +33,8 @@ func main() {
 		Limit:        1,
 	})
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "claim failed")
+		os.Exit(1)
 	}
 	if len(jobs) == 0 {
 		fmt.Println("no due report jobs")
@@ -54,7 +56,8 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "child creation failed")
+		os.Exit(1)
 	}
 	fmt.Println("spawned report children")
 }

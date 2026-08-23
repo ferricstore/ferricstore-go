@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"os"
 
 	ferricstore "github.com/ferricstore/ferricstore-go"
 )
@@ -18,15 +18,18 @@ func main() {
 		TTLMS:        ferricstore.Int64(3600000),
 	})
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "value write failed")
+		os.Exit(1)
 	}
 	fields, ok := put.(map[string]any)
 	if !ok {
-		log.Fatalf("unexpected FLOW.VALUE.PUT response %T", put)
+		fmt.Fprintln(os.Stderr, "value write returned an unexpected response")
+		os.Exit(1)
 	}
 	ref, ok := fields["ref"].(string)
 	if !ok || ref == "" {
-		log.Fatalf("FLOW.VALUE.PUT response has no ref: %#v", fields)
+		fmt.Fprintln(os.Stderr, "value write response has no reference")
+		os.Exit(1)
 	}
 
 	_, err = client.Create(ctx, ferricstore.CreateOptions{
@@ -38,12 +41,14 @@ func main() {
 		Idempotent:   ferricstore.Bool(true),
 	})
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "flow creation failed")
+		os.Exit(1)
 	}
 
 	values, err := client.ValueMGet(ctx, []string{ref}, nil)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "value read failed")
+		os.Exit(1)
 	}
 	fmt.Printf("value refs=%v\n", values)
 }

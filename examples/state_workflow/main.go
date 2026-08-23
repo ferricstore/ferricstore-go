@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"os"
 
 	ferricstore "github.com/ferricstore/ferricstore-go"
 )
@@ -28,7 +28,8 @@ func main() {
 		Idempotent:   ferricstore.Bool(true),
 	})
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "workflow start failed")
+		os.Exit(1)
 	}
 
 	worker := orders.Worker("order-worker-1", nil, ferricstore.WorkerOptions{
@@ -37,7 +38,8 @@ func main() {
 	})
 	result, err := worker.RunOnce(ctx)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "workflow worker failed")
+		os.Exit(1)
 	}
 	fmt.Printf("claimed=%d applied=%d\n", result.Claimed, result.Applied)
 }
