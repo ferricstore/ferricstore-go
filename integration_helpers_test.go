@@ -102,14 +102,16 @@ func TestIntegrationContextOutlivesIndependentProjectionWaits(t *testing.T) {
 }
 
 func integrationClient(codec Codec) *Client {
-	if rawURL := os.Getenv("FERRICSTORE_URL"); strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {
+	if integrationUsesHTTP() {
+		rawURL := os.Getenv("FERRICSTORE_URL")
 		return newIntegrationHTTPTrackedClient(rawURL, codec)
 	}
 	return newIntegrationTrackedClient(integrationAddress(), codec)
 }
 
 func integrationDirectClient(codec Codec) *Client {
-	if rawURL := os.Getenv("FERRICSTORE_URL"); strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {
+	if integrationUsesHTTP() {
+		rawURL := os.Getenv("FERRICSTORE_URL")
 		client, err := NewClientFromURL(rawURL, WithCodec(codec), WithHTTPOptions(integrationHTTPOptions()...))
 		if err != nil {
 			panic(fmt.Sprintf("create HTTP integration client: %v", err))
@@ -117,6 +119,11 @@ func integrationDirectClient(codec Codec) *Client {
 		return client
 	}
 	return NewClient(integrationAddress(), WithCodec(codec))
+}
+
+func integrationUsesHTTP() bool {
+	rawURL := os.Getenv("FERRICSTORE_URL")
+	return strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://")
 }
 
 func integrationHTTPOptions() []HTTPOption {

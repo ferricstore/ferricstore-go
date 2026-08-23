@@ -434,7 +434,7 @@ func missingIntegrationCommands() []string {
 	defer integrationCommandCoverage.Unlock()
 
 	return missingIntegrationCommandsFrom(
-		expectedIntegrationCommands(),
+		expectedIntegrationCommandsForTransport(integrationUsesHTTP()),
 		integrationCommandCoverage.seen,
 		integrationCommandCoverage.skipped,
 		strictIntegrationCommandCoverage(),

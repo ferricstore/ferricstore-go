@@ -44,7 +44,8 @@ func (s *httpEncodeState) require(count int) error {
 
 var httpConnectionAffineCommands = map[string]struct{}{
 	"ASKING": {}, "AUTH": {}, "BACKPRESSURE": {}, "CLIENT": {}, "CLIENT.INFO": {}, "CLIENT.SETNAME": {},
-	"DISCARD": {}, "EVENT": {}, "EXEC": {}, "GOAWAY": {}, "HELLO": {}, "MONITOR": {}, "MULTI": {},
+	"DISCARD": {}, "EVENT": {}, "EXEC": {}, "FETCH_OR_COMPUTE": {}, "FETCH_OR_COMPUTE_ERROR": {},
+	"FETCH_OR_COMPUTE_RESULT": {}, "GOAWAY": {}, "HELLO": {}, "MONITOR": {}, "MULTI": {},
 	"OPTIONS": {}, "PIPELINE": {}, "PSUBSCRIBE": {}, "PSYNC": {}, "PUNSUBSCRIBE": {}, "QUIT": {},
 	"READONLY": {}, "READWRITE": {}, "REPLCONF": {}, "RESET": {}, "ROUTE": {}, "ROUTE_BATCH": {},
 	"SANDBOX": {}, "SELECT": {}, "SHARDS": {}, "SSUBSCRIBE": {}, "STARTUP": {}, "SUBSCRIBE": {},

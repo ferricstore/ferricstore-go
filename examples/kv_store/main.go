@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"os"
 
 	ferricstore "github.com/ferricstore/ferricstore-go"
 )
@@ -14,16 +14,19 @@ func main() {
 	defer func() { _ = client.Close() }()
 
 	if err := client.KV().Set(ctx, "tenant:1:profile", map[string]any{"plan": "pro"}); err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "profile write failed")
+		os.Exit(1)
 	}
 	profile, err := client.KV().Get(ctx, "tenant:1:profile")
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "profile read failed")
+		os.Exit(1)
 	}
 
 	_, err = client.Hash().Set(ctx, "tenant:1:stats", "orders", 12)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "stats write failed")
+		os.Exit(1)
 	}
 
 	fmt.Printf("profile=%v\n", profile)

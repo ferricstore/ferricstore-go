@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,9 @@ import (
 )
 
 func TestIntegrationExplicitAndWatchedTransactions(t *testing.T) {
+	if integrationUsesHTTP() {
+		t.Skip("transactions and WATCH require a connection-affine native session")
+	}
 	ctx, cancel := integrationContext(t)
 	defer cancel()
 
@@ -99,11 +103,20 @@ func TestIntegrationBufferedAndAutoBatchExecution(t *testing.T) {
 		t.Fatalf("buffered flush = %#v", results)
 	}
 
-	auto := NewAutoBatchClient(
-		integrationAddress(),
-		AutoBatchOptions{MaxSize: 8, FlushInterval: time.Millisecond, QueueSize: 64},
-		WithCodec(StringCodec{}),
-	)
+	batchOptions := AutoBatchOptions{MaxSize: 8, FlushInterval: time.Millisecond, QueueSize: 64}
+	var auto *Client
+	if integrationUsesHTTP() {
+		var err error
+		auto, err = NewAutoBatchClientFromURL(
+			os.Getenv("FERRICSTORE_URL"), batchOptions,
+			WithCodec(StringCodec{}), WithHTTPOptions(integrationHTTPOptions()...),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		auto = NewAutoBatchClient(integrationAddress(), batchOptions, WithCodec(StringCodec{}))
+	}
 	defer auto.Close()
 	const commands = 32
 	errs := make(chan error, commands)
@@ -145,44 +158,49 @@ func TestIntegrationReconnectAndBlockingCancellation(t *testing.T) {
 	ctx, cancel := integrationContext(t)
 	defer cancel()
 
-	exec := NewNativeExecutor(
-		integrationAddress(),
-		WithNativeReconnect(1),
-		WithNativeHeartbeat(0, 0),
-		WithNativeGoAwayDrainTimeout(time.Second),
-	)
-	client := NewClientWithExecutor(exec, WithCodec(StringCodec{}))
-	client.closer = exec.Close
-	defer client.Close()
+	var client *Client
+	if integrationUsesHTTP() {
+		client = integrationClient(StringCodec{})
+	} else {
+		exec := NewNativeExecutor(
+			integrationAddress(),
+			WithNativeReconnect(1),
+			WithNativeHeartbeat(0, 0),
+			WithNativeGoAwayDrainTimeout(time.Second),
+		)
+		client = NewClientWithExecutor(exec, WithCodec(StringCodec{}))
+		client.closer = exec.Close
 
-	if _, err := client.Ping(ctx); err != nil {
-		t.Fatal(err)
-	}
-	exec.mu.Lock()
-	conn := exec.conn
-	exec.mu.Unlock()
-	if conn == nil {
-		t.Fatal("native client did not establish a connection")
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+		if _, err := client.Ping(ctx); err != nil {
+			t.Fatal(err)
+		}
 		exec.mu.Lock()
-		closed := exec.conn == nil
+		conn := exec.conn
 		exec.mu.Unlock()
-		if closed {
-			break
+		if conn == nil {
+			t.Fatal("native client did not establish a connection")
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("reader did not observe forced socket closure")
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(time.Millisecond)
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			exec.mu.Lock()
+			closed := exec.conn == nil
+			exec.mu.Unlock()
+			if closed {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("reader did not observe forced socket closure")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if pong, err := client.Ping(ctx); err != nil || pong != "PONG" {
+			t.Fatalf("PING after reconnect = %q, %v", pong, err)
+		}
 	}
-	if pong, err := client.Ping(ctx); err != nil || pong != "PONG" {
-		t.Fatalf("PING after reconnect = %q, %v", pong, err)
-	}
+	defer client.Close()
 
 	blockingKey := "go-sdk:blocking:" + integrationSuffix("cancel")
 	requestCtx, cancelRequest := context.WithTimeout(ctx, 100*time.Millisecond)

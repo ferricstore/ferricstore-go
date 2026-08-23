@@ -98,7 +98,7 @@ jobs:
           - server-version: "0.11.4"
             image: ghcr.io/ferricstore/ferricstore:0.11.4@sha256:ee49d39e3b15cd6298537a88818647e71bcfc7571921e88bcf3a201311c690fc
           - server-version: "0.11.10"
-            image: quay.io/ferricstore/ferricstore:0.11.10@sha256:3af390b7429ea3fea2983938eb7adcdd3e8005d06c67473f769f29ebd48e8ab3
+            image: quay.io/ferricstore/ferricstore:0.11.11@sha256:d9f488539f0d6c1a513d2315e7a9c2947cc795b393f3774c9de8ba5e5b5c21b5
     env:
       FERRICSTORE_IMAGE: ${{ matrix.image }}
     steps:
@@ -113,3 +113,16 @@ jobs:
         run: ./scripts/integration-security-docker.sh
       - name: Run multi-node routing and failover tests
         run: ./scripts/integration-cluster-docker.sh
+
+  http-integration:
+    name: TLS HTTP integration
+    runs-on: ubuntu-latest
+    env:
+      FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.11.11@sha256:d9f488539f0d6c1a513d2315e7a9c2947cc795b393f3774c9de8ba5e5b5c21b5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+      - run: ./scripts/integration-http-tls.sh
