@@ -97,8 +97,8 @@ jobs:
         include:
           - server-version: "0.11.4"
             image: ghcr.io/ferricstore/ferricstore:0.11.4@sha256:ee49d39e3b15cd6298537a88818647e71bcfc7571921e88bcf3a201311c690fc
-          - server-version: "0.11.10"
-            image: quay.io/ferricstore/ferricstore:0.11.11@sha256:d9f488539f0d6c1a513d2315e7a9c2947cc795b393f3774c9de8ba5e5b5c21b5
+          - server-version: "0.11.14"
+            image: quay.io/ferricstore/ferricstore:0.11.14@sha256:f7d29befefa15bce4b3755bf786cf7620c814f13bbd336c0d9955581b323b60e
     env:
       FERRICSTORE_IMAGE: ${{ matrix.image }}
     steps:
@@ -118,7 +118,7 @@ jobs:
     name: TLS HTTP integration
     runs-on: ubuntu-latest
     env:
-      FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.11.11@sha256:d9f488539f0d6c1a513d2315e7a9c2947cc795b393f3774c9de8ba5e5b5c21b5
+      FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.11.14@sha256:f7d29befefa15bce4b3755bf786cf7620c814f13bbd336c0d9955581b323b60e
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
