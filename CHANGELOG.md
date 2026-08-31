@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.12.0 - 2026-08-31
+
+- Add chainable `Client.Advance` and durable named `Client.Step` operations that
+  infer workflow identity, logical state, lease, and fencing data from the
+  claimed item and return a refreshed claim.
+- Add workflow-context durable operations and replay-aware applied outcomes so
+  handlers can release refreshed claims without pinning workers or issuing a
+  second transition after a committed step.
+- Fail closed on stale or inactive claims, malformed result references,
+  missing committed values, incomplete responses, and uncertain mutation
+  outcomes while preserving codec-consistent first-run and replay results.
+- Cover real worker takeover, stale-writer fencing, external idempotency,
+  response-loss recovery, waiting/signal continuation, and mixed batches over
+  native TCP, authenticated TLS HTTP/1.1, and HTTP/2.
+- Deprecate low-level `StepContinue` in favor of `Advance` for state changes or
+  `Step` for durable closures.
+
 ## 0.11.11 - 2026-08-23
 
 - Run the complete HTTP-compatible integration surface against an authenticated

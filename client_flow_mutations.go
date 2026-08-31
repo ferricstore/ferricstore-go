@@ -49,6 +49,10 @@ func (c *Client) Transition(ctx context.Context, opt TransitionOptions) (*FlowRe
 	return c.recordOrGet(ctx, record, err, opt.ID, opt.PartitionKey)
 }
 
+// StepContinue is the low-level transition primitive.
+//
+// Deprecated: use Advance for state-only transitions or Step for durable
+// closure execution.
 func (c *Client) StepContinue(ctx context.Context, opt StepContinueOptions) (*FlowRecord, error) {
 	if err := validateStepContinueOptions(opt); err != nil {
 		return nil, err

@@ -8,6 +8,7 @@ username="sdk-http"
 password="sdk-http-secret"
 denied_username="sdk-http-denied"
 denied_password="sdk-http-denied-secret"
+sdk_http2="${FERRICSTORE_TEST_HTTP2:-true}"
 
 cleanup() {
   status=$?
@@ -73,4 +74,4 @@ authenticated="$(curl --silent --show-error --output /dev/null --write-out '%{ht
   exit 1
 }
 
-env FERRICSTORE_URL="https://127.0.0.1:$port" FERRICSTORE_USERNAME="$username" FERRICSTORE_PASSWORD="$password" FERRICSTORE_CA_FILE="$tls_dir/ca.pem" FERRICSTORE_HTTP2=true go test -tags integration ./...
+env FERRICSTORE_URL="https://127.0.0.1:$port" FERRICSTORE_USERNAME="$username" FERRICSTORE_PASSWORD="$password" FERRICSTORE_CA_FILE="$tls_dir/ca.pem" FERRICSTORE_HTTP2="$sdk_http2" go test -tags integration ./...
