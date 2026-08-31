@@ -13,10 +13,10 @@ jobs:
     name: Quality and Compatibility
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.6"
           cache: true
@@ -46,8 +46,8 @@ jobs:
     name: Vulnerability Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.6"
           cache: true
@@ -60,8 +60,8 @@ jobs:
     env:
       FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.11.14@sha256:f7d29befefa15bce4b3755bf786cf7620c814f13bbd336c0d9955581b323b60e
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.6"
           cache: true
@@ -77,10 +77,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.6"
           cache: true
