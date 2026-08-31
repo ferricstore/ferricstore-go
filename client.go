@@ -15,6 +15,25 @@ type Executor interface {
 	Do(ctx context.Context, args ...any) (any, error)
 }
 
+// commandNotSentError marks a local command failure that happened before any
+// request bytes were written. Mutation callers can safely distinguish it from
+// a transport failure whose application outcome is unknown.
+type commandNotSentError struct{ cause error }
+
+func (e *commandNotSentError) Error() string { return e.cause.Error() }
+func (e *commandNotSentError) Unwrap() error { return e.cause }
+
+func markCommandNotSent(err error) error {
+	if err == nil {
+		return nil
+	}
+	var marked *commandNotSentError
+	if errors.As(err, &marked) {
+		return err
+	}
+	return &commandNotSentError{cause: err}
+}
+
 var errClientExecutorRequired = errors.New("ferricstore client requires an executor")
 
 type missingClientExecutor struct{}

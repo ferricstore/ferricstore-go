@@ -395,7 +395,7 @@ func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID
 	// most one writing body plus one encoded waiter without giving up encode/I/O
 	// overlap.
 	if err := e.writeEncodeMu.LockContext(ctx); err != nil {
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	if preencoded, ok := payload.(nativePreencodedPayload); ok {
 		body = preencoded.body
@@ -407,36 +407,39 @@ func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID
 			body, err = raw.encodeNativeCustomPayload(maxFrameBytes)
 			if err != nil {
 				e.writeEncodeMu.Unlock()
-				return nil, err
+				return nil, markCommandNotSent(err)
 			}
 		default:
 			e.writeEncodeMu.Unlock()
-			return nil, errors.New("ferricstore native custom payload must be raw bytes")
+			return nil, markCommandNotSent(errors.New("ferricstore native custom payload must be raw bytes"))
 		}
 	} else {
 		body, err = encodeNativeValueWithLimit(payload, maxFrameBytes)
 		if err != nil {
 			e.writeEncodeMu.Unlock()
-			return nil, err
+			return nil, markCommandNotSent(err)
 		}
 	}
 	if len(body) > math.MaxUint32 {
 		e.writeEncodeMu.Unlock()
-		return nil, errors.New("ferricstore native request body is too large")
+		return nil, markCommandNotSent(errors.New("ferricstore native request body is too large"))
 	}
 	if len(body) > maxFrameBytes {
 		e.writeEncodeMu.Unlock()
-		return nil, fmt.Errorf("ferricstore native request body exceeds server-advertised %d-byte frame limit", maxFrameBytes)
+		return nil, markCommandNotSent(fmt.Errorf(
+			"ferricstore native request body exceeds server-advertised %d-byte frame limit",
+			maxFrameBytes,
+		))
 	}
 
 	if err := e.writeMu.LockContext(ctx); err != nil {
 		e.writeEncodeMu.Unlock()
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	e.writeEncodeMu.Unlock()
 	defer e.writeMu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	e.mu.Lock()
 	conn := e.conn
@@ -444,10 +447,10 @@ func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID
 	draining := e.goAway && conn == expected
 	e.mu.Unlock()
 	if conn == nil || writer == nil || conn != expected {
-		return conn, fmt.Errorf("%w: %w", errNativeConnectionUnavailable, net.ErrClosed)
+		return conn, markCommandNotSent(fmt.Errorf("%w: %w", errNativeConnectionUnavailable, net.ErrClosed))
 	}
 	if draining {
-		return conn, errNativeGoAway
+		return conn, markCommandNotSent(errNativeGoAway)
 	}
 	deadline, hasDeadline := ctx.Deadline()
 	if e.opts.Timeout > 0 {

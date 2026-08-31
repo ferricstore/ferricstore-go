@@ -226,6 +226,10 @@ func (e *NativeExecutor) requestOnceOnConnection(ctx context.Context, opcode uin
 		if errors.Is(err, errNativeGoAway) {
 			return nil, err, true
 		}
+		var notSent *commandNotSentError
+		if errors.As(err, &notSent) {
+			return nil, err, errors.Is(err, errNativeConnectionUnavailable)
+		}
 		if conn != nil {
 			e.closeConnAndFailPendingIfCurrent(conn, err)
 		}

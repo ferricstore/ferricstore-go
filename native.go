@@ -234,14 +234,17 @@ func (e *NativeExecutor) DroppedEvents() uint64 {
 
 func (e *NativeExecutor) command(ctx context.Context, args ...any) (any, error) {
 	if name, stateful := connectionStateCommand(args); stateful {
-		return nil, fmt.Errorf("%s requires a connection-affine Client transaction helper", name)
+		return nil, markCommandNotSent(fmt.Errorf("%s requires a connection-affine Client transaction helper", name))
 	}
 	if name, mutates := connectionStateMutationCommand(args); mutates && name != "CLIENT.SETNAME" && name != "WINDOW_UPDATE" {
-		return nil, fmt.Errorf("%s is connection-local; configure it with NativeOptions or a dedicated helper", name)
+		return nil, markCommandNotSent(fmt.Errorf(
+			"%s is connection-local; configure it with NativeOptions or a dedicated helper",
+			name,
+		))
 	}
 	command, err := buildNativeCommand(args)
 	if err != nil {
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	if command.laneID != 0 {
 		command.laneID = nativeAutoLaneID
