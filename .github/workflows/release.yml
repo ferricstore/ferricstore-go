@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Semver tag to publish (for example v0.12.1)
+        description: Semver tag to publish (for example v0.12.2)
         required: true
         type: string
 
@@ -126,11 +126,11 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          for attempt in {1..60}; do
+          for attempt in {1..120}; do
             if GOPROXY=https://proxy.golang.org go list -m "github.com/ferricstore/ferricstore-go@${VERSION}"; then
               break
             fi
-            if [ "$attempt" -eq 60 ]; then
+            if [ "$attempt" -eq 120 ]; then
               echo "Go proxy did not resolve ${VERSION} after waiting for propagation" >&2
               exit 1
             fi

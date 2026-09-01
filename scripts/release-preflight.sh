@@ -33,11 +33,12 @@ fi
 if [[ "${FERRICSTORE_SKIP_PROXY_CHECK:-0}" != "1" ]]; then
   response_file="$(mktemp)"
   trap 'rm -f "$response_file"' EXIT
-  proxy_url="https://proxy.golang.org/github.com/ferricstore/ferricstore-go/@v/${version}.info"
+  proxy_url="https://proxy.golang.org/github.com/ferricstore/ferricstore-go/@v/list"
   proxy_status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' "$proxy_url")"
   case "$proxy_status" in
     200)
-      if [[ -z "$tag_sha" ]]; then
+      if grep --fixed-strings --line-regexp -- "$version" "$response_file" >/dev/null &&
+        [[ -z "$tag_sha" ]]; then
         echo "Go proxy already contains immutable version $version but origin has no matching tag" >&2
         exit 1
       fi
