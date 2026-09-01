@@ -51,9 +51,11 @@ with an immutable Go-proxy version. It rechecks immediately before publishing.
 A retry at the same version and commit resumes the release without creating or
 pushing a second tag.
 
-The workflow creates release notes after the module tag resolves through the
-public Go proxy. It repeats formatting, tidy, dependency verification, vet,
-unit, race, API compatibility, fuzz, stress/performance, vulnerability,
-released-server, security, and multi-node integration gates before publishing.
+The preflight checks the public Go proxy's version list without seeding a
+negative per-version cache. After tagging, the workflow resolves the immutable
+module directly through the proxy and then creates release notes. It repeats
+formatting, tidy, dependency verification, vet, unit, race, API compatibility,
+fuzz, stress/performance, vulnerability, released-server, security, and
+multi-node integration gates before publishing.
 
 After a release is visible through the Go proxy, update `.api-baseline` on `main` to that tag so the next release is checked against the newest public API.

@@ -38,6 +38,32 @@ func TestReleaseWorkflowGuardsVersionBeforePublishingTag(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowAvoidsNegativePerVersionProxyCacheBeforeTagging(t *testing.T) {
+	preflight, err := os.ReadFile("scripts/release-preflight.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(preflight), "/@v/list") {
+		t.Fatal("release preflight must inspect the proxy version list")
+	}
+	if strings.Contains(string(preflight), "${version}.info") {
+		t.Fatal("release preflight must not seed a negative per-version proxy cache before tagging")
+	}
+	if strings.Contains(string(workflow), "/@v/list") {
+		t.Fatal("post-tag release must resolve the new module directly instead of waiting for prior proxy knowledge")
+	}
+	publish := strings.Index(string(workflow), `git push origin "refs/tags/${VERSION}"`)
+	resolve := strings.Index(string(workflow), `GOPROXY=https://proxy.golang.org go list -m`)
+	if publish < 0 || resolve < 0 || publish >= resolve {
+		t.Fatal("the module may be resolved through the proxy only after its tag is published")
+	}
+}
+
 func TestReleaseInstructionsUseGuardedWorkflowInsteadOfManualTagPush(t *testing.T) {
 	contents, err := os.ReadFile("RELEASE.md")
 	if err != nil {
@@ -58,7 +84,7 @@ func TestDurableStepDocsDistinguishClientAndServerTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	docs := string(contents)
+	docs := strings.Join(strings.Fields(string(contents)), " ")
 	for _, text := range []string{
 		"client process wall clock",
 		"FerricStore evaluates the supplied `NOW`",
@@ -66,6 +92,26 @@ func TestDurableStepDocsDistinguishClientAndServerTime(t *testing.T) {
 	} {
 		if !strings.Contains(docs, text) {
 			t.Errorf("durable-step clock documentation is missing %q", text)
+		}
+	}
+}
+
+func TestDurableStepDocsCoverVersionMigrationAndWorkerRecovery(t *testing.T) {
+	contents, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := strings.Join(strings.Fields(string(contents)), " ")
+	for _, text := range []string{
+		"Go SDK 0.12.2 requires FerricStore 0.11.4",
+		"The step name is a stable replay identity",
+		"External providers still need a stable idempotency key",
+		"A waiting workflow does not occupy a worker",
+		"any available worker can claim a fresh lease",
+		"`StepContinue` remains available only as a deprecated low-level migration API",
+	} {
+		if !strings.Contains(docs, text) {
+			t.Errorf("durable-step documentation is missing %q", text)
 		}
 	}
 }

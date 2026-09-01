@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.12.2 - 2026-09-01
+
+- Keep the README SDK version aligned with the exported release version and
+  document durable-step migration plus waiting-workflow lease handoff.
+- Avoid seeding the Go proxy's negative per-version cache before a release tag
+  exists; resolve the immutable module only after publishing its tag.
+
 ## 0.12.1 - 2026-09-01
 
 - Classify HTTP 408, ambiguous gateway responses, unknown native statuses, and

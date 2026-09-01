@@ -25,7 +25,7 @@ Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want 
 
 ## Compatibility
 
-Go SDK 0.11.11 requires FerricStore 0.11.4 or newer for native TCP. The HTTP
+Go SDK 0.12.2 requires FerricStore 0.11.4 or newer for native TCP. The HTTP
 transport requires the stateless gateway shipped by FerricStore OSS 0.11.11 or
 newer. With FerricStore 0.11.14 the native transport
 negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches,
@@ -248,8 +248,14 @@ before the result reaches FerricStore.
 Inside a workflow handler, `WorkflowContext.Advance` and
 `WorkflowContext.Step` adopt the refreshed lease automatically. Return the
 new step's `AppliedOutcome`, or use `OutcomeOr` to make the replay branch
-explicit. A waiting transition releases the claim; timers, signals, and
-approvals therefore do not pin a worker while they wait.
+explicit. A waiting workflow does not occupy a worker: return a waiting
+transition so FerricStore persists the state and releases the claim. After a
+timer, signal, or approval makes it runnable, any available worker can claim a
+fresh lease and continue. If no worker is running, the workflow remains durable
+until one becomes available.
+
+`StepContinue` remains available only as a deprecated low-level migration API.
+Use `Advance` for a state-only change and `Step` for a journaled closure.
 
 `Advance` and the commit half of `Step` sample `NOW` from the client process wall clock.
 FerricStore evaluates the supplied `NOW` when it renews the lease;
