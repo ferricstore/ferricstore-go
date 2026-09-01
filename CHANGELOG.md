@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Classify HTTP 408, ambiguous gateway responses, unknown native statuses, and
+  transport response loss as uncertain durable mutations so workers never
+  apply a stale fallback write after a possible commit.
+- Expose `RequestDelivery` and `RequestDeliveryFailure` for custom executors,
+  while marking local validation, encoding, size, capacity, and closed-client
+  failures as not sent.
+- Make the release workflow validate the version and commit before publishing,
+  then resume same-commit retries without duplicating immutable tags or GitHub
+  releases.
+
 ## 0.12.0 - 2026-08-31
 
 - Add chainable `Client.Advance` and durable named `Client.Step` operations that

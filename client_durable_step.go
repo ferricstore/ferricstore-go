@@ -258,43 +258,12 @@ func newDurableMutationUncertain(operation string, cause error) error {
 }
 
 func durableMutationDefinitelyRejected(err error) bool {
-	var notSent *commandNotSentError
-	if errors.As(err, &notSent) {
-		return true
-	}
-	var nativeErr NativeError
-	if errors.As(err, &nativeErr) {
-		return true
-	}
-	var httpErr *HTTPError
-	if !errors.As(err, &httpErr) {
+	var delivery RequestDeliveryFailure
+	if !errors.As(err, &delivery) {
 		return false
 	}
-	if httpErr.StatusCode >= 500 {
-		return false
-	}
-	if httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 {
-		return true
-	}
-	if httpErr.StatusCode == 200 {
-		return httpErr.Code != "invalid_response" &&
-			httpErr.Code != "response_too_large" &&
-			httpErr.Code != "transport_error" &&
-			httpErr.Code != "transport_timeout" &&
-			httpErr.Code != "transport_canceled"
-	}
-	if httpErr.StatusCode != 0 {
-		return false
-	}
-	if httpErr.SafeToRetry {
-		return true
-	}
-	switch httpErr.Code {
-	case "closed", "request_too_large", "too_many_commands":
-		return true
-	default:
-		return false
-	}
+	return delivery.RequestDelivery() == RequestDeliveryNotSent ||
+		delivery.RequestDelivery() == RequestDeliveryRejected
 }
 
 func durableStepValueName(name string) string {

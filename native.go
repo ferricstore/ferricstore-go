@@ -38,7 +38,11 @@ const (
 		nativeFlagWarning | nativeFlagCompressed | nativeFlagMoreChunks
 	nativeStableChunkFlags = nativeFlagTrace | nativeFlagCustomPayload | nativeFlagWarning
 
-	nativeStatusOK = 0
+	nativeStatusOK         = 0
+	nativeStatusError      = 1
+	nativeStatusAuth       = 2
+	nativeStatusNoPerm     = 3
+	nativeStatusBadRequest = 6
 
 	nativeOpHello             = 0x0001
 	nativeOpAuth              = 0x0002

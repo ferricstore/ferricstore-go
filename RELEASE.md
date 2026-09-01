@@ -1,6 +1,7 @@
 # Release
 
-Go modules are released by pushing a semver tag.
+Go modules are released by the guarded `workflow_dispatch` release workflow.
+The workflow runs every gate before creating the public semver tag.
 
 ## Checklist
 
@@ -25,21 +26,34 @@ Go modules are released by pushing a semver tag.
    ```
 
 3. Confirm `git diff --check` is clean and `go mod tidy` did not change `go.mod` or `go.sum` unexpectedly.
-4. Commit the release changes.
-5. Tag:
+4. Commit and push the release changes to `main`.
+5. Check the intended version and target locally:
 
    ```bash
-   git tag v0.11.11
-   git push origin main --tags
+   VERSION=v0.12.1
+   ./scripts/release-preflight.sh "$VERSION" "$(git rev-parse origin/main)"
    ```
 
-6. Verify the module is available:
+6. Dispatch the release from `main` instead of pushing a tag manually:
 
    ```bash
-   GOPROXY=https://proxy.golang.org go list -m github.com/ferricstore/ferricstore-go@v0.11.11
+   gh workflow run release.yml --ref main -f version="$VERSION"
    ```
 
-The GitHub release workflow creates release notes for pushed `v*` tags.
-It repeats formatting, tidy, dependency verification, vet, unit, race, API compatibility, fuzz, stress/performance, vulnerability, released-server, security, and multi-node integration gates before publishing.
+7. Verify the module is available:
+
+   ```bash
+   GOPROXY=https://proxy.golang.org go list -m "github.com/ferricstore/ferricstore-go@${VERSION}"
+   ```
+
+The workflow refuses a version that targets a different commit or conflicts
+with an immutable Go-proxy version. It rechecks immediately before publishing.
+A retry at the same version and commit resumes the release without creating or
+pushing a second tag.
+
+The workflow creates release notes after the module tag resolves through the
+public Go proxy. It repeats formatting, tidy, dependency verification, vet,
+unit, race, API compatibility, fuzz, stress/performance, vulnerability,
+released-server, security, and multi-node integration gates before publishing.
 
 After a release is visible through the Go proxy, update `.api-baseline` on `main` to that tag so the next release is checked against the newest public API.

@@ -241,6 +241,65 @@ func TestHTTPCanceledContextIsNotReportedAsRetryable(t *testing.T) {
 	}
 }
 
+func TestHTTPLocalFailuresAreMarkedNotSentAndNeverReachRoundTripper(t *testing.T) {
+	var roundTrips atomic.Int32
+	client := &http.Client{Transport: httpRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		roundTrips.Add(1)
+		return testHTTPResponse(http.StatusOK, httpSuccessEnvelope("PONG")), nil
+	})}
+	executor, err := NewHTTPExecutorFromURL(
+		"http://example.com",
+		WithHTTPClient(client),
+		WithHTTPMaxRequestBytes(128),
+		WithHTTPMaxBatchCommands(1),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "already canceled", call: func() error { _, err := executor.Do(canceled, "PING"); return err }},
+		{name: "encoding", call: func() error { _, err := executor.Do(context.Background(), "SET", "key", make(chan int)); return err }},
+		{name: "request size", call: func() error {
+			_, err := executor.Do(context.Background(), "SET", "key", strings.Repeat("x", 256))
+			return err
+		}},
+		{name: "batch size", call: func() error {
+			_, err := executor.Pipeline(context.Background(), [][]any{{"PING"}, {"PING"}})
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.call()
+			var notSent *commandNotSentError
+			if !errors.As(err, &notSent) {
+				t.Fatalf("error = %#v; want commandNotSentError", err)
+			}
+		})
+	}
+	if got := roundTrips.Load(); got != 0 {
+		t.Fatalf("local failures performed %d HTTP exchange(s)", got)
+	}
+
+	if err := executor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = executor.Do(context.Background(), "PING")
+	var notSent *commandNotSentError
+	if !errors.As(err, &notSent) {
+		t.Fatalf("closed executor error = %#v; want commandNotSentError", err)
+	}
+	if got := roundTrips.Load(); got != 0 {
+		t.Fatalf("closed executor performed %d HTTP exchange(s)", got)
+	}
+}
+
 func TestHTTPRetryAfterSupportsHTTPDate(t *testing.T) {
 	now := time.Date(2026, time.August, 22, 12, 0, 0, 0, time.UTC)
 	if got := parseHTTPRetryAfter(now.Add(3*time.Second).Format(http.TimeFormat), now); got != 3_000 {

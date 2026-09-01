@@ -20,6 +20,15 @@ type scriptedExecutor struct {
 	results []scriptedExecutorResult
 }
 
+type testRequestDeliveryError struct {
+	delivery RequestDelivery
+}
+
+func (e testRequestDeliveryError) Error() string { return "test request delivery failure" }
+func (e testRequestDeliveryError) RequestDelivery() RequestDelivery {
+	return e.delivery
+}
+
 func (e *scriptedExecutor) Do(_ context.Context, args ...any) (any, error) {
 	e.calls = append(e.calls, append([]any(nil), args...))
 	index := len(e.calls) - 1
@@ -515,20 +524,34 @@ func TestAdvanceClassifiesDefiniteAndAmbiguousHTTPFailures(t *testing.T) {
 			uncertain: true,
 		},
 		{
+			name:      "request timeout after dispatch",
+			httpError: &HTTPError{StatusCode: 408, Code: "request_timeout", Message: "timed out"},
+			uncertain: true,
+		},
+		{
+			name:      "unclassified client status",
+			httpError: &HTTPError{StatusCode: 429, Code: "rate_limited", Message: "slow down"},
+			uncertain: true,
+		},
+		{
 			name:      "successful status malformed response",
 			httpError: &HTTPError{StatusCode: 200, Code: "invalid_response", Message: "bad response"},
 			uncertain: true,
 		},
 		{
-			name: "server failure even when retry metadata says safe",
+			name: "server overload explicitly rejected before dispatch",
 			httpError: &HTTPError{
 				StatusCode: 503, Code: "server_overloaded", Message: "overloaded", SafeToRetry: true,
 			},
-			uncertain: true,
 		},
 		{
 			name:      "command rejection in successful envelope",
 			httpError: &HTTPError{StatusCode: 200, Code: "noperm", Message: "forbidden"},
+		},
+		{
+			name:      "unclassified command outcome",
+			httpError: &HTTPError{StatusCode: 200, Code: "raft_timeout", Message: "outcome unknown"},
+			uncertain: true,
 		},
 	}
 
@@ -543,6 +566,59 @@ func TestAdvanceClassifiesDefiniteAndAmbiguousHTTPFailures(t *testing.T) {
 			}
 			if got := errors.Is(err, ErrDurableMutationUncertain); got != test.uncertain {
 				t.Fatalf("uncertain = %v; want %v (error %v)", got, test.uncertain, err)
+			}
+		})
+	}
+}
+
+func TestAdvanceClassifiesNativeServerDeliveryConservatively(t *testing.T) {
+	tests := []struct {
+		name      string
+		nativeErr NativeError
+		uncertain bool
+	}{
+		{name: "bad request", nativeErr: NativeError{Status: 6, Value: "bad request"}},
+		{name: "known stale lease code", nativeErr: NativeError{Status: 1, Value: map[string]any{"code": "stale_lease"}}},
+		{name: "known stale lease message", nativeErr: NativeError{Status: 1, Value: "ERR stale flow lease"}},
+		{name: "generic outcome timeout", nativeErr: NativeError{Status: 1, Value: map[string]any{"code": "timeout"}}, uncertain: true},
+		{name: "future server status", nativeErr: NativeError{Status: 99, Value: map[string]any{"message": "future"}}, uncertain: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exec := &scriptedExecutor{results: []scriptedExecutorResult{{err: test.nativeErr}}}
+			_, err := NewClientWithExecutor(exec).Advance(
+				context.Background(), durableStepClaim(), "schedule_warning",
+			)
+			var nativeErr NativeError
+			if !errors.As(err, &nativeErr) || nativeErr.Status != test.nativeErr.Status {
+				t.Fatalf("error = %v; want native status %d", err, test.nativeErr.Status)
+			}
+			if got := errors.Is(err, ErrDurableMutationUncertain); got != test.uncertain {
+				t.Fatalf("uncertain = %v; want %v (error %v)", got, test.uncertain, err)
+			}
+		})
+	}
+}
+
+func TestCustomExecutorRequestDeliveryMetadataControlsMutationRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		delivery RequestDelivery
+	}{
+		{name: "not sent", delivery: RequestDeliveryNotSent},
+		{name: "rejected", delivery: RequestDeliveryRejected},
+		{name: "unknown", delivery: RequestDeliveryUnknown},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			failure := testRequestDeliveryError{delivery: test.delivery}
+			exec := &scriptedExecutor{results: []scriptedExecutorResult{{err: failure}}}
+			_, err := NewClientWithExecutor(exec).Advance(
+				context.Background(), durableStepClaim(), "schedule_warning",
+			)
+			wantUnknown := test.delivery == RequestDeliveryUnknown
+			if got := errors.Is(err, ErrDurableMutationUncertain); got != wantUnknown {
+				t.Fatalf("delivery %d uncertain = %v; want %v", test.delivery, got, wantUnknown)
 			}
 		})
 	}
@@ -580,9 +656,29 @@ func TestDurableMutationTreatsNativeEncodingFailureAsPreSendRejection(t *testing
 	if err == nil {
 		t.Fatal("unsupported native value was accepted")
 	}
+	var notSent *commandNotSentError
+	if !errors.As(err, &notSent) {
+		t.Fatalf("native encoding error = %#v; want commandNotSentError", err)
+	}
 	classified := durableMutationCommandError("FLOW.STEP_CONTINUE", err)
 	if errors.Is(classified, ErrDurableMutationUncertain) {
 		t.Fatalf("pre-send native encoding error was classified uncertain: %v", classified)
+	}
+}
+
+func TestDurableMutationTreatsClosedNativeExecutorAsNotSent(t *testing.T) {
+	executor := NewNativeExecutor("unused")
+	if err := executor.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := executor.Do(context.Background(), "FLOW.STEP_CONTINUE", "flow-1", "lease-1", "charge", "next")
+	var notSent *commandNotSentError
+	if !errors.As(err, &notSent) {
+		t.Fatalf("closed native executor error = %#v; want commandNotSentError", err)
+	}
+	if classified := durableMutationCommandError("FLOW.STEP_CONTINUE", err); errors.Is(classified, ErrDurableMutationUncertain) {
+		t.Fatalf("closed native executor was classified uncertain: %v", classified)
 	}
 }
 
