@@ -305,15 +305,27 @@ func TestWorkflowWorkerNeverAppliesErrorPolicyAfterUncertainDurableMutation(t *t
 		policy      ErrorPolicy
 		swallowStep bool
 		advance     bool
+		failure     error
 	}{
 		{name: "step retry policy", policy: ErrorPolicyRetry},
 		{name: "step fail policy", policy: ErrorPolicyFail},
 		{name: "swallowed step error", policy: ErrorPolicyRetry, swallowStep: true},
 		{name: "advance retry policy", policy: ErrorPolicyRetry, advance: true},
+		{
+			name: "HTTP 408 after dispatch", policy: ErrorPolicyRetry, advance: true,
+			failure: &HTTPError{StatusCode: 408, Code: "request_timeout", Message: "timed out"},
+		},
+		{
+			name: "future native status", policy: ErrorPolicyFail, advance: true,
+			failure: NativeError{Status: 99, Value: map[string]any{"message": "future"}},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			commitErr := errors.New("connection lost after server commit")
+			commitErr := test.failure
+			if commitErr == nil {
+				commitErr = errors.New("connection lost after server commit")
+			}
 			results := []scriptedExecutorResult{{err: commitErr}}
 			if !test.advance {
 				results = append([]scriptedExecutorResult{{value: durableStepFlowRecord(nil)}}, results...)
@@ -340,8 +352,16 @@ func TestWorkflowWorkerNeverAppliesErrorPolicyAfterUncertainDurableMutation(t *t
 				return nil, err
 			}, test.policy)
 
-			if !errors.Is(err, ErrDurableMutationUncertain) || !errors.Is(err, commitErr) {
+			if !errors.Is(err, ErrDurableMutationUncertain) {
 				t.Fatalf("error = %v; want uncertain commit cause", err)
+			}
+			if nativeFailure, ok := commitErr.(NativeError); ok {
+				var got NativeError
+				if !errors.As(err, &got) || got.Status != nativeFailure.Status {
+					t.Fatalf("error = %v; want native status %d", err, nativeFailure.Status)
+				}
+			} else if !errors.Is(err, commitErr) {
+				t.Fatalf("error = %v; want cause %v", err, commitErr)
 			}
 			wantCalls := 1
 			if !test.advance {

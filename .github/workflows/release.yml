@@ -1,16 +1,36 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semver tag to publish (for example v0.12.1)
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  preflight:
+    name: Guard Version and Target
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Verify immutable release identity before any publish
+        env:
+          VERSION: ${{ inputs.version }}
+        run: ./scripts/release-preflight.sh "$VERSION" "$GITHUB_SHA"
+
   quality:
     name: Quality and Compatibility
+    needs: [preflight]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -44,6 +64,7 @@ jobs:
 
   vulnerability:
     name: Vulnerability Scan
+    needs: [preflight]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -56,6 +77,7 @@ jobs:
 
   integration:
     name: Released Server Integration
+    needs: [preflight]
     runs-on: ubuntu-latest
     env:
       FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.11.14@sha256:f7d29befefa15bce4b3755bf786cf7620c814f13bbd336c0d9955581b323b60e
@@ -72,7 +94,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [quality, vulnerability, integration]
+    needs: [preflight, quality, vulnerability, integration]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -84,8 +106,43 @@ jobs:
         with:
           go-version: "1.26.6"
           cache: true
-      - run: go list -m github.com/ferricstore/ferricstore-go@${GITHUB_REF_NAME}
+      - name: Recheck version immediately before publishing
+        env:
+          VERSION: ${{ inputs.version }}
+        run: ./scripts/release-preflight.sh "$VERSION" "$GITHUB_SHA"
+      - name: Publish immutable module tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "Tag ${VERSION} already exists at the verified target; resuming release."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$VERSION" "$GITHUB_SHA" -m "Release ${VERSION}"
+            git push origin "refs/tags/${VERSION}"
+          fi
+      - name: Resolve the published module through the public Go proxy
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          for attempt in {1..60}; do
+            if GOPROXY=https://proxy.golang.org go list -m "github.com/ferricstore/ferricstore-go@${VERSION}"; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "Go proxy did not resolve ${VERSION} after waiting for propagation" >&2
+              exit 1
+            fi
+            sleep 10
+          done
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag
+          VERSION: ${{ inputs.version }}
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "GitHub release ${VERSION} already exists; nothing to duplicate."
+          else
+            gh release create "$VERSION" --generate-notes --verify-tag
+          fi

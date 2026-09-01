@@ -30,7 +30,7 @@ func (e *NativeExecutor) requestWithReplayPolicy(
 	replayPolicy nativeReplayPolicy,
 ) (any, error) {
 	if err := e.sessionGate.readLock(ctx); err != nil {
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	defer e.sessionGate.readUnlock()
 	return e.requestWithoutSessionGateWithReplayPolicy(
@@ -54,7 +54,7 @@ func (e *NativeExecutor) requestWithoutSessionGateWithReplayPolicy(
 	replayPolicy nativeReplayPolicy,
 ) (any, error) {
 	if err := e.beginRequest(); err != nil {
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	defer e.endRequest()
 	if ctx == nil {
@@ -187,7 +187,7 @@ func (e *NativeExecutor) requestOnce(ctx context.Context, opcode uint16, laneID 
 		ctx = context.Background()
 	}
 	if err := e.ensureConnectedLocked(ctx); err != nil {
-		return nil, err, isNativeReconnectableTransportError(err)
+		return nil, markCommandNotSent(err), isNativeReconnectableTransportError(err)
 	}
 	if laneID == nativeAutoLaneID {
 		laneID = e.nextDataLane()
@@ -200,14 +200,14 @@ func (e *NativeExecutor) requestOnce(ctx context.Context, opcode uint16, laneID 
 
 func (e *NativeExecutor) requestOnceOnConnection(ctx context.Context, opcode uint16, laneID uint32, payload any, flags byte, expected net.Conn, useDefaultWriteTimeout bool) (any, error, bool) {
 	if expected == nil {
-		return nil, errTransactionConnectionLost, false
+		return nil, markCommandNotSent(errTransactionConnectionLost), false
 	}
 	var flowCredit *nativeFlowController
 	if nativeOpcodeUsesFlowCredit(opcode) {
 		var err error
 		flowCredit, err = e.acquireFlowCredit(ctx, expected, laneID)
 		if err != nil {
-			return nil, err, errors.Is(err, errNativeConnectionUnavailable)
+			return nil, markCommandNotSent(err), errors.Is(err, errNativeConnectionUnavailable)
 		}
 	}
 	responseCh := make(chan nativeResponse, 1)

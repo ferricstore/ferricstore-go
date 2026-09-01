@@ -215,6 +215,54 @@ _, err = workflow.Worker("orders-1", nil, ferricstore.WorkerOptions{
 
 The state machine data is stored in FerricStore. The SDK does not add another database or persistence layer.
 
+### Durable workflow steps
+
+Use `Advance` when the only durable operation is a state change. It reads the
+workflow identity, partition, current run state, lease token, and fencing token
+from the claimed item and returns the renewed claim:
+
+```go
+job, err = client.Advance(ctx, job, "schedule_warning")
+```
+
+Use `Step` for an operation whose result must be journaled with the transition:
+
+```go
+job, result, err := client.Step(
+	ctx,
+	job,
+	"charge-customer:v1",
+	func() (any, error) {
+		return stripe.Charge(150, job.ID+":charge-customer:v1")
+	},
+	"schedule_warning",
+)
+```
+
+The step name is a stable replay identity and must not change between retries.
+If its result is already committed, FerricStore returns the stored result and
+the closure does not run again. External providers still need a stable
+idempotency key because the process can stop after the external effect but
+before the result reaches FerricStore.
+
+Inside a workflow handler, `WorkflowContext.Advance` and
+`WorkflowContext.Step` adopt the refreshed lease automatically. Return the
+new step's `AppliedOutcome`, or use `OutcomeOr` to make the replay branch
+explicit. A waiting transition releases the claim; timers, signals, and
+approvals therefore do not pin a worker while they wait.
+
+`Advance` and the commit half of `Step` sample `NOW` from the client process wall clock.
+FerricStore evaluates the supplied `NOW` when it renews the lease;
+server time is not returned or silently substituted by the SDK. Keep worker
+hosts time-synchronized, and use explicit `NowMS` options only for controlled
+tests or deliberate application scheduling. Request deadlines are client-side
+wait limits and do not prove that a dispatched mutation failed. The SDK marks
+such an outcome unknown so a worker recovers by reading or reclaiming instead
+of applying a stale fallback mutation.
+
+These APIs use the same command and recovery semantics over native TCP,
+HTTP/1.1, and HTTP/2.
+
 For service workers, use the same lifecycle helper:
 
 ```go

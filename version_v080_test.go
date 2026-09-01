@@ -28,15 +28,15 @@ func TestV011ChangelogHasReleaseHeading(t *testing.T) {
 	}
 }
 
-func TestV011ReleaseGuideUsesCurrentTag(t *testing.T) {
+func TestV011ReleaseGuideUsesGuardedVersionInput(t *testing.T) {
 	contents, err := os.ReadFile("RELEASE.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(contents)
-	if !strings.Contains(text, "git tag v0.11.11") ||
-		!strings.Contains(text, "ferricstore-go@v0.11.11") {
-		t.Fatal("RELEASE.md does not use the v0.11.11 tag")
+	if !strings.Contains(text, "release-preflight.sh") ||
+		!strings.Contains(text, "gh workflow run release.yml") {
+		t.Fatal("RELEASE.md does not use the guarded release workflow")
 	}
 	if strings.Contains(text, "v0.1.0") {
 		t.Fatal("RELEASE.md still contains the stale v0.1.0 tag")

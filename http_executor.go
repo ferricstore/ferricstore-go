@@ -171,14 +171,24 @@ func (e *HTTPExecutor) executeBatch(
 	if len(commands) == 0 {
 		return nil, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		code, retryable := classifyHTTPTransportError(err, err)
+		return nil, markCommandNotSent(&HTTPError{
+			Code: code, Message: "FerricStore HTTP request canceled before submission",
+			Retryable: retryable, SafeToRetry: true, Cause: err,
+		})
+	}
 	client, options, err := e.snapshot()
 	if err != nil {
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	if len(commands) > options.MaxBatchCommands {
-		return nil, &HTTPError{Code: "too_many_commands", Message: fmt.Sprintf(
+		return nil, markCommandNotSent(&HTTPError{Code: "too_many_commands", Message: fmt.Sprintf(
 			"ferricstore HTTP batch has %d commands; limit is %d", len(commands), options.MaxBatchCommands,
-		)}
+		)})
 	}
 	encoded := make([]any, len(commands))
 	encodeState := newHTTPEncodeState(options.MaxRequestBytes)
@@ -186,22 +196,22 @@ func (e *HTTPExecutor) executeBatch(
 		encoded[index], err = encodeHTTPCommandWithState(command, encodeState)
 		if err != nil {
 			if errors.Is(err, errHTTPRequestEncodingBudget) {
-				return nil, &HTTPError{Code: "request_too_large", Message: "FerricStore HTTP request exceeds max request bytes"}
+				return nil, markCommandNotSent(&HTTPError{Code: "request_too_large", Message: "FerricStore HTTP request exceeds max request bytes"})
 			}
-			return nil, &HTTPError{
+			return nil, markCommandNotSent(&HTTPError{
 				Code: "invalid_request", Message: err.Error(), SafeToRetry: true, Cause: err,
-			}
+			})
 		}
 	}
 	body, err := json.Marshal(map[string]any{"encoding": httpBinaryEncoding, "commands": encoded})
 	if err != nil {
-		return nil, &HTTPError{
+		return nil, markCommandNotSent(&HTTPError{
 			Code: "invalid_request", Message: "encode FerricStore HTTP request: " + err.Error(),
 			SafeToRetry: true, Cause: err,
-		}
+		})
 	}
 	if int64(len(body)) > options.MaxRequestBytes {
-		return nil, &HTTPError{Code: "request_too_large", Message: "FerricStore HTTP request exceeds max request bytes"}
+		return nil, markCommandNotSent(&HTTPError{Code: "request_too_large", Message: "FerricStore HTTP request exceeds max request bytes"})
 	}
 	effectiveTimeout := nativeEffectiveTimeout(options.Timeout, pipelineBlockingBudget(commands))
 	requestContext, cancel := context.WithCancel(ctx)
@@ -213,14 +223,21 @@ func (e *HTTPExecutor) executeBatch(
 		requestContext, http.MethodPost, e.baseURL+"/v1/commands", bytes.NewReader(body),
 	)
 	if err != nil {
-		return nil, &HTTPError{
+		return nil, markCommandNotSent(&HTTPError{
 			Code: "invalid_request", Message: "create FerricStore HTTP request: " + err.Error(),
 			SafeToRetry: true, Cause: err,
-		}
+		})
 	}
 	request.Header = requestHeaders(options)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
+	if err := requestContext.Err(); err != nil {
+		code, retryable := classifyHTTPTransportError(err, err)
+		return nil, markCommandNotSent(&HTTPError{
+			Code: code, Message: "FerricStore HTTP request canceled before submission",
+			Retryable: retryable, SafeToRetry: true, Cause: err,
+		})
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		code, retryable := classifyHTTPTransportError(err, requestContext.Err())
