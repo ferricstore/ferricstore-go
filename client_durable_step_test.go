@@ -695,6 +695,7 @@ func TestDurableStepRejectsInvalidInputsBeforeIO(t *testing.T) {
 		{name: "zero fencing token", job: func() ClaimedItem { job := durableStepClaim(); job.FencingToken = 0; return job }(), stepName: "step", toState: "next", run: func() (any, error) { return nil, nil }},
 		{name: "non-running state", job: func() ClaimedItem { job := durableStepClaim(); job.State = "scheduled"; return job }(), stepName: "step", toState: "next", run: func() (any, error) { return nil, nil }},
 		{name: "missing step name", job: durableStepClaim(), stepName: "", toState: "next", run: func() (any, error) { return nil, nil }},
+		{name: "blank step name", job: durableStepClaim(), stepName: "   ", toState: "next", run: func() (any, error) { return nil, nil }},
 		{name: "invalid utf8 step name", job: durableStepClaim(), stepName: string([]byte{0xff}), toState: "next", run: func() (any, error) { return nil, nil }},
 		{name: "missing target", job: durableStepClaim(), stepName: "step", toState: "", run: func() (any, error) { return nil, nil }},
 		{name: "missing closure", job: durableStepClaim(), stepName: "step", toState: "next"},
