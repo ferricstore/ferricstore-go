@@ -11,6 +11,8 @@
 - Make the release workflow validate the version and commit before publishing,
   then resume same-commit retries without duplicating immutable tags or GitHub
   releases.
+- Reject whitespace-only durable step names before lease validation or network
+  I/O, matching the stable-name contract across SDKs.
 
 ## 0.12.0 - 2026-08-31
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -314,6 +315,9 @@ func validateDurableStep(
 	}
 	if err := validateFlowMutationText("durable step name", name); err != nil {
 		return err
+	}
+	if strings.TrimSpace(name) == "" {
+		return errors.New("durable step name must not be blank")
 	}
 	if !utf8.ValidString(name) {
 		return errors.New("durable step name must be valid UTF-8")
