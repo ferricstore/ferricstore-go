@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.1 - 2026-09-01
+
 - Classify HTTP 408, ambiguous gateway responses, unknown native statuses, and
   transport response loss as uncertain durable mutations so workers never
   apply a stale fallback write after a possible commit.
