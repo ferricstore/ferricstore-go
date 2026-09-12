@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const pinnedIntegrationServerVersion = "0.11.15"
+const pinnedIntegrationServerVersion = "0.11.17"
 
 func TestIntegrationDockerScriptDefaultsToPinnedFerricStore(t *testing.T) {
 	compose, err := os.ReadFile("docker-compose.yml")
