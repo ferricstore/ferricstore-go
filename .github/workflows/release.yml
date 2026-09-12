@@ -20,7 +20,7 @@ jobs:
     name: Guard Version and Target
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Verify immutable release identity before any publish
@@ -33,10 +33,10 @@ jobs:
     needs: [preflight]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.6"
           cache: true
@@ -67,8 +67,8 @@ jobs:
     needs: [preflight]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.6"
           cache: true
@@ -82,8 +82,8 @@ jobs:
     env:
       FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.11.15@sha256:8d86005f22eac945ee13bd4c909f3149435be1dca747839e091830d238d4b752
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.6"
           cache: true
@@ -99,10 +99,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.6"
           cache: true
