@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const pinnedIntegrationServerVersion = "0.11.4"
+const pinnedIntegrationServerVersion = "0.11.15"
 
 func TestIntegrationDockerScriptDefaultsToPinnedFerricStore(t *testing.T) {
 	compose, err := os.ReadFile("docker-compose.yml")
@@ -15,7 +15,7 @@ func TestIntegrationDockerScriptDefaultsToPinnedFerricStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	imagePattern := regexp.MustCompile(
-		`ghcr\.io/ferricstore/ferricstore:` + regexp.QuoteMeta(pinnedIntegrationServerVersion) + `@sha256:[0-9a-f]{64}`,
+		`quay\.io/ferricstore/ferricstore:` + regexp.QuoteMeta(pinnedIntegrationServerVersion) + `@sha256:[0-9a-f]{64}`,
 	)
 	pinnedImage := imagePattern.FindString(string(compose))
 	if pinnedImage == "" {
@@ -102,7 +102,7 @@ func TestDockerComposeDefaultsToSupportedFerricStoreVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := string(body)
-	if !strings.Contains(contents, "ghcr.io/ferricstore/ferricstore:"+pinnedIntegrationServerVersion) {
+	if !strings.Contains(contents, "quay.io/ferricstore/ferricstore:"+pinnedIntegrationServerVersion) {
 		t.Fatal("docker compose should default to the SDK's pinned supported server version")
 	}
 	if strings.Contains(contents, "ferricstore:latest") {

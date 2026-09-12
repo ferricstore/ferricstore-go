@@ -20,8 +20,8 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned tested image, `ghcr.io/ferricstore/ferricstore:0.11.4`, by default and exposes the native protocol on `127.0.0.1:6388`.
-Set `FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
+The compose file uses the SDK's pinned tested image, `quay.io/ferricstore/ferricstore:0.11.15`, by default and exposes the native protocol on `127.0.0.1:6388`.
+Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
@@ -60,6 +60,43 @@ client, err := ferricstore.NewClientFromURL(
 ```
 
 Avoid putting production passwords in URLs because URLs are commonly copied into logs, shell history, and process metadata.
+
+### Platform credential broker
+
+Managed Platform users and services authenticate to the control plane with a
+time-limited `fsp_user_` token or an `fsp_sa_` service-account token. Exchange
+it for a short-lived, namespace-scoped Enterprise credential and construct the
+native client in one call:
+
+```go
+broker, err := ferricstore.NewPlatformCredentialBroker(
+	"https://platform.example.com",
+	nil,
+)
+if err != nil {
+	return err
+}
+
+client, credential, err := broker.NewClient(ctx, platformToken,
+	ferricstore.PlatformCredentialRequest{
+		Organization: "acme",
+		ClusterID:    "018f20dc-7c39-7f16-9fa8-7e807f9a0f48",
+		TTL:          15 * time.Minute,
+	},
+)
+if err != nil {
+	return err
+}
+defer func() { _ = client.Close() }()
+
+_ = credential.ExpiresAt // refresh and replace the client before this deadline
+```
+
+The broker requires HTTPS except on loopback, rejects redirects and
+credential-bearing URLs, bounds response size, and never forwards the Platform
+token to FerricStore. Native credentials expire after 1 minute–1 hour and are
+authoritatively rejected by the packaged Enterprise data plane, including on
+an already-authenticated connection.
 
 Default client behavior matches the Python SDK:
 
@@ -583,7 +620,7 @@ For release gating against a server image that should support every current comm
 enable strict command coverage:
 
 ```bash
-FERRICSTORE_STRICT_COMMAND_COVERAGE=1 FERRICSTORE_IMAGE=ghcr.io/ferricstore/ferricstore:<version> ./scripts/integration-docker.sh
+FERRICSTORE_STRICT_COMMAND_COVERAGE=1 FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version> ./scripts/integration-docker.sh
 ```
 
 ## Examples

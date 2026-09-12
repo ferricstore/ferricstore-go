@@ -94,9 +94,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server-version: ["0.11.4"]
+        server-version: ["0.11.15"]
     env:
-      FERRICSTORE_IMAGE: ghcr.io/ferricstore/ferricstore:0.11.4@sha256:ee49d39e3b15cd6298537a88818647e71bcfc7571921e88bcf3a201311c690fc
+      FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.11.15@sha256:8d86005f22eac945ee13bd4c909f3149435be1dca747839e091830d238d4b752
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
