@@ -119,7 +119,7 @@ func (b *PlatformCredentialBroker) Exchange(
 
 	client := *b.client
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
-		return errors.New("Platform credential exchange redirects are not allowed")
+		return errors.New("platform credential exchange redirects are not allowed")
 	}
 	response, err := client.Do(req)
 	if err != nil {
@@ -160,11 +160,11 @@ func (b *PlatformCredentialBroker) Exchange(
 		return PlatformCredential{}, errors.New("platform credential response has an invalid expiry")
 	}
 	if decoded.Data.Endpoint == "" || decoded.Data.Username == "" || decoded.Data.Password == "" {
-		return PlatformCredential{}, errors.New("Platform credential response is incomplete")
+		return PlatformCredential{}, errors.New("platform credential response is incomplete")
 	}
 	parsedEndpoint, err := parseFerricURL(decoded.Data.Endpoint)
 	if err != nil || parsedEndpoint.CredentialsSet {
-		return PlatformCredential{}, errors.New("Platform credential response has an invalid FerricStore endpoint")
+		return PlatformCredential{}, errors.New("platform credential response has an invalid FerricStore endpoint")
 	}
 
 	return PlatformCredential{
@@ -212,7 +212,7 @@ func platformExchangeError(status int, body []byte) error {
 	if code == "" {
 		code = "request_failed"
 	}
-	return fmt.Errorf("Platform credential exchange failed with status %d (%s)", status, code)
+	return fmt.Errorf("platform credential exchange failed with status %d (%s)", status, code)
 }
 
 func loopbackHost(host string) bool {
