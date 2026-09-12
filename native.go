@@ -38,11 +38,16 @@ const (
 		nativeFlagWarning | nativeFlagCompressed | nativeFlagMoreChunks
 	nativeStableChunkFlags = nativeFlagTrace | nativeFlagCustomPayload | nativeFlagWarning
 
-	nativeStatusOK = 0
+	nativeStatusOK         = 0
+	nativeStatusError      = 1
+	nativeStatusAuth       = 2
+	nativeStatusNoPerm     = 3
+	nativeStatusBadRequest = 6
 
 	nativeOpHello             = 0x0001
 	nativeOpAuth              = 0x0002
 	nativeOpPing              = 0x0003
+	nativeOpOptions           = 0x000B
 	nativeOpShards            = 0x0007
 	nativeOpGoAway            = 0x000A
 	nativeOpStartup           = 0x000C
@@ -93,6 +98,8 @@ type NativeExecutor struct {
 	maxDataLanes         uint32
 	responseCodecs       nativeResponseCodecs
 	flowQuery            nativeFlowQueryContract
+	compactPubSubPublish bool
+	compactStreamXAdd    bool
 	flow                 *nativeFlowController
 	replayWindowUpdate   map[string]any
 	connectInFlight      *nativeConnectAttempt
@@ -231,14 +238,17 @@ func (e *NativeExecutor) DroppedEvents() uint64 {
 
 func (e *NativeExecutor) command(ctx context.Context, args ...any) (any, error) {
 	if name, stateful := connectionStateCommand(args); stateful {
-		return nil, fmt.Errorf("%s requires a connection-affine Client transaction helper", name)
+		return nil, markCommandNotSent(fmt.Errorf("%s requires a connection-affine Client transaction helper", name))
 	}
 	if name, mutates := connectionStateMutationCommand(args); mutates && name != "CLIENT.SETNAME" && name != "WINDOW_UPDATE" {
-		return nil, fmt.Errorf("%s is connection-local; configure it with NativeOptions or a dedicated helper", name)
+		return nil, markCommandNotSent(fmt.Errorf(
+			"%s is connection-local; configure it with NativeOptions or a dedicated helper",
+			name,
+		))
 	}
 	command, err := buildNativeCommand(args)
 	if err != nil {
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	if command.laneID != 0 {
 		command.laneID = nativeAutoLaneID
@@ -409,8 +419,26 @@ func nativePipelinePayloadWithExecutionPolicy(
 	laneID uint32,
 	maxFrameBytes int,
 ) (any, byte, nativeCommandExecutionPolicy, error) {
-	if payload, ok, err := compactPipelinePlanWithLimit(commands, maxFrameBytes); ok || err != nil {
-		return payload, nativeFlagCustomPayload, nativeCommandExecutionPolicy{}, err
+	return nativePipelinePayloadWithCapabilities(commands, laneID, maxFrameBytes, true, true)
+}
+
+func nativePipelinePayloadWithCapabilities(
+	commands [][]any,
+	laneID uint32,
+	maxFrameBytes int,
+	compactStreamXAdd bool,
+	compactPubSubPublish bool,
+) (any, byte, nativeCommandExecutionPolicy, error) {
+	first := ""
+	if len(commands) > 0 && len(commands[0]) > 0 {
+		first = commandPart(commands[0][0])
+	}
+	allowCompact := (first != "XADD" || compactStreamXAdd) &&
+		(first != "PUBLISH" || compactPubSubPublish)
+	if allowCompact {
+		if payload, ok, err := compactPipelinePlanWithLimit(commands, maxFrameBytes); ok || err != nil {
+			return payload, nativeFlagCustomPayload, nativeCommandExecutionPolicy{}, err
+		}
 	}
 	items := make([]any, 0, len(commands))
 	var policy nativeCommandExecutionPolicy

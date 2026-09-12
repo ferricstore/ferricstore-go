@@ -85,4 +85,8 @@ func TestIntegrationFlowStateMachineRepairAndIndexes(t *testing.T) {
 	requireMap(t, must[map[string]any](t)(client.Info(ctx, typeName, "", nil, nil)))
 	_ = must[[]any](t)(client.History(ctx, HistoryOptions{ID: signalID, PartitionKey: signalPartition, Count: 5, IncludeCold: Bool(false), ConsistentProjection: Bool(true)}))
 	requireMap(t, must[map[string]any](t)(client.RetentionCleanup(ctx, RetentionCleanupOptions{Limit: Int(10)})))
+	indexes := must[*FlowQueryIndexStatus](t)(client.FlowQueryIndexes(ctx))
+	if indexes == nil || indexes.Registry.CatalogVersion <= 0 || len(indexes.Indexes) == 0 {
+		t.Fatalf("FLOW.QUERY.INDEXES = %#v", indexes)
+	}
 }

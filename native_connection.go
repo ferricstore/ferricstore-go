@@ -175,7 +175,17 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 	}
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
-	hello := nativeHelloPayload(options.ClientName)
+	var optionsResponse any
+	if options.pubSubBatchCodec {
+		optionsResponse, err = e.nativeHandshakeRequest(
+			ctx, options.Timeout, conn, reader, writer,
+			nativeUnauthenticatedFrameBytes, nativeOpOptions, map[string]any{}, options.MaxResponseBytes,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	hello := nativeHelloPayload(options.ClientName, optionsResponse)
 	helloResponse, err := e.nativeHandshakeRequest(
 		ctx, options.Timeout, conn, reader, writer,
 		nativeUnauthenticatedFrameBytes, nativeOpHello, hello, options.MaxResponseBytes,
@@ -228,17 +238,6 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 		conn: conn, reader: reader, writer: writer,
 		helloResponse: helloResponse, windowResponse: windowResponse, contract: contract,
 	}, nil
-}
-
-func nativeHelloPayload(clientName string) map[string]any {
-	name := nativeClientName(clientName)
-	return map[string]any{
-		"client_name":             name,
-		"driver_name":             name,
-		"compression":             "none",
-		"compact_flow_responses":  false,
-		"compact_response_codecs": []any{"flow_query_result_v1"},
-	}
 }
 
 func (e *NativeExecutor) nativeHandshakeRequest(ctx context.Context, timeout time.Duration, conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, maxFrameBytes int, opcode uint16, payload any, maxResponseBytes ...int) (any, error) {
@@ -396,7 +395,7 @@ func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID
 	// most one writing body plus one encoded waiter without giving up encode/I/O
 	// overlap.
 	if err := e.writeEncodeMu.LockContext(ctx); err != nil {
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	if preencoded, ok := payload.(nativePreencodedPayload); ok {
 		body = preencoded.body
@@ -408,36 +407,39 @@ func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID
 			body, err = raw.encodeNativeCustomPayload(maxFrameBytes)
 			if err != nil {
 				e.writeEncodeMu.Unlock()
-				return nil, err
+				return nil, markCommandNotSent(err)
 			}
 		default:
 			e.writeEncodeMu.Unlock()
-			return nil, errors.New("ferricstore native custom payload must be raw bytes")
+			return nil, markCommandNotSent(errors.New("ferricstore native custom payload must be raw bytes"))
 		}
 	} else {
 		body, err = encodeNativeValueWithLimit(payload, maxFrameBytes)
 		if err != nil {
 			e.writeEncodeMu.Unlock()
-			return nil, err
+			return nil, markCommandNotSent(err)
 		}
 	}
 	if len(body) > math.MaxUint32 {
 		e.writeEncodeMu.Unlock()
-		return nil, errors.New("ferricstore native request body is too large")
+		return nil, markCommandNotSent(errors.New("ferricstore native request body is too large"))
 	}
 	if len(body) > maxFrameBytes {
 		e.writeEncodeMu.Unlock()
-		return nil, fmt.Errorf("ferricstore native request body exceeds server-advertised %d-byte frame limit", maxFrameBytes)
+		return nil, markCommandNotSent(fmt.Errorf(
+			"ferricstore native request body exceeds server-advertised %d-byte frame limit",
+			maxFrameBytes,
+		))
 	}
 
 	if err := e.writeMu.LockContext(ctx); err != nil {
 		e.writeEncodeMu.Unlock()
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	e.writeEncodeMu.Unlock()
 	defer e.writeMu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, markCommandNotSent(err)
 	}
 	e.mu.Lock()
 	conn := e.conn
@@ -445,10 +447,10 @@ func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID
 	draining := e.goAway && conn == expected
 	e.mu.Unlock()
 	if conn == nil || writer == nil || conn != expected {
-		return conn, fmt.Errorf("%w: %w", errNativeConnectionUnavailable, net.ErrClosed)
+		return conn, markCommandNotSent(fmt.Errorf("%w: %w", errNativeConnectionUnavailable, net.ErrClosed))
 	}
 	if draining {
-		return conn, errNativeGoAway
+		return conn, markCommandNotSent(errNativeGoAway)
 	}
 	deadline, hasDeadline := ctx.Deadline()
 	if e.opts.Timeout > 0 {

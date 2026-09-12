@@ -186,6 +186,9 @@ func (c *Client) LimitList(ctx context.Context, scope, partitionKey string, limi
 	appendIntPtr(&args, "LIMIT", limit)
 	appendInt64Ptr(&args, "NOW", nowMS)
 	value, err := c.typedReply(ctx, args...)
+	if err == nil {
+		value, err = normalizeLimitListLeaseKeys(value)
+	}
 	maps, err := mapListWithLimit(
 		"FLOW.LIMIT.LIST", limit,
 		defaultFlowResponseLimitV080, maxClampedFlowListItemsV080,

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"os"
 
 	ferricstore "github.com/ferricstore/ferricstore-go"
 )
@@ -19,7 +19,8 @@ func main() {
 		Idempotent:   ferricstore.Bool(true),
 	})
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "enqueue failed")
+		os.Exit(1)
 	}
 
 	result, err := queue.Worker("email-worker-1", func(ctx context.Context, job ferricstore.FlowRecord) error {
@@ -30,7 +31,8 @@ func main() {
 		Concurrency: 4,
 	}).RunOnce(ctx)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "queue worker failed")
+		os.Exit(1)
 	}
 	fmt.Printf("claimed=%d completed=%d retried=%d failed=%d\n", result.Claimed, result.Completed, result.Retried, result.Failed)
 }

@@ -1,9 +1,11 @@
 package ferricstore
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -311,6 +313,13 @@ func wrapFlowQueryError(err error) error {
 	if err == nil {
 		return nil
 	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) && httpErr.Details != nil {
+		queryErr, decodeErr := decodeFlowQueryErrorMap(normalizeHTTPFlowQueryDiagnostic(httpErr.Details), err)
+		if decodeErr == nil {
+			return queryErr
+		}
+	}
 	nativeErr, ok := nativeErrorValue(err)
 	if !ok {
 		return err
@@ -324,6 +333,89 @@ func wrapFlowQueryError(err error) error {
 		return err
 	}
 	return queryErr
+}
+
+func normalizeHTTPFlowQueryDiagnostic(details map[string]any) map[string]any {
+	normalized := make(map[string]any, len(details))
+	for key, value := range details {
+		normalized[key] = value
+	}
+	normalizeHTTPFlowQueryInteger(normalized, "retry_after_ms")
+	if position, ok := details["position"].(map[string]any); ok {
+		copy := make(map[string]any, len(position))
+		for key, value := range position {
+			copy[key] = value
+		}
+		for _, key := range []string{"byte", "line", "column"} {
+			normalizeHTTPFlowQueryInteger(copy, key)
+		}
+		normalized["position"] = copy
+	}
+	if context, ok := details["context"].(map[string]any); ok {
+		remaining := flowQueryDiagnosticContextNodes
+		if value, valid := normalizeHTTPFlowQueryContextValue(
+			context, flowQueryDiagnosticContextDepth, &remaining,
+		); valid {
+			normalized["context"] = value
+		}
+	}
+	return normalized
+}
+
+func normalizeHTTPFlowQueryContextValue(value any, depth int, remaining *int) (any, bool) {
+	if *remaining <= 0 {
+		return nil, false
+	}
+	*remaining--
+	switch typed := value.(type) {
+	case json.Number:
+		parsed, err := strconv.ParseInt(typed.String(), 10, 64)
+		return parsed, err == nil
+	case map[string]any:
+		if depth <= 0 || len(typed) > flowQueryDiagnosticContextEntries {
+			return nil, false
+		}
+		normalized := make(map[string]any, len(typed))
+		for key, item := range typed {
+			value, valid := normalizeHTTPFlowQueryContextValue(item, depth-1, remaining)
+			if !valid {
+				return nil, false
+			}
+			normalized[key] = value
+		}
+		return normalized, true
+	case []any:
+		if depth <= 0 || len(typed) > flowQueryDiagnosticContextItems {
+			return nil, false
+		}
+		normalized := make([]any, len(typed))
+		for index, item := range typed {
+			value, valid := normalizeHTTPFlowQueryContextValue(item, depth-1, remaining)
+			if !valid {
+				return nil, false
+			}
+			normalized[index] = value
+		}
+		return normalized, true
+	default:
+		return value, true
+	}
+}
+
+func normalizeHTTPFlowQueryInteger(values map[string]any, key string) {
+	var text string
+	switch value := values[key].(type) {
+	case json.Number:
+		text = value.String()
+	case string:
+		text = value
+	default:
+		return
+	}
+	parsed, err := strconv.ParseUint(text, 10, 63)
+	if err == nil {
+		values[key] = int64(parsed)
+	}
 }
 
 func decodeFlowQueryErrorPayload(value any, cause error) (*FlowQueryError, error) {

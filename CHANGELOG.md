@@ -2,6 +2,127 @@
 
 ## Unreleased
 
+## 0.12.2 - 2026-09-01
+
+- Keep the README SDK version aligned with the exported release version and
+  document durable-step migration plus waiting-workflow lease handoff.
+- Avoid seeding the Go proxy's negative per-version cache before a release tag
+  exists; resolve the immutable module only after publishing its tag.
+
+## 0.12.1 - 2026-09-01
+
+- Classify HTTP 408, ambiguous gateway responses, unknown native statuses, and
+  transport response loss as uncertain durable mutations so workers never
+  apply a stale fallback write after a possible commit.
+- Expose `RequestDelivery` and `RequestDeliveryFailure` for custom executors,
+  while marking local validation, encoding, size, capacity, and closed-client
+  failures as not sent.
+- Make the release workflow validate the version and commit before publishing,
+  then resume same-commit retries without duplicating immutable tags or GitHub
+  releases.
+- Reject whitespace-only durable step names before lease validation or network
+  I/O, matching the stable-name contract across SDKs.
+
+## 0.12.0 - 2026-08-31
+
+- Add chainable `Client.Advance` and durable named `Client.Step` operations that
+  infer workflow identity, logical state, lease, and fencing data from the
+  claimed item and return a refreshed claim.
+- Add workflow-context durable operations and replay-aware applied outcomes so
+  handlers can release refreshed claims without pinning workers or issuing a
+  second transition after a committed step.
+- Fail closed on stale or inactive claims, malformed result references,
+  missing committed values, incomplete responses, and uncertain mutation
+  outcomes while preserving codec-consistent first-run and replay results.
+- Cover real worker takeover, stale-writer fencing, external idempotency,
+  response-loss recovery, waiting/signal continuation, and mixed batches over
+  native TCP, authenticated TLS HTTP/1.1, and HTTP/2.
+- Deprecate low-level `StepContinue` in favor of `Advance` for state changes or
+  `Step` for durable closures.
+
+## 0.11.11 - 2026-08-23
+
+- Run the complete HTTP-compatible integration surface against an authenticated
+  TLS listener in pull-request and release gates, with architecture contracts
+  that preserve the stateless/native transport boundary and catalog coverage
+  for every command classified as HTTP-supported.
+- Decode structured `FLOW.QUERY` diagnostics returned by the HTTP gateway with
+  the same validated error types and retry metadata as native TCP.
+- Reject direct and `COMMAND_EXEC`-wrapped `FETCH_OR_COMPUTE*` commands locally
+  because their ownership lifecycle requires a persistent native session.
+- Serialize canonical native URLs through `net/url` so escaped host bytes and
+  IPv6 zone identifiers remain valid and round-trip safely.
+- Document the reproducible HTTPS integration runner, keep its temporary TLS
+  directory owner-only, and delete the CA key before the container starts.
+- Keep example failure output operation-specific and value-free so configured
+  credentials and untrusted server responses cannot reach application logs.
+
+## 0.11.10 - 2026-08-23
+
+- Reject native control and event-subscription commands over stateless HTTP,
+  including cluster-mode, monitor, replication-stream, sharded Pub/Sub, and
+  connection-affine commands wrapped by `CommandExec`.
+- Preserve `CommandExec` request context through the HTTP structured envelope,
+  bound pointer indirection and pre-allocation item counts, distinguish caller
+  cancellation from retryable transport failures, and parse both forms of the
+  standard `Retry-After` header.
+- Keep blocking list and stream reads available as long-lived HTTP requests and
+  preserve their native timeout-budget semantics.
+- Redact malformed HTTP URLs, validate TCP port ranges, and restore a clean
+  lint gate for HTTP response cleanup.
+- Add HTTP envelope fuzz coverage and allocation/runtime benchmark gates for
+  100-command encode/decode paths.
+- Drain a final buffered TCP Pub/Sub event before reconnect/replay so an event
+  immediately followed by EOF cannot be stranded behind a new handshake.
+- Validate the current native integration surface against the immutable
+  FerricStore 0.11.10 multi-architecture image while retaining FerricStore
+  0.11.4 as the minimum supported native server and native wire protocol v1.
+
+## 0.11.9 - 2026-08-22
+
+- Add stateless HTTP and HTTPS transports behind the existing command, Flow,
+  and pipeline APIs while retaining native TCP as the default.
+- Reuse HTTP/1.1 connections, negotiate and multiplex HTTP/2 over TLS, preserve
+  caller headers across redirects, and bound batches, bodies, responses, and
+  whole-request deadlines.
+- Encode typed Flow commands through transport-neutral native descriptors,
+  reject connection-affine operations locally, and cover the exact 67-command
+  Flow surface against FerricStore HTTP and OSS 0.11.9.
+- Preserve the FerricStore 0.11.4 native compatibility floor and native wire
+  protocol v1.
+
+## 0.11.7 - 2026-08-22
+
+- Validate the unchanged native protocol v1 and FerricStore 0.11.4
+  compatibility floor against FerricStore 0.11.8, including single-node,
+  authenticated, and multi-node cluster integration.
+- Keep the existing native TCP command, pipeline, topology, and Flow query
+  behavior unchanged while FerricStore adds transport-neutral gateway support.
+
+## 0.11.6 - 2026-08-19
+
+- Validate the unchanged native protocol v1 and FerricStore 0.11.4 compatibility
+  floor against FerricStore 0.11.6, including single-node and multi-node
+  cluster integration.
+- Move released-server integration from GHCR to the immutable FerricStore
+  0.11.6 image on Quay.io.
+- Update the verification toolchain to Go 1.26.6, which contains the standard
+  library fixes for GO-2026-6090 and GO-2026-5972.
+
+## 0.11.5 - 2026-08-03
+
+- Negotiate FerricStore 0.11.5's compact Stream producer capability and encode
+  homogeneous `XADD key * field value...` batches with mode 34 without
+  allocating during wire planning. Legacy servers, explicit IDs, trimming,
+  `NOMKSTREAM`, malformed pairs, and unsupported values retain the generic path.
+- Correct compact SET/GET pipeline frame-budget accounting to include the full
+  six-byte request header.
+- Negotiate compact Pub/Sub mode 35 for homogeneous `PUBLISH` pipelines and
+  expand negotiated `pubsub_batch_v1` envelopes into ordered logical messages
+  before applying event queue limits. Legacy events and servers retain their
+  existing paths.
+- Retain FerricStore 0.11.4 as the minimum server and native wire protocol v1.
+
 ## 0.11.4 - 2026-07-28
 
 - Decode and validate the complete durable-schedule recurrence response,

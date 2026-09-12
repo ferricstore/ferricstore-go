@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"os"
 
 	ferricstore "github.com/ferricstore/ferricstore-go"
 )
@@ -21,7 +21,8 @@ func main() {
 		Idempotent:   ferricstore.Bool(true),
 	})
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "flow creation failed")
+		os.Exit(1)
 	}
 
 	_, err = client.Signal(ctx, ferricstore.SignalOptions{
@@ -35,7 +36,8 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "signal failed")
+		os.Exit(1)
 	}
 	fmt.Println("review approved")
 }

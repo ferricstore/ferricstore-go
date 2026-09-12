@@ -96,11 +96,137 @@ func limitResult(value any, err error) (LimitResult, error) {
 	if err != nil {
 		return LimitResult{}, err
 	}
+	value, err = normalizeLimitLeaseKeys(value)
+	if err != nil {
+		return LimitResult{}, err
+	}
 	m, err := nativeMap(value)
 	if err != nil {
 		return LimitResult{}, err
 	}
 	return limitResultFromMap(m)
+}
+
+// The HTTP envelope preserves Erlang map-key types. Limit lease maps are the
+// one public response shape whose keys are shard integers, while the typed Go
+// decoder intentionally models those keys as decimal strings before parsing.
+// Normalize only that documented field so arbitrary generic response maps
+// continue to preserve their key types.
+func normalizeLimitLeaseKeys(value any) (any, error) {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return value, nil
+	}
+	normalizedRoot := cloneStringAnyMap(root)
+	if leases, exists := normalizedRoot["leases"]; exists {
+		normalized, err := normalizeLimitLeaseMap(leases)
+		if err != nil {
+			return nil, err
+		}
+		normalizedRoot["leases"] = normalized
+	}
+	if owner, exists := normalizedRoot["owner"].(map[string]any); exists {
+		normalizedOwner := cloneStringAnyMap(owner)
+		if leases, present := normalizedOwner["leases"]; present {
+			normalized, err := normalizeLimitLeaseMap(leases)
+			if err != nil {
+				return nil, err
+			}
+			normalizedOwner["leases"] = normalized
+		}
+		normalizedRoot["owner"] = normalizedOwner
+	}
+	return normalizedRoot, nil
+}
+
+func normalizeLimitListLeaseKeys(value any) (any, error) {
+	items, ok := value.([]any)
+	if !ok {
+		return value, nil
+	}
+	normalized := make([]any, len(items))
+	for index, item := range items {
+		converted, err := normalizeLimitLeaseKeys(item)
+		if err != nil {
+			return nil, err
+		}
+		normalized[index] = converted
+	}
+	return normalized, nil
+}
+
+func normalizeGovernanceLimitLeaseKeys(value any) (any, error) {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return value, nil
+	}
+	normalized := cloneStringAnyMap(root)
+	if limits, exists := normalized["limits"]; exists {
+		converted, err := normalizeLimitListLeaseKeys(limits)
+		if err != nil {
+			return nil, err
+		}
+		normalized["limits"] = converted
+	}
+	return normalized, nil
+}
+
+func normalizeLimitLeaseMap(value any) (any, error) {
+	leases, ok := value.(map[any]any)
+	if !ok {
+		return value, nil
+	}
+	normalized := make(map[string]any, len(leases))
+	for key, lease := range leases {
+		name, err := limitLeaseMapKey(key)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := normalized[name]; duplicate {
+			return nil, fmt.Errorf("decode limit leases: duplicate shard key %q", name)
+		}
+		normalized[name] = lease
+	}
+	return normalized, nil
+}
+
+func limitLeaseMapKey(value any) (string, error) {
+	switch key := value.(type) {
+	case string:
+		return key, nil
+	case []byte:
+		return string(key), nil
+	case int:
+		return strconv.FormatInt(int64(key), 10), nil
+	case int8:
+		return strconv.FormatInt(int64(key), 10), nil
+	case int16:
+		return strconv.FormatInt(int64(key), 10), nil
+	case int32:
+		return strconv.FormatInt(int64(key), 10), nil
+	case int64:
+		return strconv.FormatInt(key, 10), nil
+	case uint:
+		return strconv.FormatUint(uint64(key), 10), nil
+	case uint8:
+		return strconv.FormatUint(uint64(key), 10), nil
+	case uint16:
+		return strconv.FormatUint(uint64(key), 10), nil
+	case uint32:
+		return strconv.FormatUint(uint64(key), 10), nil
+	case uint64:
+		return strconv.FormatUint(key, 10), nil
+	default:
+		return "", fmt.Errorf("decode limit leases: invalid shard key %T", value)
+	}
+}
+
+func cloneStringAnyMap(value map[string]any) map[string]any {
+	cloned := make(map[string]any, len(value))
+	for key, item := range value {
+		cloned[key] = item
+	}
+	return cloned
 }
 
 func limitResultFromMap(m map[string]any) (LimitResult, error) {

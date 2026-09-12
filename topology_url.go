@@ -121,19 +121,15 @@ func (p parsedFerricURL) Endpoint() RoutingEndpoint {
 }
 
 func (p parsedFerricURL) URL() string {
-	host := p.Host
-	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
-		host = "[" + host + "]"
+	canonical := url.URL{
+		Scheme:   p.Scheme,
+		Host:     net.JoinHostPort(p.Host, strconv.Itoa(p.Port)),
+		RawQuery: p.query.Encode(),
 	}
-	user := ""
 	if p.CredentialsSet {
-		user = url.UserPassword(p.Username, p.Password).String() + "@"
+		canonical.User = url.UserPassword(p.Username, p.Password)
 	}
-	rawURL := fmt.Sprintf("%s://%s%s:%d", p.Scheme, user, host, p.Port)
-	if query := p.query.Encode(); query != "" {
-		rawURL += "?" + query
-	}
-	return rawURL
+	return canonical.String()
 }
 
 func ferricURLTimeout(query url.Values) (time.Duration, bool, error) {

@@ -20,14 +20,18 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned tested image, `quay.io/ferricstore/ferricstore:0.11.15`, by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned tested FerricStore 0.11.15 image by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
-Go SDK 0.11.4 requires FerricStore 0.11.4 or newer because schedule
-responses now use the complete recurrence contract. The native wire protocol
-remains v1.
+Go SDK 0.12.2 requires FerricStore 0.11.4 or newer for native TCP. The HTTP
+transport requires the stateless gateway shipped by FerricStore OSS 0.11.11 or
+newer. With FerricStore 0.11.15 the native transport
+negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches,
+compact Pub/Sub mode 35 for homogeneous `PUBLISH` batches, and ordered
+`pubsub_batch_v1` receive expansion. The native wire protocol and generic
+compatibility path remain v1.
 
 ## Client
 
@@ -59,7 +63,54 @@ client, err := ferricstore.NewClientFromURL(
 )
 ```
 
+Use an `http://` or `https://` URL to send the same commands through a
+FerricStore HTTP server. HTTP/1.1 uses persistent keep-alive connections and
+HTTPS negotiates HTTP/2 by default when the server offers it:
+
+```go
+client, err := ferricstore.NewClientFromURL(
+	"https://ferricstore-http.example.com",
+	ferricstore.WithHTTPOptions(
+		ferricstore.WithHTTPBasicAuth("default", password),
+		ferricstore.WithHTTP2(true),
+	),
+)
+```
+
+Bearer authentication is available through `WithHTTPBearerToken`. Basic
+username/password authentication is accepted only with `https://`; an empty
+username means `default`. A `Pipeline` is encoded as one ordered HTTP request,
+including per-command errors. Request, response, batch, connection, and whole
+request deadline limits are configurable with `WithHTTP*` options.
+
+The HTTP endpoint is stateless. Commands that need one persistent connection
+(`AUTH`, `CLIENT`, transactions, Pub/Sub/event subscriptions, `WATCH`, monitor
+or replication streams, and native negotiation/routing controls) return
+`ErrHTTPConnectionAffineCommand` before network I/O; use `ferric://` or
+`ferrics://` for those commands. Blocking list/stream reads remain supported as
+one long-lived HTTP request; their server wait extends (or, for an indefinite
+wait, disables) the SDK's default timeout while the caller context stays
+authoritative. `CommandExec` and its optional request context
+are carried in a structured envelope rather than exposed as a user command.
+Redirects are followed and caller-supplied authentication and custom headers
+are retained, including across origins. Only enable redirects to endpoints you
+trust, or supply a custom `http.Client` with a stricter `CheckRedirect` policy.
+
 Avoid putting production passwords in URLs because URLs are commonly copied into logs, shell history, and process metadata.
+
+To run the complete HTTP-compatible integration surface against a real TLS
+listener with ACL authentication, use:
+
+```bash
+FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.15@sha256:8d86005f22eac945ee13bd4c909f3149435be1dca747839e091830d238d4b752 \
+  ./scripts/integration-http-tls.sh
+```
+
+The runner creates a private test CA, verifies that unauthenticated access and
+a restricted user's forbidden `SET` are rejected, and configures
+`FERRICSTORE_USERNAME`, `FERRICSTORE_PASSWORD`, and `FERRICSTORE_CA_FILE` for
+the SDK. Connection-affine transaction, subscription, and reconnect scenarios
+remain in the native integration suite.
 
 ### Platform credential broker
 
@@ -200,6 +251,60 @@ _, err = workflow.Worker("orders-1", nil, ferricstore.WorkerOptions{
 ```
 
 The state machine data is stored in FerricStore. The SDK does not add another database or persistence layer.
+
+### Durable workflow steps
+
+Use `Advance` when the only durable operation is a state change. It reads the
+workflow identity, partition, current run state, lease token, and fencing token
+from the claimed item and returns the renewed claim:
+
+```go
+job, err = client.Advance(ctx, job, "schedule_warning")
+```
+
+Use `Step` for an operation whose result must be journaled with the transition:
+
+```go
+job, result, err := client.Step(
+	ctx,
+	job,
+	"charge-customer:v1",
+	func() (any, error) {
+		return stripe.Charge(150, job.ID+":charge-customer:v1")
+	},
+	"schedule_warning",
+)
+```
+
+The step name is a stable replay identity and must not change between retries.
+If its result is already committed, FerricStore returns the stored result and
+the closure does not run again. External providers still need a stable
+idempotency key because the process can stop after the external effect but
+before the result reaches FerricStore.
+
+Inside a workflow handler, `WorkflowContext.Advance` and
+`WorkflowContext.Step` adopt the refreshed lease automatically. Return the
+new step's `AppliedOutcome`, or use `OutcomeOr` to make the replay branch
+explicit. A waiting workflow does not occupy a worker: return a waiting
+transition so FerricStore persists the state and releases the claim. After a
+timer, signal, or approval makes it runnable, any available worker can claim a
+fresh lease and continue. If no worker is running, the workflow remains durable
+until one becomes available.
+
+`StepContinue` remains available only as a deprecated low-level migration API.
+Use `Advance` for a state-only change and `Step` for a journaled closure.
+
+`Advance` and the commit half of `Step` sample `NOW` from the client process wall clock.
+FerricStore evaluates the supplied `NOW` when it renews the lease;
+server time is not returned or silently substituted by the SDK. Keep worker
+hosts time-synchronized, and use explicit `NowMS` options only for controlled
+tests or deliberate application scheduling. Request deadlines are client-side
+wait limits and do not prove that a dispatched mutation failed. The SDK marks
+such an outcome unknown so a worker recovers by reading or reclaiming instead
+of applying a stale fallback mutation.
+
+These APIs use the same command and recovery semantics over native TCP,
+HTTP/1.1, and HTTP/2.
 
 For service workers, use the same lifecycle helper:
 
@@ -595,7 +700,7 @@ and is deprecated.
 
 ## Toolchain
 
-The module requires Go 1.24 or newer. This repo pins Go 1.26.5 for development and release verification with mise:
+The module requires Go 1.24 or newer. This repo pins Go 1.26.6 for development and release verification with mise:
 
 ```bash
 brew install mise

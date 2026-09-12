@@ -29,12 +29,7 @@ func TestNativePubSubReceivesMessages(t *testing.T) {
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)
 
-		startup, err := readNativeRequestFrame(reader)
-		if err != nil {
-			errc <- err
-			return
-		}
-		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+		if err := serveNativeStartup(reader, writer); err != nil {
 			errc <- err
 			return
 		}
@@ -100,12 +95,7 @@ func TestPubSubReconnectsAndReplaysSubscriptions(t *testing.T) {
 			return
 		}
 		reader, writer := bufio.NewReader(first), bufio.NewWriter(first)
-		startup, err := readNativeRequestFrame(reader)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+		if err := serveNativeStartup(reader, writer); err != nil {
 			errCh <- err
 			return
 		}
@@ -127,12 +117,7 @@ func TestPubSubReconnectsAndReplaysSubscriptions(t *testing.T) {
 		}
 		defer func() { _ = second.Close() }()
 		reader, writer = bufio.NewReader(second), bufio.NewWriter(second)
-		startup, err = readNativeRequestFrame(reader)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+		if err := serveNativeStartup(reader, writer); err != nil {
 			errCh <- err
 			return
 		}
@@ -226,12 +211,7 @@ func TestPubSubReplaysExistingSubscriptionsBeforeNewSubscriptionAfterReconnect(t
 			return
 		}
 		reader, writer := bufio.NewReader(first), bufio.NewWriter(first)
-		startup, err := readNativeRequestFrame(reader)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+		if err := serveNativeStartup(reader, writer); err != nil {
 			errCh <- err
 			return
 		}
@@ -253,12 +233,7 @@ func TestPubSubReplaysExistingSubscriptionsBeforeNewSubscriptionAfterReconnect(t
 		}
 		defer func() { _ = second.Close() }()
 		reader, writer = bufio.NewReader(second), bufio.NewWriter(second)
-		startup, err = readNativeRequestFrame(reader)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+		if err := serveNativeStartup(reader, writer); err != nil {
 			errCh <- err
 			return
 		}
@@ -331,12 +306,7 @@ func TestPubSubReplaysDesiredStateWhenSubscriptionCommandReconnects(t *testing.T
 			return
 		}
 		reader, writer := bufio.NewReader(first), bufio.NewWriter(first)
-		startup, err := readNativeRequestFrame(reader)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+		if err := serveNativeStartup(reader, writer); err != nil {
 			errCh <- err
 			return
 		}
@@ -360,12 +330,7 @@ func TestPubSubReplaysDesiredStateWhenSubscriptionCommandReconnects(t *testing.T
 		}
 		defer func() { _ = second.Close() }()
 		reader, writer = bufio.NewReader(second), bufio.NewWriter(second)
-		startup, err = readNativeRequestFrame(reader)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+		if err := serveNativeStartup(reader, writer); err != nil {
 			errCh <- err
 			return
 		}
@@ -510,12 +475,7 @@ func TestNativeSubscribeFlowWakeUsesMultiplexedEvents(t *testing.T) {
 
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)
-		startup, err := readNativeRequestFrame(reader)
-		if err != nil {
-			errc <- err
-			return
-		}
-		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+		if err := serveNativeStartup(reader, writer); err != nil {
 			errc <- err
 			return
 		}
@@ -686,12 +646,7 @@ func TestNativeExecutorMultiplexesConcurrentRequests(t *testing.T) {
 
 		reader := bufio.NewReader(conn)
 		writer := bufio.NewWriter(conn)
-		startup, err := readNativeRequestFrame(reader)
-		if err != nil {
-			errc <- err
-			return
-		}
-		if err := writeNativeTestResponse(writer, startup, nativeStatusOK, map[string]any{"ready": true}); err != nil {
+		if err := serveNativeStartup(reader, writer); err != nil {
 			errc <- err
 			return
 		}

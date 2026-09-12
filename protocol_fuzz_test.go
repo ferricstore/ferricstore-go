@@ -2,10 +2,31 @@ package ferricstore
 
 import (
 	"bytes"
+	"encoding/json"
 	"math"
 	"reflect"
 	"testing"
 )
+
+func FuzzDecodeHTTPValueBounded(f *testing.F) {
+	for _, seed := range []string{
+		`null`,
+		`{"$ferricstore_bytes":"AAH/"}`,
+		`{"$ferricstore_map":[[{"$ferricstore_bytes":"a2V5"},"value"]]}`,
+		`[true,-1,18446744073709551615,{"nested":"value"}]`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			return
+		}
+		_, _ = decodeHTTPValue(value)
+	})
+}
 
 func FuzzDecodeNativeCompactResponses(f *testing.F) {
 	for _, seed := range [][]byte{

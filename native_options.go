@@ -23,6 +23,7 @@ type NativeOptions struct {
 	MaxQueuedRequests   int
 	MaxResponseBytes    int
 	eventSubscription   *nativeEventSubscription
+	pubSubBatchCodec    bool
 	addressInput        string
 	addressUsesDefault  bool
 	credentialsSet      bool

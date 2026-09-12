@@ -90,13 +90,13 @@ func decodeNativeValueBudget(data []byte, budget *nativeDecodeBudget, depth int)
 		if count > budget.remaining {
 			return nil, nil, errors.New("ferricstore native array exceeds aggregate item limit")
 		}
-		items := make([]any, 0, count)
+		items := make([]any, count)
 		for i := 0; i < count; i++ {
 			value, next, err := decodeNativeValueBudget(rest, budget, depth+1)
 			if err != nil {
 				return nil, nil, err
 			}
-			items = append(items, value)
+			items[i] = value
 			rest = next
 		}
 		return items, rest, nil

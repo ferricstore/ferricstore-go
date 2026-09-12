@@ -66,6 +66,49 @@ func parseNativePubSubMessage(value any) (PubSubMessage, error) {
 	return message, nil
 }
 
+func expandNativePubSubBatch(value any) []any {
+	raw := nativeServerEventValue(value)
+	event, err := nativeEventFromValue(raw)
+	if err != nil || !strings.EqualFold(event.Name, "PUBSUB_MESSAGE") ||
+		!strings.EqualFold(asString(event.Payload["kind"]), "message_batch") {
+		return []any{value}
+	}
+	channel, err := requiredPubSubString(event.Payload, "channel")
+	if err != nil {
+		return []any{value}
+	}
+	messages, ok := event.Payload["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return []any{value}
+	}
+	for _, message := range messages {
+		if _, ok := compactBytes(message); !ok {
+			return []any{value}
+		}
+	}
+
+	wireBytes := nativeBufferedEventSize(value)
+	perMessageBytes := max(1, (wireBytes+len(messages)-1)/len(messages))
+	expanded := make([]any, 0, len(messages))
+	for _, message := range messages {
+		expandedValue := map[string]any{
+			"event": "PUBSUB_MESSAGE",
+			"at_ms": event.AtMS,
+			"payload": map[string]any{
+				"kind": "message", "channel": channel, "message": message,
+			},
+		}
+		if serverEvent, ok := value.(nativeServerEvent); ok {
+			serverEvent.value = expandedValue
+			serverEvent.wireBytes = perMessageBytes
+			expanded = append(expanded, serverEvent)
+		} else {
+			expanded = append(expanded, expandedValue)
+		}
+	}
+	return expanded
+}
+
 func requiredPubSubString(payload map[string]any, field string) (string, error) {
 	value, present := payload[field]
 	if !present {

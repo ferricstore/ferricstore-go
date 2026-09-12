@@ -30,6 +30,12 @@ func TestIntegrationKVAndFlowRoundTrip(t *testing.T) {
 	if !ok || profile["plan"] != "pro" {
 		t.Fatalf("unexpected profile: %#v", profile)
 	}
+	rawProfile, err := client.CommandExecWithContext(
+		ctx, "GET", &RequestContext{Subject: "go-sdk-smoke", Tenant: "tenant-a"}, key,
+	)
+	if err != nil || len(asString(rawProfile)) == 0 {
+		t.Fatalf("COMMAND_EXEC GET with request context = %#v, %v", rawProfile, err)
+	}
 
 	now := time.Now().UnixMilli()
 	_ = must[*FlowRecord](t)(client.Create(ctx, CreateOptions{

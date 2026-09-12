@@ -245,7 +245,11 @@ func (c *Client) GovernanceOverview(ctx context.Context, opt ApprovalListOptions
 	appendOpt(&args, "STATUS", canonicalAdminEnum(opt.Status))
 	appendOpt(&args, "FLOW_ID", opt.FlowID)
 	appendIntPtr(&args, "LIMIT", opt.Limit)
-	m, err := mapResult(c.typedReply(ctx, args...))
+	value, err := c.typedReply(ctx, args...)
+	if err == nil {
+		value, err = normalizeGovernanceLimitLeaseKeys(value)
+	}
+	m, err := mapResult(value, err)
 	if err != nil {
 		return GovernanceOverview{}, err
 	}

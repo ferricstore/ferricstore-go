@@ -118,6 +118,12 @@ func (e *NativeExecutor) scheduleGoAwayDrain(conn net.Conn, done <-chan struct{}
 }
 
 func (e *NativeExecutor) deliverEvent(value any) {
+	for _, event := range expandNativePubSubBatch(value) {
+		e.deliverSingleEvent(event)
+	}
+}
+
+func (e *NativeExecutor) deliverSingleEvent(value any) {
 	size := nativeBufferedEventSize(value)
 	e.mu.Lock()
 	events := e.events
@@ -156,6 +162,18 @@ func (e *NativeExecutor) enableEventDelivery() {
 	}
 }
 
+func (e *NativeExecutor) enablePubSubBatchDelivery() {
+	e.enableEventDelivery()
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.isClosed && e.conn == nil && e.connectInFlight == nil {
+		e.opts.pubSubBatchCodec = true
+	}
+}
+
 func nativeBufferedEventSize(value any) int {
 	switch event := value.(type) {
 	case nativeServerEvent:
@@ -189,46 +207,51 @@ func (e *NativeExecutor) nextEvent(ctx context.Context) (any, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	e.mu.Lock()
-	events := e.events
-	isClosed := e.isClosed
-	generationBefore := e.connectionGeneration
-	e.mu.Unlock()
-	if isClosed {
-		return nil, net.ErrClosed
-	}
-	if events != nil {
+	for {
+		e.mu.Lock()
+		events := e.events
+		closed := e.closed
+		connectionDone := e.connectionDone
+		isClosed := e.isClosed
+		connected := e.conn != nil
+		generation := e.connectionGeneration
+		if events != nil {
+			select {
+			case event := <-events:
+				e.mu.Unlock()
+				return e.consumeEvent(event), nil
+			default:
+			}
+		}
+		e.mu.Unlock()
+		if isClosed || events == nil {
+			return nil, net.ErrClosed
+		}
+		if !connected {
+			if err := e.ensureConnected(ctx); err != nil {
+				return nil, err
+			}
+			if generation != 0 {
+				// Tell PubSub to replay its desired subscriptions before it waits
+				// on the newly installed connection.
+				return nil, errNativeConnectionUnavailable
+			}
+			// A first connection needs no replay. Recheck the shared queue after
+			// installing it before waiting for its first event.
+			continue
+		}
 		select {
 		case event := <-events:
 			return e.consumeEvent(event), nil
-		default:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-closed:
+			return nil, net.ErrClosed
+		case <-connectionDone:
+			// A final event and EOF can arrive back-to-back. Loop to drain the
+			// buffered event before asking the caller to replay subscriptions.
+			continue
 		}
-	}
-	if err := e.ensureConnected(ctx); err != nil {
-		return nil, err
-	}
-	e.mu.Lock()
-	events = e.events
-	closed := e.closed
-	connectionDone := e.connectionDone
-	isClosed = e.isClosed
-	generationAfter := e.connectionGeneration
-	e.mu.Unlock()
-	if isClosed || events == nil {
-		return nil, net.ErrClosed
-	}
-	if generationBefore != 0 && generationAfter != generationBefore {
-		return nil, errNativeConnectionUnavailable
-	}
-	select {
-	case event := <-events:
-		return e.consumeEvent(event), nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-closed:
-		return nil, net.ErrClosed
-	case <-connectionDone:
-		return nil, errNativeConnectionUnavailable
 	}
 }
 

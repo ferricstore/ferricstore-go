@@ -36,6 +36,13 @@ func TestIntegrationDockerScriptDefaultsToPinnedFerricStore(t *testing.T) {
 		if !strings.Contains(string(body), pinnedImage) {
 			t.Fatalf("%s should use the pinned integration image %s", path, pinnedImage)
 		}
+		for _, image := range regexp.MustCompile(
+			`quay\.io/ferricstore/ferricstore:[^@[:space:]]+@sha256:[0-9a-f]{64}`,
+		).FindAllString(string(body), -1) {
+			if image != pinnedImage {
+				t.Fatalf("%s contains stale latest-server image %s, want %s", path, image, pinnedImage)
+			}
+		}
 	}
 }
 
@@ -213,8 +220,8 @@ func TestToolchainPinsIncludeTLSVulnerabilityFix(t *testing.T) {
 		if strings.Contains(contents, "1.26.4") {
 			t.Fatalf("%s pins Go 1.26.4, which is affected by GO-2026-5856", path)
 		}
-		if !strings.Contains(contents, "1.26.5") {
-			t.Fatalf("%s must pin Go 1.26.5 or newer", path)
+		if !strings.Contains(contents, "1.26.6") {
+			t.Fatalf("%s must pin Go 1.26.6 or newer", path)
 		}
 	}
 }

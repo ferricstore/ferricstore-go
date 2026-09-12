@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 benchmark_time="${FERRICSTORE_BENCH_GATE_TIME:-100ms}"
 benchmark_count="${FERRICSTORE_BENCH_GATE_COUNT:-3}"
 runtime_scale="${FERRICSTORE_BENCH_GATE_RUNTIME_SCALE:-1}"
-benchmark_pattern='^(BenchmarkAutoBatchExplicitPipeline100|BenchmarkValidateAppliedPolicySnapshot|BenchmarkNativeFlowControllerUncontended|BenchmarkNativeResponseAssemblerSingleFrame|BenchmarkNativeResponseAssemblerChunkedBinary|BenchmarkKeyValueMGet100|BenchmarkKeyValueMSet100|BenchmarkTopologySameRoutePlan100|BenchmarkTopologyRouteGrouping1000)$'
+benchmark_pattern='^(BenchmarkAutoBatchExplicitPipeline100|BenchmarkHTTPEncodePipeline100|BenchmarkHTTPDecodeResults100|BenchmarkValidateAppliedPolicySnapshot|BenchmarkNativeFlowControllerUncontended|BenchmarkNativeResponseAssemblerSingleFrame|BenchmarkNativeResponseAssemblerChunkedBinary|BenchmarkKeyValueMGet100|BenchmarkKeyValueMSet100|BenchmarkTopologySameRoutePlan100|BenchmarkTopologyRouteGrouping1000)$'
 
 run_go() {
   if command -v go >/dev/null 2>&1; then
@@ -56,6 +56,8 @@ BEGIN {
   # Runtime limits deliberately allow slower shared CI hosts while catching
   # order-of-magnitude regressions. Allocation limits guard the stable shape.
   add("BenchmarkAutoBatchExplicitPipeline100", 500000, 65536, 400)
+  add("BenchmarkHTTPEncodePipeline100", 1000000, 131072, 1500)
+  add("BenchmarkHTTPDecodeResults100", 500000, 65536, 500)
   add("BenchmarkValidateAppliedPolicySnapshot", 5000, 0, 0)
   add("BenchmarkNativeFlowControllerUncontended", 5000, 0, 0)
   add("BenchmarkNativeResponseAssemblerSingleFrame", 2000, 128, 2)

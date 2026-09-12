@@ -77,19 +77,25 @@ type WorkflowContext struct {
 	Client    *Client
 	Job       FlowRecord
 	StateName string
+	state     *workflowContextState
 }
 
-func (c WorkflowContext) ID() string   { return c.Job.ID }
-func (c WorkflowContext) Type() string { return c.Job.Type }
+func (c WorkflowContext) ID() string   { return c.currentJob().ID }
+func (c WorkflowContext) Type() string { return c.currentJob().Type }
 func (c WorkflowContext) State() string {
+	if runState := c.currentJob().RunState; runState != "" {
+		return runState
+	}
 	if c.StateName != "" {
 		return c.StateName
 	}
-	return c.Job.State
+	return c.currentJob().State
 }
-func (c WorkflowContext) PartitionKey() string  { return c.Job.PartitionKey }
-func (c WorkflowContext) Payload() any          { return c.Job.Payload }
-func (c WorkflowContext) Value(name string) any { return c.Job.Values[name] }
+func (c WorkflowContext) PartitionKey() string { return c.currentJob().PartitionKey }
+func (c WorkflowContext) Payload() any         { return c.currentJob().Payload }
+func (c WorkflowContext) Value(name string) any {
+	return c.currentJob().Values[name]
+}
 
 type WorkflowClient struct {
 	client *Client
@@ -334,11 +340,26 @@ func (w *WorkflowWorker) apply(
 	handler WorkflowHandler,
 	errorPolicy ErrorPolicy,
 ) error {
+	workflowCtx := WorkflowContext{
+		Client:    w.workflow.client,
+		Job:       job,
+		StateName: stateName,
+		state:     newWorkflowContextState(job),
+	}
 	outcome, err := invokeWorkflowHandler(
 		handler,
 		ctx,
-		WorkflowContext{Client: w.workflow.client, Job: job, StateName: stateName},
+		workflowCtx,
 	)
+	// Context durable operations rotate the lease and fencing token. Always use
+	// the most recent claim for error policy handling and outcome validation.
+	job = workflowCtx.currentJob()
+	if uncertain := workflowCtx.uncertainty(); uncertain != nil {
+		// A successful commit may be hidden behind this transport/response
+		// failure. Applying an error policy or handler outcome with the old claim
+		// would be a second, stale mutation; recovery must inspect or reclaim.
+		return uncertain
+	}
 	if err != nil {
 		if errorPolicy == ErrorPolicyReturn {
 			return err
@@ -426,6 +447,21 @@ func (w *WorkflowWorker) apply(
 			StateMeta:    value.StateMeta,
 			NamedValues:  value.NamedValues,
 		})
+	case AppliedOutcome:
+		if err = value.validate(job); err == nil {
+			// STEP_CONTINUE renews the claim so a handler can chain more durable
+			// operations. Returning AppliedOutcome means the handler is finished;
+			// release that refreshed claim into its logical run state so it does
+			// not retain worker capacity until lease expiry.
+			_, err = w.workflow.client.Transition(ctx, TransitionOptions{
+				ID:           value.claim.ID,
+				FromState:    value.claim.State,
+				ToState:      value.claim.RunState,
+				LeaseToken:   value.claim.LeaseToken,
+				FencingToken: value.claim.FencingToken,
+				PartitionKey: value.claim.PartitionKey,
+			})
+		}
 	default:
 		err = errors.New("workflow handler returned nil or unknown outcome")
 	}
@@ -447,6 +483,10 @@ func workflowOutcomeValue(outcome Outcome) (Outcome, error) {
 			return *value, nil
 		}
 	case *FailResult:
+		if value != nil {
+			return *value, nil
+		}
+	case *AppliedOutcome:
 		if value != nil {
 			return *value, nil
 		}

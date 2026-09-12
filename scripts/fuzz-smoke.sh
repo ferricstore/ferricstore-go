@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 fuzz_time="${FERRICSTORE_FUZZ_TIME:-3s}"
 fuzz_parallel="${FERRICSTORE_FUZZ_PARALLEL:-4}"
 targets=(
+  FuzzDecodeHTTPValueBounded
   FuzzDecodeNativeValueBounded
   FuzzDecodeNativeCompactResponses
   FuzzNativeValueRoundTrip

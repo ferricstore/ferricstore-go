@@ -23,10 +23,10 @@ func (e *TopologyNativeExecutor) pubSubControlAdapter(
 			continue
 		}
 		if err == nil {
+			adapter.enablePubSubBatchDelivery()
 			err = adapter.ensureConnectedLocked(ctx)
 		}
 		if err == nil {
-			adapter.enableEventDelivery()
 			return adapter, nil
 		}
 		lastErr = err

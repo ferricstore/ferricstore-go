@@ -22,10 +22,12 @@ func TestIntegrationNativeHelpersAndDiagnostics(t *testing.T) {
 
 	requireString(t, must[string](t)(client.Ping(ctx)), "PONG")
 	requireString(t, must[string](t)(client.Echo(ctx, "hello")), "hello")
-	if err := client.ClientSetName(ctx, "go-sdk-"+runID); err != nil {
-		t.Fatal(err)
+	if !integrationUsesHTTP() {
+		if err := client.ClientSetName(ctx, "go-sdk-"+runID); err != nil {
+			t.Fatal(err)
+		}
+		requireMap(t, must[map[string]any](t)(client.ClientInfo(ctx)))
 	}
-	requireMap(t, must[map[string]any](t)(client.ClientInfo(ctx)))
 
 	encodedOld := must[any](t)(client.Codec().Encode("old"))
 	pipeline := must[[]any](t)(client.Pipeline(ctx, [][]any{
@@ -48,16 +50,18 @@ func TestIntegrationNativeHelpersAndDiagnostics(t *testing.T) {
 		t.Fatalf("empty key info: %#v", info)
 	}
 
-	first := must[FetchOrComputeResult](t)(client.FetchOrCompute(ctx, cacheKey, 60_000, "integration"))
-	if first.Status == "" || first.Status == "hit" {
-		t.Fatalf("expected compute response, got %#v", first)
+	if !integrationUsesHTTP() {
+		first := must[FetchOrComputeResult](t)(client.FetchOrCompute(ctx, cacheKey, 60_000, "integration"))
+		if first.Status == "" || first.Status == "hit" {
+			t.Fatalf("expected compute response, got %#v", first)
+		}
+		requireTrue(t, must[bool](t)(client.FetchOrComputeResult(ctx, cacheKey, first.OwnershipToken, map[string]any{"computed": true}, 60_000)))
+		if cached := must[FetchOrComputeResult](t)(client.FetchOrCompute(ctx, cacheKey, 60_000, "")); cached.Status != "hit" {
+			t.Fatalf("expected cache hit, got %#v", cached)
+		}
+		failed := must[FetchOrComputeResult](t)(client.FetchOrCompute(ctx, errorKey, 60_000, "integration"))
+		requireTrue(t, must[bool](t)(client.FetchOrComputeError(ctx, errorKey, failed.OwnershipToken, "boom")))
 	}
-	requireTrue(t, must[bool](t)(client.FetchOrComputeResult(ctx, cacheKey, first.OwnershipToken, map[string]any{"computed": true}, 60_000)))
-	if cached := must[FetchOrComputeResult](t)(client.FetchOrCompute(ctx, cacheKey, 60_000, "")); cached.Status != "hit" {
-		t.Fatalf("expected cache hit, got %#v", cached)
-	}
-	failed := must[FetchOrComputeResult](t)(client.FetchOrCompute(ctx, errorKey, 60_000, "integration"))
-	requireTrue(t, must[bool](t)(client.FetchOrComputeError(ctx, errorKey, failed.OwnershipToken, "boom")))
 
 	requireMap(t, must[map[string]any](t)(client.ServerInfo(ctx, "server")))
 	requirePositive(t, must[int64](t)(client.CommandCount(ctx)))

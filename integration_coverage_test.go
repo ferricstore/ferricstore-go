@@ -28,6 +28,8 @@ type integrationTrackingExecutor struct {
 	inner Executor
 }
 
+func (*integrationTrackingExecutor) supportsNativeRequestContextArguments() {}
+
 func (e *integrationTrackingExecutor) Do(ctx context.Context, args ...any) (any, error) {
 	value, err := e.inner.Do(ctx, args...)
 	if err == nil {
@@ -270,6 +272,10 @@ var (
 
 func TestMain(m *testing.M) {
 	code := m.Run()
+	if err := writeObservedIntegrationCommands(); err != nil {
+		fmt.Fprintf(os.Stderr, "write observed integration commands: %v\n", err)
+		code = 1
+	}
 	if code == 0 && shouldCheckIntegrationCommandCoverage() {
 		if missing := missingIntegrationCommands(); len(missing) > 0 {
 			fmt.Fprintf(os.Stderr, "integration command coverage missing %d commands:\n%s\n", len(missing), strings.Join(missing, "\n"))
@@ -277,6 +283,21 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(code)
+}
+
+func writeObservedIntegrationCommands() error {
+	path := os.Getenv("FERRICSTORE_OBSERVED_COMMANDS_FILE")
+	if path == "" {
+		return nil
+	}
+	integrationCommandCoverage.Lock()
+	commands := make([]string, 0, len(integrationCommandCoverage.seen))
+	for command := range integrationCommandCoverage.seen {
+		commands = append(commands, command)
+	}
+	integrationCommandCoverage.Unlock()
+	sort.Strings(commands)
+	return os.WriteFile(path, []byte(strings.Join(commands, "\n")+"\n"), 0o600)
 }
 
 func TestMissingIntegrationCommandsTreatsSkippedCommandsAsMissingWhenStrict(t *testing.T) {
@@ -413,7 +434,7 @@ func missingIntegrationCommands() []string {
 	defer integrationCommandCoverage.Unlock()
 
 	return missingIntegrationCommandsFrom(
-		expectedIntegrationCommands(),
+		expectedIntegrationCommandsForTransport(integrationUsesHTTP()),
 		integrationCommandCoverage.seen,
 		integrationCommandCoverage.skipped,
 		strictIntegrationCommandCoverage(),

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,7 +20,7 @@ var errClientExecutorRequired = errors.New("ferricstore client requires an execu
 type missingClientExecutor struct{}
 
 func (missingClientExecutor) Do(context.Context, ...any) (any, error) {
-	return nil, errClientExecutorRequired
+	return nil, markCommandNotSent(errClientExecutorRequired)
 }
 
 type pipelineExecutor interface {
@@ -106,7 +107,7 @@ func WithConcurrentCodec(codec Codec) ClientOption {
 // executor; configure an injected NativeExecutor when constructing it.
 func WithNativeOptions(opts ...NativeOption) ClientOption {
 	return func(c *Client) {
-		if !c.ownsNativeConfiguration {
+		if !c.ownsTransportConfiguration {
 			return
 		}
 		native, ok := c.exec.(*NativeExecutor)
@@ -123,10 +124,10 @@ func WithNativeOptions(opts ...NativeOption) ClientOption {
 }
 
 type Client struct {
-	exec                    Executor
-	closer                  func() error
-	codec                   Codec
-	ownsNativeConfiguration bool
+	exec                       Executor
+	closer                     func() error
+	codec                      Codec
+	ownsTransportConfiguration bool
 
 	sessionGate  sessionGate
 	legacyGate   sessionGate
@@ -159,27 +160,45 @@ func NewClient(addr string, opts ...ClientOption) *Client {
 }
 
 func NewClientFromURL(rawurl string, opts ...ClientOption) (*Client, error) {
-	exec, err := NewNativeExecutorFromURL(rawurl)
-	if err != nil {
-		return nil, err
+	scheme, _, _ := strings.Cut(rawurl, ":")
+	switch strings.ToLower(scheme) {
+	case "http", "https":
+		exec, err := NewHTTPExecutorFromURL(rawurl)
+		if err != nil {
+			return nil, err
+		}
+		client := newClientWithExecutor(exec, true, opts...)
+		if exec.configErr != nil {
+			_ = exec.Close()
+			return nil, exec.configErr
+		}
+		client.closer = exec.Close
+		return client, nil
+	case "ferric", "ferrics":
+		exec, err := NewNativeExecutorFromURL(rawurl)
+		if err != nil {
+			return nil, err
+		}
+		client := newClientWithExecutor(exec, true, opts...)
+		client.closer = exec.Close
+		return client, nil
+	default:
+		return nil, errors.New("FerricStore URLs must use ferric://, ferrics://, http://, or https://")
 	}
-	client := newClientWithExecutor(exec, true, opts...)
-	client.closer = exec.Close
-	return client, nil
 }
 
 func NewClientWithExecutor(exec Executor, opts ...ClientOption) *Client {
 	return newClientWithExecutor(exec, false, opts...)
 }
 
-func newClientWithExecutor(exec Executor, ownsNativeConfiguration bool, opts ...ClientOption) *Client {
+func newClientWithExecutor(exec Executor, ownsTransportConfiguration bool, opts ...ClientOption) *Client {
 	if interfaceIsNil(exec) {
 		exec = missingClientExecutor{}
 	}
 	client := &Client{
-		exec:                    exec,
-		codec:                   RawCodec{},
-		ownsNativeConfiguration: ownsNativeConfiguration,
+		exec:                       exec,
+		codec:                      RawCodec{},
+		ownsTransportConfiguration: ownsTransportConfiguration,
 	}
 	for _, opt := range opts {
 		if opt != nil {
