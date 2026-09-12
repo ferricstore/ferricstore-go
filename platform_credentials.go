@@ -56,7 +56,7 @@ func NewPlatformCredentialBroker(controlURL string, client *http.Client) (*Platf
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("ferricstore platform control URL must not contain credentials, query, or fragment")
 	}
-	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && loopbackHost(parsed.Hostname())) {
+	if parsed.Scheme != "https" && (parsed.Scheme != "http" || !loopbackHost(parsed.Hostname())) {
 		return nil, errors.New("ferricstore platform control URL must use HTTPS")
 	}
 	if client == nil {
@@ -125,14 +125,14 @@ func (b *PlatformCredentialBroker) Exchange(
 	if err != nil {
 		return PlatformCredential{}, fmt.Errorf("exchange Platform credential: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, platformCredentialResponseLimit+1))
 	if err != nil {
 		return PlatformCredential{}, fmt.Errorf("read Platform credential response: %w", err)
 	}
 	if len(responseBody) > platformCredentialResponseLimit {
-		return PlatformCredential{}, errors.New("Platform credential response exceeds one MiB")
+		return PlatformCredential{}, errors.New("platform credential response exceeds one MiB")
 	}
 	if response.StatusCode != http.StatusCreated {
 		return PlatformCredential{}, platformExchangeError(response.StatusCode, responseBody)
@@ -153,11 +153,11 @@ func (b *PlatformCredentialBroker) Exchange(
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(responseBody, &decoded); err != nil {
-		return PlatformCredential{}, errors.New("Platform credential response is invalid JSON")
+		return PlatformCredential{}, errors.New("platform credential response is invalid JSON")
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, decoded.Data.ExpiresAt)
 	if err != nil || !expiresAt.After(time.Now()) {
-		return PlatformCredential{}, errors.New("Platform credential response has an invalid expiry")
+		return PlatformCredential{}, errors.New("platform credential response has an invalid expiry")
 	}
 	if decoded.Data.Endpoint == "" || decoded.Data.Username == "" || decoded.Data.Password == "" {
 		return PlatformCredential{}, errors.New("Platform credential response is incomplete")
