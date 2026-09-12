@@ -20,14 +20,14 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned tested FerricStore 0.11.14 image by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned tested FerricStore 0.11.15 image by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
 Go SDK 0.12.2 requires FerricStore 0.11.4 or newer for native TCP. The HTTP
 transport requires the stateless gateway shipped by FerricStore OSS 0.11.11 or
-newer. With FerricStore 0.11.14 the native transport
+newer. With FerricStore 0.11.15 the native transport
 negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches,
 compact Pub/Sub mode 35 for homogeneous `PUBLISH` batches, and ordered
 `pubsub_batch_v1` receive expansion. The native wire protocol and generic
@@ -102,7 +102,7 @@ To run the complete HTTP-compatible integration surface against a real TLS
 listener with ACL authentication, use:
 
 ```bash
-FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.14@sha256:f7d29befefa15bce4b3755bf786cf7620c814f13bbd336c0d9955581b323b60e \
+FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.15@sha256:8d86005f22eac945ee13bd4c909f3149435be1dca747839e091830d238d4b752 \
   ./scripts/integration-http-tls.sh
 ```
 
@@ -111,6 +111,43 @@ a restricted user's forbidden `SET` are rejected, and configures
 `FERRICSTORE_USERNAME`, `FERRICSTORE_PASSWORD`, and `FERRICSTORE_CA_FILE` for
 the SDK. Connection-affine transaction, subscription, and reconnect scenarios
 remain in the native integration suite.
+
+### Platform credential broker
+
+Managed Platform users and services authenticate to the control plane with a
+time-limited `fsp_user_` token or an `fsp_sa_` service-account token. Exchange
+it for a short-lived, namespace-scoped Enterprise credential and construct the
+native client in one call:
+
+```go
+broker, err := ferricstore.NewPlatformCredentialBroker(
+	"https://platform.example.com",
+	nil,
+)
+if err != nil {
+	return err
+}
+
+client, credential, err := broker.NewClient(ctx, platformToken,
+	ferricstore.PlatformCredentialRequest{
+		Organization: "acme",
+		ClusterID:    "018f20dc-7c39-7f16-9fa8-7e807f9a0f48",
+		TTL:          15 * time.Minute,
+	},
+)
+if err != nil {
+	return err
+}
+defer func() { _ = client.Close() }()
+
+_ = credential.ExpiresAt // refresh and replace the client before this deadline
+```
+
+The broker requires HTTPS except on loopback, rejects redirects and
+credential-bearing URLs, bounds response size, and never forwards the Platform
+token to FerricStore. Native credentials expire after 1 minute–1 hour and are
+authoritatively rejected by the packaged Enterprise data plane, including on
+an already-authenticated connection.
 
 Default client behavior matches the Python SDK:
 
