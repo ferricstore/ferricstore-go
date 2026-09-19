@@ -553,6 +553,7 @@ func TestClaimDueDecodesNativeMaps(t *testing.T) {
 	want := []any{
 		"FLOW.CLAIM_DUE", "order", "STATE", "queued", "WORKER", "worker-1",
 		"LEASE_MS", int64(30000), "LIMIT", 10, "NOW", int64(100), "PARTITION", "tenant:1",
+		"RETURN", "RECORDS",
 	}
 	assertCall(t, exec, want)
 }

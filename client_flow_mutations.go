@@ -190,6 +190,9 @@ func (c *Client) Rewind(ctx context.Context, opt RewindOptions) (*FlowRecord, er
 		return nil, err
 	}
 	args := []any{"FLOW.REWIND", opt.ID, "TO_EVENT", opt.ToEvent, "NOW", valueOrNow(opt.NowMS)}
+	if err := c.appendEncoded(&args, "REASON", opt.Reason); err != nil {
+		return nil, err
+	}
 	appendOpt(&args, "PARTITION", opt.PartitionKey)
 	appendOpt(&args, "EXPECT_STATE", opt.ExpectState)
 	if opt.RunAtMS != 0 {
