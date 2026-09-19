@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.12.3 - 2026-09-19
+
+- Preserve complete Flow records, payloads, selected values, lease metadata,
+  and state metadata for claim and reclaim operations that request full records.
+- Encode rewind reasons through the configured codec and cover nested retry
+  policies plus native Flow worker-contract regressions with focused tests.
+
 ## 0.12.2 - 2026-09-01
 
 - Keep the README SDK version aligned with the exported release version and
