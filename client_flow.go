@@ -329,6 +329,8 @@ func (c *Client) claimDue(ctx context.Context, opt ClaimDueOptions) (any, error)
 		} else {
 			appendOpt(&args, "RETURN", "JOBS_COMPACT")
 		}
+	} else {
+		appendOpt(&args, "RETURN", "RECORDS")
 	}
 	appendInt64Ptr(&args, "BLOCK", opt.BlockMS)
 	appendPayloadRead(&args, opt.Payload, opt.PayloadMaxBytes)
@@ -392,6 +394,8 @@ func (c *Client) reclaim(ctx context.Context, opt ReclaimOptions) (any, error) {
 		} else {
 			appendOpt(&args, "RETURN", "JOBS_COMPACT")
 		}
+	} else {
+		appendOpt(&args, "RETURN", "RECORDS")
 	}
 	appendPayloadRead(&args, opt.Payload, opt.PayloadMaxBytes)
 	appendValueReturn(&args, opt.Values)

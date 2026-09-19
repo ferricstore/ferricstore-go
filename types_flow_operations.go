@@ -163,6 +163,7 @@ type CancelOptions struct {
 type RewindOptions struct {
 	ID           string
 	ToEvent      string
+	Reason       any
 	PartitionKey string
 	ExpectState  string
 	RunAtMS      int64

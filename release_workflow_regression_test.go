@@ -103,7 +103,7 @@ func TestDurableStepDocsCoverVersionMigrationAndWorkerRecovery(t *testing.T) {
 	}
 	docs := strings.Join(strings.Fields(string(contents)), " ")
 	for _, text := range []string{
-		"Go SDK 0.12.2 requires FerricStore 0.11.4",
+		"Go SDK 0.12.3 requires FerricStore 0.11.4",
 		"The step name is a stable replay identity",
 		"External providers still need a stable idempotency key",
 		"A waiting workflow does not occupy a worker",
@@ -113,5 +113,35 @@ func TestDurableStepDocsCoverVersionMigrationAndWorkerRecovery(t *testing.T) {
 		if !strings.Contains(docs, text) {
 			t.Errorf("durable-step documentation is missing %q", text)
 		}
+	}
+}
+
+func TestRewindReasonIntegrationIsExcludedOnlyFromCompatibilityFloor(t *testing.T) {
+	rewind, err := os.ReadFile("integration_flow_rewind_reason_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rewind), "//go:build integration && !compatibility_floor") {
+		t.Fatal("rewind-reason persistence must be excluded only from the explicit compatibility-floor tag")
+	}
+
+	workflow, err := os.ReadFile(".github/workflows/test.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowText := string(workflow)
+	if !strings.Contains(workflowText, "go-test-tags: \"integration,compatibility_floor\"") {
+		t.Fatal("the 0.11.4 compatibility lane must opt out of the 0.11.19-only rewind test")
+	}
+	if !strings.Contains(workflowText, "go-test-tags: \"integration\"") {
+		t.Fatal("the latest integration lane must retain the rewind test")
+	}
+
+	runner, err := os.ReadFile("scripts/integration-docker.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runner), "FERRICSTORE_GO_TEST_TAGS") {
+		t.Fatal("the integration runner must honor the matrix test-tag selection")
 	}
 }

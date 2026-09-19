@@ -63,7 +63,7 @@ func HTTPCommandDisposition(name string) string {
 }
 
 var httpStructuredFlowCommands = map[string]struct{}{
-	"FLOW.VALUE.PUT": {}, "FLOW.VALUE.MGET": {}, "FLOW.STEP_CONTINUE": {}, "FLOW.START_AND_CLAIM": {},
+	"FLOW.CREATE": {}, "FLOW.VALUE.PUT": {}, "FLOW.VALUE.MGET": {}, "FLOW.STEP_CONTINUE": {}, "FLOW.START_AND_CLAIM": {},
 	"FLOW.RUN_STEPS_MANY": {}, "FLOW.SCHEDULE.CREATE": {}, "FLOW.SCHEDULE.GET": {},
 	"FLOW.SCHEDULE.DELETE": {}, "FLOW.SCHEDULE.FIRE_DUE": {}, "FLOW.SCHEDULE.LIST": {},
 	"FLOW.SCHEDULE.FIRE": {}, "FLOW.SCHEDULE.PAUSE": {}, "FLOW.SCHEDULE.RESUME": {},
