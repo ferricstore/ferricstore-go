@@ -33,6 +33,9 @@ compact Pub/Sub mode 35 for homogeneous `PUBLISH` batches, and ordered
 `pubsub_batch_v1` receive expansion. The native wire protocol and generic
 compatibility path remain v1.
 
+Rewind reason persistence requires FerricStore OSS 0.11.19 or newer; the SDK's
+general compatibility floor remains 0.11.4.
+
 ## Client
 
 ```go

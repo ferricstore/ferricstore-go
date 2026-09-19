@@ -97,10 +97,13 @@ jobs:
         include:
           - server-version: "0.11.4"
             image: ghcr.io/ferricstore/ferricstore:0.11.4@sha256:ee49d39e3b15cd6298537a88818647e71bcfc7571921e88bcf3a201311c690fc
+            go-test-tags: "integration,compatibility_floor"
           - server-version: "0.11.17"
             image: quay.io/ferricstore/ferricstore:0.11.17@sha256:b1f260a5f01c8976c31daa828e375c8bb2e173f66e8ffc384b548a8b3d223230
+            go-test-tags: "integration"
     env:
       FERRICSTORE_IMAGE: ${{ matrix.image }}
+      FERRICSTORE_GO_TEST_TAGS: ${{ matrix.go-test-tags }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
