@@ -8,6 +8,8 @@
   and state metadata for claim and reclaim operations that request full records.
 - Encode rewind reasons through the configured codec and cover nested retry
   policies plus native Flow worker-contract regressions with focused tests.
+- Refresh the pinned current-server integration image to FerricStore OSS 0.11.19
+  while retaining the FerricStore 0.11.4 compatibility-floor lane.
 
 ## 0.12.2 - 2026-09-01
 
