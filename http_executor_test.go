@@ -260,6 +260,70 @@ func TestHTTPExecutorUsesStructuredFlowDescriptors(t *testing.T) {
 	}
 }
 
+func TestHTTPExecutorUsesStructuredFlowCreateForExtendedOptions(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		writeHTTPJSON(t, writer, http.StatusOK, map[string]any{
+			"encoding": httpBinaryEncoding,
+			"results":  []any{map[string]any{"status": "ok", "value": map[string]any{}}},
+		})
+	}))
+	defer server.Close()
+
+	exec, err := NewHTTPExecutorFromURL(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = exec.Close() }()
+
+	if _, err := exec.Do(
+		context.Background(),
+		"FLOW.CREATE", "flow-1", "TYPE", "checkout", "STATE", "queued", "NOW", int64(100),
+		"PARTITION", "tenant-1", "PAYLOAD", []byte(`{"kind":"claim"}`),
+		"IDEMPOTENT", true, "ATTRIBUTE", "tenant", "acme",
+		"STATE_META", "attempt", int64(7), "VALUE", "result", []byte(`"value"`),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	commands, ok := received["commands"].([]any)
+	if !ok || len(commands) != 1 {
+		t.Fatalf("commands = %#v", received["commands"])
+	}
+	encoded, ok := commands[0].(map[string]any)
+	if !ok {
+		t.Fatalf("FLOW.CREATE should use a structured descriptor, got %#v", commands[0])
+	}
+	if encoded["command"] != "FLOW.CREATE" || encoded["opcode"] != float64(nativeOpFlowCreate) {
+		t.Fatalf("FLOW.CREATE descriptor = %#v", encoded)
+	}
+	payloadValue, err := decodeHTTPValue(encoded["payload"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, ok := payloadValue.(map[string]any)
+	if !ok {
+		t.Fatalf("FLOW.CREATE payload = %#v", payloadValue)
+	}
+	if asString(payload["id"]) != "flow-1" || asString(payload["type"]) != "checkout" ||
+		asString(payload["state"]) != "queued" || asString(payload["partition_key"]) != "tenant-1" {
+		t.Fatalf("FLOW.CREATE identity payload = %#v", payload)
+	}
+	if string(payload["payload"].([]byte)) != `{"kind":"claim"}` || payload["idempotent"] != true {
+		t.Fatalf("FLOW.CREATE data payload = %#v", payload)
+	}
+	if asString(payload["attributes"].(map[string]any)["tenant"]) != "acme" ||
+		asString(payload["state_meta"].(map[string]any)["attempt"]) != "7" {
+		t.Fatalf("FLOW.CREATE metadata payload = %#v", payload)
+	}
+	if string(payload["values"].(map[string]any)["result"].([]byte)) != `"value"` {
+		t.Fatalf("FLOW.CREATE values payload = %#v", payload["values"])
+	}
+}
+
 func TestHTTPTopLevelTimeoutErrorKeepsRetrySafetyExplicit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writeHTTPJSON(t, writer, http.StatusServiceUnavailable, map[string]any{
