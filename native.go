@@ -504,8 +504,8 @@ func (e *NativeExecutor) pipelineSequentialWithoutGate(ctx context.Context, comm
 			command.budget, command.replayPolicy,
 		)
 		results[index] = pipelineItemResult{value: value, err: err}
-		if ctx != nil && ctx.Err() != nil {
-			markPipelineNotExecuted(results[index+1:], ctx.Err())
+		if contextErr := requestContextError(ctx); contextErr != nil {
+			markPipelineNotExecuted(results[index+1:], contextErr)
 			return results, nil
 		}
 	}

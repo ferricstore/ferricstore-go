@@ -94,8 +94,8 @@ func (f *nativeFlowController) acquire(ctx context.Context, lane uint32) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := ctx.Err(); err != nil {
-		return err
+	if contextErr := requestContextError(ctx); contextErr != nil {
+		return contextErr
 	}
 	f.mu.Lock()
 	if f.closedErr != nil {
@@ -161,14 +161,14 @@ func (f *nativeFlowController) acquire(ctx context.Context, lane uint32) error {
 			waiter.settled = true
 			f.removeQueuedWaiterLocked(lane, waiter)
 			f.mu.Unlock()
-			return ctx.Err()
+			return requestContextError(ctx)
 		}
 		granted := waiter.granted
 		f.mu.Unlock()
 		if granted {
 			f.release(lane)
 		}
-		return ctx.Err()
+		return requestContextError(ctx)
 	}
 }
 

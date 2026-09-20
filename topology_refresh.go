@@ -18,8 +18,8 @@ func (e *TopologyNativeExecutor) refreshTopology(ctx context.Context, expectedVe
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := ctx.Err(); err != nil {
-		return err
+	if contextErr := requestContextError(ctx); contextErr != nil {
+		return contextErr
 	}
 	for {
 		e.refreshMu.Lock()
@@ -40,7 +40,7 @@ func (e *TopologyNativeExecutor) refreshTopology(ctx context.Context, expectedVe
 			case <-done:
 				continue
 			case <-ctx.Done():
-				return ctx.Err()
+				return requestContextError(ctx)
 			}
 		}
 		startFlight := false
@@ -69,8 +69,8 @@ func (e *TopologyNativeExecutor) refreshTopology(ctx context.Context, expectedVe
 		case <-ctx.Done():
 		}
 		e.releaseTopologyRefreshWaiter(flight)
-		if err := ctx.Err(); err != nil {
-			return err
+		if contextErr := requestContextError(ctx); contextErr != nil {
+			return contextErr
 		}
 		if completed {
 			return flight.err
@@ -150,7 +150,7 @@ func (e *TopologyNativeExecutor) warmTopologyConnections(ctx context.Context, to
 	for _, endpoint := range topology.endpoints {
 		endpoint := endpoint
 		tasks = append(tasks, func() {
-			if ctx.Err() != nil {
+			if requestContextError(ctx) != nil {
 				return
 			}
 			adapter, err := e.adapterForEndpoint(endpoint)

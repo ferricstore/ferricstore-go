@@ -174,11 +174,11 @@ func (e *HTTPExecutor) executeBatch(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := ctx.Err(); err != nil {
-		code, retryable := classifyHTTPTransportError(err, err)
+	if contextErr := requestContextError(ctx); contextErr != nil {
+		code, retryable := classifyHTTPTransportError(contextErr, contextErr)
 		return nil, markCommandNotSent(&HTTPError{
 			Code: code, Message: "FerricStore HTTP request canceled before submission",
-			Retryable: retryable, SafeToRetry: true, Cause: err,
+			Retryable: retryable, SafeToRetry: true, Cause: contextErr,
 		})
 	}
 	client, options, err := e.snapshot()
@@ -231,16 +231,20 @@ func (e *HTTPExecutor) executeBatch(
 	request.Header = requestHeaders(options)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
-	if err := requestContext.Err(); err != nil {
-		code, retryable := classifyHTTPTransportError(err, err)
+	if contextErr := requestContextError(requestContext); contextErr != nil {
+		code, retryable := classifyHTTPTransportError(contextErr, contextErr)
 		return nil, markCommandNotSent(&HTTPError{
 			Code: code, Message: "FerricStore HTTP request canceled before submission",
-			Retryable: retryable, SafeToRetry: true, Cause: err,
+			Retryable: retryable, SafeToRetry: true, Cause: contextErr,
 		})
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		code, retryable := classifyHTTPTransportError(err, requestContext.Err())
+		contextErr := requestContextError(requestContext)
+		if contextErr != nil {
+			return nil, newHTTPTransportContextError(contextErr)
+		}
+		code, retryable := classifyHTTPTransportError(err, contextErr)
 		return nil, &HTTPError{
 			Code: code, Message: "FerricStore HTTP request failed", Retryable: retryable, Cause: err,
 		}
@@ -248,6 +252,9 @@ func (e *HTTPExecutor) executeBatch(
 	defer func() { _ = response.Body.Close() }()
 	decoded, err := readHTTPResponse(response, options.MaxResponseBytes, requestContext)
 	if err != nil {
+		if isHTTPTransportError(err) {
+			return nil, err
+		}
 		if response.StatusCode != http.StatusOK {
 			var httpErr *HTTPError
 			if errors.As(err, &httpErr) && httpErr.Code == "response_too_large" {
@@ -262,10 +269,26 @@ func (e *HTTPExecutor) executeBatch(
 		}
 		return nil, err
 	}
+	if contextErr := requestContextError(requestContext); contextErr != nil {
+		return nil, newHTTPTransportContextError(contextErr)
+	}
 	if response.StatusCode != http.StatusOK {
 		return nil, topLevelHTTPError(response, decoded)
 	}
-	return decodeHTTPResults(decoded, len(commands))
+	results, err := decodeHTTPResults(decoded, len(commands))
+	if err != nil {
+		return nil, err
+	}
+	if contextErr := requestContextError(requestContext); contextErr != nil {
+		deadlineErr := newHTTPTransportContextError(contextErr)
+		for index := range results {
+			if results[index].err == nil {
+				results[index].value = nil
+				results[index].err = deadlineErr
+			}
+		}
+	}
+	return results, nil
 }
 
 func (e *HTTPExecutor) snapshot() (*http.Client, httpOptions, error) {
@@ -291,7 +314,7 @@ func readHTTPResponse(response *http.Response, limit int64, ctx context.Context)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		code, retryable := classifyHTTPTransportError(err, ctx.Err())
+		code, retryable := classifyHTTPTransportError(err, requestContextError(ctx))
 		return nil, &HTTPError{
 			StatusCode: response.StatusCode, Code: code,
 			Message: "FerricStore HTTP response read failed", Retryable: retryable, Cause: err,

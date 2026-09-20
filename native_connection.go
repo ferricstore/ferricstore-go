@@ -17,8 +17,8 @@ func (e *NativeExecutor) ensureConnectedLocked(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	for {
-		if err := ctx.Err(); err != nil {
-			return err
+		if contextErr := requestContextError(ctx); contextErr != nil {
+			return contextErr
 		}
 		e.mu.Lock()
 		if e.conn != nil && e.goAway {
@@ -31,7 +31,7 @@ func (e *NativeExecutor) ensureConnectedLocked(ctx context.Context) error {
 			case <-done:
 				continue
 			case <-ctx.Done():
-				return ctx.Err()
+				return requestContextError(ctx)
 			}
 		}
 		if e.conn != nil {
@@ -72,8 +72,8 @@ func (e *NativeExecutor) ensureConnectedLocked(ctx context.Context) error {
 		case <-ctx.Done():
 		}
 		e.releaseConnectWaiter(attempt)
-		if err := ctx.Err(); err != nil {
-			return err
+		if contextErr := requestContextError(ctx); contextErr != nil {
+			return contextErr
 		}
 		if completed && attempt.err != nil {
 			return attempt.err
@@ -230,8 +230,8 @@ func (e *NativeExecutor) openNativeConnection(ctx context.Context, options Nativ
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return nil, err
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if contextErr := requestContextError(ctx); contextErr != nil {
+		return nil, contextErr
 	}
 	succeeded = true
 	return &nativeConnectedTransport{
@@ -438,8 +438,8 @@ func (e *NativeExecutor) writeRequest(ctx context.Context, opcode uint16, laneID
 	}
 	e.writeEncodeMu.Unlock()
 	defer e.writeMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return nil, markCommandNotSent(err)
+	if contextErr := requestContextError(ctx); contextErr != nil {
+		return nil, markCommandNotSent(contextErr)
 	}
 	e.mu.Lock()
 	conn := e.conn
@@ -499,15 +499,12 @@ func nativeWriteContextError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
-	if contextErr := ctx.Err(); contextErr != nil {
+	if contextErr := requestContextError(ctx); contextErr != nil {
 		return contextErr
 	}
 	// A socket deadline and its context timer share the same absolute deadline,
 	// but the kernel can report the write timeout before the timer goroutine has
 	// published ctx.Err(). Preserve the caller-visible context contract in that
 	// small notification window.
-	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
-		return context.DeadlineExceeded
-	}
 	return err
 }

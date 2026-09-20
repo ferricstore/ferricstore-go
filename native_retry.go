@@ -131,19 +131,22 @@ func nativeRetryAfterMilliseconds(value any) (int64, bool) {
 }
 
 func waitNativeRetry(ctx context.Context, delay time.Duration) error {
-	if delay <= 0 {
-		return nil
-	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if contextErr := requestContextError(ctx); contextErr != nil {
+		return contextErr
+	}
+	if delay <= 0 {
+		return nil
 	}
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-timer.C:
-		return nil
+		return requestContextError(ctx)
 	case <-ctx.Done():
-		return ctx.Err()
+		return requestContextError(ctx)
 	}
 }
 

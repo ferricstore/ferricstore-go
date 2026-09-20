@@ -75,25 +75,28 @@ func (e *NativeExecutor) requestWithoutSessionGateWithReplayPolicy(
 	transportAttempts := 0
 	serverRetries := 0
 	for {
+		if contextErr := requestContextError(ctx); contextErr != nil {
+			return nil, contextErr
+		}
 		value, err, retryable := e.requestOnce(ctx, opcode, laneID, payload, flags, useDefaultWriteTimeout)
 		if err == nil {
 			return value, nil
 		}
-		if replayPolicy != nativeReplayNever && errors.Is(err, errNativeGoAway) && ctx.Err() == nil {
+		if replayPolicy != nativeReplayNever && errors.Is(err, errNativeGoAway) && requestContextError(ctx) == nil {
 			// GOAWAY is observed before this request is written. Waiting for the
 			// old connection to drain and resubmitting is safe and is not a
 			// transport-retry budget event.
 			continue
 		}
 		disposition := nativeServerRetryDisposition(err)
-		if replayPolicy != nativeReplayNever && disposition.busy && disposition.retryable && serverRetries < nativeMaxServerRetries && ctx.Err() == nil {
+		if replayPolicy != nativeReplayNever && disposition.busy && disposition.retryable && serverRetries < nativeMaxServerRetries && requestContextError(ctx) == nil {
 			serverRetries++
 			if waitErr := waitNativeRetry(ctx, disposition.retryAfter); waitErr != nil {
 				return nil, waitErr
 			}
 			continue
 		}
-		if replayPolicy == nativeReplayNever || !retryable || transportAttempts >= maxRetries || ctx.Err() != nil {
+		if replayPolicy == nativeReplayNever || !retryable || transportAttempts >= maxRetries || requestContextError(ctx) != nil {
 			return nil, err
 		}
 		transportAttempts++
@@ -118,6 +121,19 @@ func nativeEffectiveTimeout(base time.Duration, budget nativeRequestBudget) time
 		return 0
 	}
 	return base + budget.extension
+}
+
+func requestContextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 func (e *NativeExecutor) beginRequest() error {
@@ -186,6 +202,9 @@ func (e *NativeExecutor) requestOnce(ctx context.Context, opcode uint16, laneID 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if contextErr := requestContextError(ctx); contextErr != nil {
+		return nil, markCommandNotSent(contextErr), false
+	}
 	if err := e.ensureConnectedLocked(ctx); err != nil {
 		return nil, markCommandNotSent(err), isNativeReconnectableTransportError(err)
 	}
@@ -201,6 +220,9 @@ func (e *NativeExecutor) requestOnce(ctx context.Context, opcode uint16, laneID 
 func (e *NativeExecutor) requestOnceOnConnection(ctx context.Context, opcode uint16, laneID uint32, payload any, flags byte, expected net.Conn, useDefaultWriteTimeout bool) (any, error, bool) {
 	if expected == nil {
 		return nil, markCommandNotSent(errTransactionConnectionLost), false
+	}
+	if contextErr := requestContextError(ctx); contextErr != nil {
+		return nil, markCommandNotSent(contextErr), false
 	}
 	var flowCredit *nativeFlowController
 	if nativeOpcodeUsesFlowCredit(opcode) {
@@ -253,6 +275,9 @@ func (e *NativeExecutor) requestOnceOnConnection(ctx context.Context, opcode uin
 			e.applyFlowControlLimits(conn, frame.value)
 		}
 		e.lastActivityUnixNano.Store(time.Now().UnixNano())
+		if contextErr := requestContextError(ctx); contextErr != nil {
+			return nil, contextErr, false
+		}
 		return frame.value, nil, false
 	case <-ctx.Done():
 		if nativeOpcodeDrainsOnCancellation(opcode) {
@@ -266,7 +291,7 @@ func (e *NativeExecutor) requestOnceOnConnection(ctx context.Context, opcode uin
 			// be ignored safely without retaining canceled entries indefinitely.
 			releaseNativePending(e.removePending(requestID))
 		}
-		return nil, ctx.Err(), false
+		return nil, requestContextError(ctx), false
 	}
 }
 
