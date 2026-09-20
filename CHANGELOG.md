@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.12.4 - 2026-09-20
+
+- Enforce request deadlines after HTTP and native response decoding so late
+  results cannot be returned or retried after the caller's deadline.
+- Validate the release against FerricStore OSS 0.11.20 using its immutable
+  Quay image pin while retaining the FerricStore 0.11.4 compatibility floor.
+
 ## 0.12.3 - 2026-09-19
 
 - Preserve complete Flow records, payloads, selected values, lease metadata,
