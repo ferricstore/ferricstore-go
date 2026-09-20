@@ -3,7 +3,7 @@ package ferricstore
 import "testing"
 
 func TestCompactQueryStorageReleaseVersions(t *testing.T) {
-	if SDKVersion != "0.12.3" {
+	if SDKVersion != "0.12.4" {
 		t.Fatalf("SDKVersion = %q", SDKVersion)
 	}
 	if MinimumServerVersion != "0.11.4" {

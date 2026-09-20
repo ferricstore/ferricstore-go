@@ -103,7 +103,7 @@ func TestDurableStepDocsCoverVersionMigrationAndWorkerRecovery(t *testing.T) {
 	}
 	docs := strings.Join(strings.Fields(string(contents)), " ")
 	for _, text := range []string{
-		"Go SDK 0.12.3 requires FerricStore 0.11.4",
+		"Go SDK 0.12.4 requires FerricStore 0.11.4",
 		"The step name is a stable replay identity",
 		"External providers still need a stable idempotency key",
 		"A waiting workflow does not occupy a worker",

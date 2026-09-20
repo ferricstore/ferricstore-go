@@ -46,7 +46,7 @@ func (p *PubSub) requestWithReplayRetryLocked(
 		if err == nil {
 			return value, stamp, nil
 		}
-		if retries <= 0 || !isNativeReconnectableTransportError(err) || ctx != nil && ctx.Err() != nil {
+		if retries <= 0 || !isNativeReconnectableTransportError(err) || requestContextError(ctx) != nil {
 			return nil, stamp, err
 		}
 		retries--
@@ -294,7 +294,7 @@ func replayTrackedRequest(ctx context.Context, exec *NativeExecutor, request fun
 		if err == nil {
 			return nil
 		}
-		if retries == 0 || !isNativeReconnectableTransportError(err) || ctx != nil && ctx.Err() != nil {
+		if retries == 0 || !isNativeReconnectableTransportError(err) || requestContextError(ctx) != nil {
 			return err
 		}
 		retries--

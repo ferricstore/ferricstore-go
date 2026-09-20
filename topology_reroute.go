@@ -36,14 +36,20 @@ func (e *TopologyNativeExecutor) refreshAndCanRetrySafeReroute(ctx context.Conte
 	if !refresh || attempt != 0 {
 		return false, nil
 	}
+	if contextErr := requestContextError(ctx); contextErr != nil {
+		return false, contextErr
+	}
 	if disposition := nativeServerRetryDisposition(err); safeToRetry {
 		if waitErr := waitNativeRetry(ctx, disposition.retryAfter); waitErr != nil {
 			return false, waitErr
 		}
 	}
+	if contextErr := requestContextError(ctx); contextErr != nil {
+		return false, contextErr
+	}
 	if refreshErr := e.RefreshTopology(ctx); refreshErr != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return false, ctxErr
+		if contextErr := requestContextError(ctx); contextErr != nil {
+			return false, contextErr
 		}
 		return false, nil
 	}
@@ -53,6 +59,9 @@ func (e *TopologyNativeExecutor) refreshAndCanRetrySafeReroute(ctx context.Conte
 func (e *TopologyNativeExecutor) refreshRouteWithoutReplay(ctx context.Context, err error, attempt int) {
 	refresh, _ := topologyRouteErrorDisposition(err)
 	if !refresh || attempt != 0 {
+		return
+	}
+	if requestContextError(ctx) != nil {
 		return
 	}
 	// Preserve the original unknown/stale mutation outcome while refreshing
