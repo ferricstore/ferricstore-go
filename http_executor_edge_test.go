@@ -477,10 +477,12 @@ func TestHTTPRedirectDoesNotForwardAuthorizationToDifferentHost(t *testing.T) {
 	var authorization string
 	var cookie string
 	var proxyAuthorization string
+	var apiKey string
 	target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		authorization = request.Header.Get("Authorization")
 		cookie = request.Header.Get("Cookie")
 		proxyAuthorization = request.Header.Get("Proxy-Authorization")
+		apiKey = request.Header.Get("X-API-Key")
 		writeHTTPJSON(t, writer, http.StatusOK, httpSuccessEnvelope("PONG"))
 	}))
 	defer target.Close()
@@ -498,6 +500,7 @@ func TestHTTPRedirectDoesNotForwardAuthorizationToDifferentHost(t *testing.T) {
 		WithHTTPHeaders(http.Header{
 			"Cookie":              []string{"session=secret"},
 			"Proxy-Authorization": []string{"Basic c2VjcmV0"},
+			"X-API-Key":           []string{"api-secret"},
 		}),
 	)
 	if err != nil {
@@ -507,8 +510,8 @@ func TestHTTPRedirectDoesNotForwardAuthorizationToDifferentHost(t *testing.T) {
 	if _, err := executor.Do(context.Background(), "PING"); err != nil {
 		t.Fatal(err)
 	}
-	if authorization != "" || cookie != "" || proxyAuthorization != "" {
-		t.Fatalf("cross-host redirected credentials = auth %q, cookie %q, proxy %q; want empty", authorization, cookie, proxyAuthorization)
+	if authorization != "" || cookie != "" || proxyAuthorization != "" || apiKey != "" {
+		t.Fatalf("cross-host redirected headers = auth %q, cookie %q, proxy %q, api-key %q; want empty", authorization, cookie, proxyAuthorization, apiKey)
 	}
 }
 

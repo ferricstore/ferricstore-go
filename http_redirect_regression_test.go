@@ -50,7 +50,7 @@ func TestHTTPRedirectScrubsCredentialsOnSameHostHTTPSDowngrade(t *testing.T) {
 	assertRedirectSensitiveHeadersEmpty(t, received)
 }
 
-func TestHTTPRedirectPreservesCredentialsOnSameHostHTTPSUpgrade(t *testing.T) {
+func TestHTTPRedirectScrubsCredentialsOnSameHostHTTPSUpgrade(t *testing.T) {
 	var received http.Header
 	target := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		received = request.Header.Clone()
@@ -59,7 +59,7 @@ func TestHTTPRedirectPreservesCredentialsOnSameHostHTTPSUpgrade(t *testing.T) {
 	defer target.Close()
 	redirect := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Location", target.URL+"/v1/commands")
-		writer.WriteHeader(http.StatusTemporaryRedirect)
+		writer.WriteHeader(http.StatusFound)
 	}))
 	defer redirect.Close()
 
@@ -74,11 +74,7 @@ func TestHTTPRedirectPreservesCredentialsOnSameHostHTTPSUpgrade(t *testing.T) {
 	if _, err := executor.Do(context.Background(), "PING"); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range redirectSensitiveHeaderNames {
-		if value := received.Get(name); value == "" {
-			t.Errorf("same-host upgrade removed %s", name)
-		}
-	}
+	assertRedirectSensitiveHeadersEmpty(t, received)
 }
 
 func TestHTTPRedirectScrubsCredentialsOnParentToSubdomain(t *testing.T) {
@@ -282,8 +278,8 @@ func TestHTTPRedirectRejectsURLUserinfo(t *testing.T) {
 	defer func() { _ = executor.Close() }()
 	_, err = executor.Do(context.Background(), "PING")
 	var httpErr *HTTPError
-	if !errors.As(err, &httpErr) || httpErr.Cause == nil || !strings.Contains(httpErr.Cause.Error(), "userinfo") {
-		t.Fatalf("redirect with URL userinfo error = %v, want userinfo rejection", err)
+	if !errors.As(err, &httpErr) || httpErr.Cause == nil || !strings.Contains(httpErr.Cause.Error(), "ferricstore HTTP redirect failed") {
+		t.Fatalf("redirect with URL userinfo error = %v, want safe redirect rejection", err)
 	}
 	if strings.Contains(httpErr.Cause.Error(), "redirect-secret") {
 		t.Fatalf("redirect error exposed URL userinfo secret: %v", httpErr.Cause)
@@ -316,8 +312,8 @@ func TestHTTPMalformedRedirectLocationRedactsUserinfo(t *testing.T) {
 	if !errors.As(err, &httpErr) || httpErr.Cause == nil {
 		t.Fatalf("malformed redirect error = %v, want HTTPError with cause", err)
 	}
-	if !strings.Contains(httpErr.Cause.Error(), "failed to parse redirect Location header") {
-		t.Fatalf("malformed redirect cause = %q, want safe parse diagnostic", httpErr.Cause)
+	if !strings.Contains(httpErr.Cause.Error(), "ferricstore HTTP redirect failed") {
+		t.Fatalf("malformed redirect cause = %q, want safe redirect diagnostic", httpErr.Cause)
 	}
 	for name, text := range map[string]string{
 		"error":   err.Error(),
@@ -363,9 +359,11 @@ func TestHTTPRedirectDoesNotReplayBodyAcrossUnsafeHop(t *testing.T) {
 	}
 }
 
-func TestHTTPRedirectReplaysBodyAcrossSameHostPortChange(t *testing.T) {
+func TestHTTPRedirectRejectsBodyAcrossSameHostPortChange(t *testing.T) {
+	var targetRequests atomic.Int32
 	var targetBody []byte
 	target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		targetRequests.Add(1)
 		targetBody, _ = io.ReadAll(request.Body)
 		writeHTTPJSON(t, writer, http.StatusOK, httpSuccessEnvelope("PONG"))
 	}))
@@ -381,11 +379,11 @@ func TestHTTPRedirectReplaysBodyAcrossSameHostPortChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = executor.Close() }()
-	if _, err := executor.Do(context.Background(), "SET", "key", "value"); err != nil {
-		t.Fatal(err)
+	if _, err := executor.Do(context.Background(), "SET", "key", "value"); err == nil {
+		t.Fatal("same-host different-port body-preserving redirect succeeded")
 	}
-	if len(targetBody) == 0 {
-		t.Fatal("same-host port-change redirect did not replay request body")
+	if targetRequests.Load() != 0 || len(targetBody) != 0 {
+		t.Fatalf("same-host different-port redirect replayed body: requests=%d body=%q", targetRequests.Load(), targetBody)
 	}
 }
 
@@ -394,7 +392,7 @@ func TestHTTPRedirectCredentialHopCanonicalizesIPv6Host(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := url.Parse("https://[2001:0db8:0:0:0:0:0:1]:8443")
+	target, err := url.Parse("http://[2001:0db8:0:0:0:0:0:1]:8080")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +400,7 @@ func TestHTTPRedirectCredentialHopCanonicalizesIPv6Host(t *testing.T) {
 		t.Fatal("equivalent IPv6 redirect host was treated as unsafe")
 	}
 
-	different, err := url.Parse("https://[2001:db8::2]:8443")
+	different, err := url.Parse("http://[2001:db8::2]:8080")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,18 +419,18 @@ func TestHTTPRedirectCredentialHopRequiresExactIPv6Zone(t *testing.T) {
 		{
 			name:   "identical zone with canonicalized address",
 			source: "http://[fe80::1%25en0]:8080",
-			target: "https://[FE80:0:0:0:0:0:0:1%25en0]:8443",
+			target: "http://[FE80:0:0:0:0:0:0:1%25en0]:8080",
 			want:   true,
 		},
 		{
 			name:   "zone differs only by case",
 			source: "http://[fe80::1%25en0]:8080",
-			target: "https://[fe80::1%25EN0]:8443",
+			target: "http://[fe80::1%25EN0]:8080",
 		},
 		{
 			name:   "unscoped canonicalized address",
 			source: "http://[2001:db8::1]:8080",
-			target: "https://[2001:0db8:0:0:0:0:0:1]:8443",
+			target: "http://[2001:0db8:0:0:0:0:0:1]:8080",
 			want:   true,
 		},
 	}
@@ -498,28 +496,28 @@ func TestHTTPRedirectCredentialHopFailsClosedForIDNAAliases(t *testing.T) {
 		{
 			name:   "unicode source to punycode target",
 			source: "http://b\u00fccher.example",
-			target: "https://xn--bcher-kva.example",
+			target: "http://xn--bcher-kva.example",
 		},
 		{
 			name:   "exact unicode host",
 			source: "http://b\u00fccher.example",
-			target: "https://b\u00fccher.example",
+			target: "http://b\u00fccher.example",
 			want:   true,
 		},
 		{
 			name:   "punycode source to unicode target",
 			source: "http://xn--bcher-kva.example",
-			target: "https://b\u00fccher.example",
+			target: "http://b\u00fccher.example",
 		},
 		{
 			name:   "unicode case variant",
 			source: "http://B\u00dcCHER.example",
-			target: "https://b\u00fccher.example",
+			target: "http://b\u00fccher.example",
 		},
 		{
 			name:   "punycode case variant",
 			source: "http://XN--BCHER-KVA.EXAMPLE",
-			target: "https://xn--bcher-kva.example",
+			target: "http://xn--bcher-kva.example",
 			want:   true,
 		},
 		{
