@@ -95,9 +95,15 @@ one long-lived HTTP request; their server wait extends (or, for an indefinite
 wait, disables) the SDK's default timeout while the caller context stays
 authoritative. `CommandExec` and its optional request context
 are carried in a structured envelope rather than exposed as a user command.
-Redirects are followed and caller-supplied authentication and custom headers
-are retained, including across origins. Only enable redirects to endpoints you
-trust, or supply a custom `http.Client` with a stricter `CheckRedirect` policy.
+SDK-owned HTTP clients follow redirects with a hardened policy: credential and
+referrer headers are retained only across approved same-host HTTP/HTTPS hops,
+including port changes and HTTP-to-HTTPS upgrades. Host changes, HTTPS
+downgrades, unsafe body-preserving 307/308 redirects, and redirect URLs with
+userinfo are rejected or scrubbed. POST-to-GET redirects do not restore body
+headers. Unicode/punycode IDNA aliases are not normalized and fail closed, so
+credentials may be dropped rather than risk treating different authorities as
+the same. A client supplied with `WithHTTPClient` is caller-owned; its
+`CheckRedirect`, `Jar`, and body redirect behavior are honored as supplied.
 
 Avoid putting production passwords in URLs because URLs are commonly copied into logs, shell history, and process metadata.
 

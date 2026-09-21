@@ -88,16 +88,6 @@ func (e *HTTPExecutor) configure() {
 			e.transport.CloseIdleConnections()
 		}
 		client := *e.opts.Client
-		callerRedirect := client.CheckRedirect
-		client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-			if err := preserveHTTPRedirectHeaders(request, via); err != nil {
-				return err
-			}
-			if callerRedirect != nil {
-				return callerRedirect(request, via)
-			}
-			return nil
-		}
 		e.client = &client
 		e.transport = nil
 		return
@@ -246,7 +236,8 @@ func (e *HTTPExecutor) executeBatch(
 		}
 		code, retryable := classifyHTTPTransportError(err, contextErr)
 		return nil, &HTTPError{
-			Code: code, Message: "FerricStore HTTP request failed", Retryable: retryable, Cause: err,
+			Code: code, Message: "FerricStore HTTP request failed", Retryable: retryable,
+			Cause: sanitizeHTTPRedirectCause(err),
 		}
 	}
 	defer func() { _ = response.Body.Close() }()
@@ -453,25 +444,6 @@ func requestHeaders(options httpOptions) http.Header {
 		headers.Set("Authorization", "Basic "+credentials)
 	}
 	return headers
-}
-
-func preserveHTTPRedirectHeaders(request *http.Request, via []*http.Request) error {
-	if len(via) >= 10 {
-		return errors.New("stopped after 10 redirects")
-	}
-	if len(via) == 0 {
-		return nil
-	}
-	for name, values := range via[0].Header {
-		if request.Method == http.MethodGet && (strings.EqualFold(name, "Content-Type") ||
-			strings.EqualFold(name, "Content-Length") || strings.EqualFold(name, "Transfer-Encoding")) {
-			continue
-		}
-		if request.Header.Values(name) == nil {
-			request.Header[name] = append([]string(nil), values...)
-		}
-	}
-	return nil
 }
 
 func parseHTTPBaseURL(rawURL string) (string, bool, error) {

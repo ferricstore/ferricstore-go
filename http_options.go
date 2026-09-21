@@ -66,6 +66,8 @@ func WithHTTPOptions(opts ...HTTPOption) ClientOption {
 	}
 }
 
+// WithHTTPClient uses a caller-supplied client without changing its redirect
+// or cookie policies.
 func WithHTTPClient(client *http.Client) HTTPOption {
 	return func(options *httpOptions) { options.Client = client }
 }
@@ -143,7 +145,7 @@ func validateHTTPOptions(options httpOptions, secure bool) error {
 	if err := validateHTTPHeaders(options.Headers); err != nil {
 		return err
 	}
-	hasAuthorization := options.Headers.Get("Authorization") != ""
+	hasAuthorization := hasHTTPHeaderValue(options.Headers, "Authorization")
 	if options.bearerToken != "" {
 		if options.basicSet || hasAuthorization {
 			return errors.New("ferricstore HTTP credentials are mutually exclusive")
@@ -192,6 +194,20 @@ func validateHTTPHeaders(headers http.Header) error {
 
 func containsHTTPNewline(value string) bool {
 	return strings.ContainsAny(value, "\r\n")
+}
+
+func hasHTTPHeaderValue(headers http.Header, name string) bool {
+	for headerName, values := range headers {
+		if !strings.EqualFold(headerName, name) {
+			continue
+		}
+		for _, value := range values {
+			if value != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func cloneHTTPHeader(header http.Header) http.Header {
