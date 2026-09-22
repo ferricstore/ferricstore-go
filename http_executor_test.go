@@ -99,7 +99,7 @@ func TestHTTPPipelineUsesOneRequestAndPreservesItemErrors(t *testing.T) {
 	}
 }
 
-func TestHTTPAuthenticationAndRedirectsPreserveHeaders(t *testing.T) {
+func TestHTTPAuthenticationAndRedirectsScrubCrossOriginHeaders(t *testing.T) {
 	var targetAuth string
 	var targetCustom string
 	target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -113,7 +113,7 @@ func TestHTTPAuthenticationAndRedirectsPreserveHeaders(t *testing.T) {
 	defer target.Close()
 	redirect := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Location", target.URL+"/v1/commands")
-		writer.WriteHeader(http.StatusTemporaryRedirect)
+		writer.WriteHeader(http.StatusFound)
 	}))
 	defer redirect.Close()
 
@@ -129,8 +129,8 @@ func TestHTTPAuthenticationAndRedirectsPreserveHeaders(t *testing.T) {
 	if _, err := exec.Do(context.Background(), "PING"); err != nil {
 		t.Fatal(err)
 	}
-	if targetAuth != "Bearer secret" || targetCustom != "trace-1" {
-		t.Fatalf("redirected headers auth=%q trace=%q", targetAuth, targetCustom)
+	if targetAuth != "" || targetCustom != "" {
+		t.Fatalf("cross-origin redirected headers auth=%q trace=%q; want empty", targetAuth, targetCustom)
 	}
 }
 

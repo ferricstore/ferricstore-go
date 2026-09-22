@@ -90,11 +90,14 @@ func (e *HTTPExecutor) configure() {
 		client := *e.opts.Client
 		callerRedirect := client.CheckRedirect
 		client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-			if err := preserveHTTPRedirectHeaders(request, via); err != nil {
-				return err
+			if len(via) > 0 {
+				markHTTPRedirectState(request)
 			}
 			if callerRedirect != nil {
 				return callerRedirect(request, via)
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
 			}
 			return nil
 		}
@@ -199,14 +202,14 @@ func (e *HTTPExecutor) executeBatch(
 				return nil, markCommandNotSent(&HTTPError{Code: "request_too_large", Message: "FerricStore HTTP request exceeds max request bytes"})
 			}
 			return nil, markCommandNotSent(&HTTPError{
-				Code: "invalid_request", Message: err.Error(), SafeToRetry: true, Cause: err,
+				Code: "invalid_request", Message: safeHTTPErrorText(err), SafeToRetry: true, Cause: err,
 			})
 		}
 	}
 	body, err := json.Marshal(map[string]any{"encoding": httpBinaryEncoding, "commands": encoded})
 	if err != nil {
 		return nil, markCommandNotSent(&HTTPError{
-			Code: "invalid_request", Message: "encode FerricStore HTTP request: " + err.Error(),
+			Code: "invalid_request", Message: "encode FerricStore HTTP request: " + safeHTTPErrorText(err),
 			SafeToRetry: true, Cause: err,
 		})
 	}
@@ -219,12 +222,14 @@ func (e *HTTPExecutor) executeBatch(
 		requestContext, cancel = context.WithTimeout(ctx, effectiveTimeout)
 	}
 	defer cancel()
+	redirectState := new(httpRedirectState)
+	requestContext = context.WithValue(requestContext, httpRedirectStateContextKey{}, redirectState)
 	request, err := http.NewRequestWithContext(
 		requestContext, http.MethodPost, e.baseURL+"/v1/commands", bytes.NewReader(body),
 	)
 	if err != nil {
 		return nil, markCommandNotSent(&HTTPError{
-			Code: "invalid_request", Message: "create FerricStore HTTP request: " + err.Error(),
+			Code: "invalid_request", Message: "create FerricStore HTTP request: " + safeHTTPErrorText(err),
 			SafeToRetry: true, Cause: err,
 		})
 	}
@@ -245,8 +250,15 @@ func (e *HTTPExecutor) executeBatch(
 			return nil, newHTTPTransportContextError(contextErr)
 		}
 		code, retryable := classifyHTTPTransportError(err, contextErr)
+		cause := err
+		if shouldSanitizeHTTPRedirectCause(err, redirectState) {
+			cause = sanitizeHTTPRedirectCause(err, redirectState)
+		} else if hasHTTPTypedNilError(err) {
+			cause = newHTTPNilSafeError(err)
+		}
 		return nil, &HTTPError{
-			Code: code, Message: "FerricStore HTTP request failed", Retryable: retryable, Cause: err,
+			Code: code, Message: "FerricStore HTTP request failed", Retryable: retryable,
+			Cause: cause,
 		}
 	}
 	defer func() { _ = response.Body.Close() }()
@@ -353,7 +365,7 @@ func decodeHTTPResults(envelope map[string]any, expected int) ([]pipelineItemRes
 		case "ok":
 			decoded, err := decodeHTTPValue(item["value"])
 			if err != nil {
-				return nil, &HTTPError{StatusCode: 200, Code: "invalid_response", Message: err.Error(), Cause: err}
+				return nil, &HTTPError{StatusCode: 200, Code: "invalid_response", Message: safeHTTPErrorText(err), Cause: err}
 			}
 			results[index].value = decoded
 		case "error":
@@ -384,9 +396,9 @@ func topLevelHTTPError(response *http.Response, envelope map[string]any) error {
 
 func classifyHTTPTransportError(err, contextErr error) (string, bool) {
 	switch {
-	case errors.Is(err, context.Canceled) || errors.Is(contextErr, context.Canceled):
+	case safeHTTPErrorIs(err, context.Canceled) || safeHTTPErrorIs(contextErr, context.Canceled):
 		return "transport_canceled", false
-	case errors.Is(err, context.DeadlineExceeded) || errors.Is(contextErr, context.DeadlineExceeded):
+	case safeHTTPErrorIs(err, context.DeadlineExceeded) || safeHTTPErrorIs(contextErr, context.DeadlineExceeded):
 		return "transport_timeout", true
 	default:
 		return "transport_error", true
@@ -453,25 +465,6 @@ func requestHeaders(options httpOptions) http.Header {
 		headers.Set("Authorization", "Basic "+credentials)
 	}
 	return headers
-}
-
-func preserveHTTPRedirectHeaders(request *http.Request, via []*http.Request) error {
-	if len(via) >= 10 {
-		return errors.New("stopped after 10 redirects")
-	}
-	if len(via) == 0 {
-		return nil
-	}
-	for name, values := range via[0].Header {
-		if request.Method == http.MethodGet && (strings.EqualFold(name, "Content-Type") ||
-			strings.EqualFold(name, "Content-Length") || strings.EqualFold(name, "Transfer-Encoding")) {
-			continue
-		}
-		if request.Header.Values(name) == nil {
-			request.Header[name] = append([]string(nil), values...)
-		}
-	}
-	return nil
 }
 
 func parseHTTPBaseURL(rawURL string) (string, bool, error) {

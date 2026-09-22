@@ -473,6 +473,48 @@ func TestHTTPCustomClientStillPreservesRedirectCredentials(t *testing.T) {
 	}
 }
 
+func TestHTTPRedirectDoesNotForwardAuthorizationToDifferentHost(t *testing.T) {
+	var authorization string
+	var cookie string
+	var proxyAuthorization string
+	var apiKey string
+	target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		authorization = request.Header.Get("Authorization")
+		cookie = request.Header.Get("Cookie")
+		proxyAuthorization = request.Header.Get("Proxy-Authorization")
+		apiKey = request.Header.Get("X-API-Key")
+		writeHTTPJSON(t, writer, http.StatusOK, httpSuccessEnvelope("PONG"))
+	}))
+	defer target.Close()
+	differentHostURL := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
+
+	redirect := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Location", differentHostURL+"/v1/commands")
+		writer.WriteHeader(http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	executor, err := NewHTTPExecutorFromURL(
+		redirect.URL,
+		WithHTTPBearerToken("secret"),
+		WithHTTPHeaders(http.Header{
+			"Cookie":              []string{"session=secret"},
+			"Proxy-Authorization": []string{"Basic c2VjcmV0"},
+			"X-API-Key":           []string{"api-secret"},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = executor.Close() }()
+	if _, err := executor.Do(context.Background(), "PING"); err != nil {
+		t.Fatal(err)
+	}
+	if authorization != "" || cookie != "" || proxyAuthorization != "" || apiKey != "" {
+		t.Fatalf("cross-host redirected headers = auth %q, cookie %q, proxy %q, api-key %q; want empty", authorization, cookie, proxyAuthorization, apiKey)
+	}
+}
+
 func TestHTTPFlowValueMGetConvertsCompactNativePayload(t *testing.T) {
 	var command map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

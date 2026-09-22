@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.12.5 - 2026-09-22
+
+- Harden HTTP redirect origin checks so credentials and caller headers are
+  not copied across unsafe origin changes, unsafe request bodies are not
+  replayed, and redirect diagnostics do not expose URL secrets.
+- Validate the release against FerricStore OSS 0.11.21 using its immutable
+  Quay image pin while retaining the FerricStore 0.11.4 compatibility floor.
+
 ## 0.12.4 - 2026-09-20
 
 - Enforce request deadlines after HTTP and native response decoding so late
