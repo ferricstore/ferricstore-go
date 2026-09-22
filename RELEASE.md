@@ -30,7 +30,7 @@ The workflow runs every gate before creating the public semver tag.
 5. Check the intended version and target locally:
 
    ```bash
-   VERSION=v0.12.4
+   VERSION=v0.12.5
    ./scripts/release-preflight.sh "$VERSION" "$(git rev-parse origin/main)"
    ```
 
