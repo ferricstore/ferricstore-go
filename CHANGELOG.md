@@ -4,6 +4,8 @@
 
 - Refresh current-server integration and documentation pins to the immutable
   FerricStore OSS 0.11.24 image. The 0.11.4 compatibility floor remains unchanged.
+- Refresh development and CI verification to Go 1.26.9 for the standard-library
+  HTTP security fixes required by Govulncheck.
 
 ## 0.12.5 - 2026-09-22
 

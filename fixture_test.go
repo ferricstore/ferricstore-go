@@ -220,8 +220,8 @@ func TestToolchainPinsIncludeTLSVulnerabilityFix(t *testing.T) {
 		if strings.Contains(contents, "1.26.4") {
 			t.Fatalf("%s pins Go 1.26.4, which is affected by GO-2026-5856", path)
 		}
-		if !strings.Contains(contents, "1.26.6") {
-			t.Fatalf("%s must pin Go 1.26.6 or newer", path)
+		if !strings.Contains(contents, "1.26.9") {
+			t.Fatalf("%s must pin Go 1.26.9 or newer", path)
 		}
 	}
 }

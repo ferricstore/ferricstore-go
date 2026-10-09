@@ -717,7 +717,7 @@ and is deprecated.
 
 ## Toolchain
 
-The module requires Go 1.24 or newer. This repo pins Go 1.26.6 for development and release verification with mise:
+The module requires Go 1.24 or newer. This repo pins Go 1.26.9 for development and release verification with mise:
 
 ```bash
 brew install mise
