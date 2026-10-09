@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Refresh current-server integration and documentation pins to the immutable
-  FerricStore OSS 0.11.23 image. The 0.11.4 compatibility floor remains unchanged.
+  FerricStore OSS 0.11.24 image. The 0.11.4 compatibility floor remains unchanged.
 
 ## 0.12.5 - 2026-09-22
 

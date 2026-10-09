@@ -20,14 +20,14 @@ import ferricstore "github.com/ferricstore/ferricstore-go"
 docker compose up -d ferricstore
 ```
 
-The compose file uses the SDK's pinned tested FerricStore 0.11.23 image by default and exposes the native protocol on `127.0.0.1:6388`.
+The compose file uses the SDK's pinned tested FerricStore 0.11.24 image by default and exposes the native protocol on `127.0.0.1:6388`.
 Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want to pin a specific server image.
 
 ## Compatibility
 
 Go SDK 0.12.5 requires FerricStore 0.11.4 or newer for native TCP. The HTTP
 transport requires the stateless gateway shipped by FerricStore OSS 0.11.11 or
-newer. With FerricStore 0.11.23 the native transport
+newer. With FerricStore 0.11.24 the native transport
 negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches,
 compact Pub/Sub mode 35 for homogeneous `PUBLISH` batches, and ordered
 `pubsub_batch_v1` receive expansion. The native wire protocol and generic
@@ -119,7 +119,7 @@ To run the complete HTTP-compatible integration surface against a real TLS
 listener with ACL authentication, use:
 
 ```bash
-FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.23@sha256:120e0bba201fd3038befea54b100accf0ef8ff21563fdd113c3fc7b019555dcd \
+FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:0.11.24@sha256:910a7b62effd5687607907c8f4b414ba95d988c3534b18205c33e502c76c3974 \
   ./scripts/integration-http-tls.sh
 ```
 
