@@ -40,6 +40,13 @@ func TestTopologyCommandPoliciesAreInternallyConsistent(t *testing.T) {
 		{name: "sorted-set intersection store", args: []any{"ZINTERSTORE", "destination", 2, "one", "two"}, wantKeys: 3, wantSame: true},
 		{name: "sorted-set difference store", args: []any{"ZDIFFSTORE", "destination", 2, "one", "two"}, wantKeys: 3, wantSame: true},
 		{name: "sorted-set range store", args: []any{"ZRANGESTORE", "destination", "source", 0, -1}, wantKeys: 2, wantSame: true},
+		{name: "sorted-set lex range", args: []any{"ZRANGEBYLEX", "key", "-", "+"}, wantKeys: 1},
+		{name: "sorted-set reverse lex range", args: []any{"ZREVRANGEBYLEX", "key", "+", "-"}, wantKeys: 1},
+		{name: "sorted-set lex count", args: []any{"ZLEXCOUNT", "key", "-", "+"}, wantKeys: 1},
+		{name: "sorted-set rank removal", args: []any{"ZREMRANGEBYRANK", "key", 0, 1}, wantKeys: 1},
+		{name: "sorted-set score removal", args: []any{"ZREMRANGEBYSCORE", "key", "-inf", 1}, wantKeys: 1},
+		{name: "sorted-set lex removal", args: []any{"ZREMRANGEBYLEX", "key", "[a", "[b"}, wantKeys: 1},
+		{name: "sorted-set multi pop", args: []any{"ZMPOP", 2, "one", "two", "MIN", "COUNT", 2}, wantKeys: 2, wantSame: true},
 		{name: "blocking sorted-set pop", args: []any{"BZPOPMIN", "one", "two", 1.5}, wantKeys: 2, wantSame: true},
 		{name: "streams", args: []any{"XREAD", "STREAMS", "one", "two", "0", "0"}, wantKeys: 2, wantSame: true},
 	}
