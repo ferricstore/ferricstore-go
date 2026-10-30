@@ -6,6 +6,8 @@
   FerricStore OSS 0.11.24 image. The 0.11.4 compatibility floor remains unchanged.
 - Refresh development and CI verification to Go 1.26.9 for the standard-library
   HTTP security fixes required by Govulncheck.
+- Refresh development and CI verification to Go 1.26.10 for the `crypto/x509`
+  fix (GO-2026-6809) required by Govulncheck.
 
 ## 0.12.5 - 2026-09-22
 
