@@ -3,6 +3,8 @@
 package ferricstore
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,6 +98,8 @@ func TestIntegrationNativePubSubAndFlowWakeEvents(t *testing.T) {
 		t.Fatalf("unexpected punsubscribe ack: %#v", punack)
 	}
 
+	exerciseShardPubSub(ctx, t, client, pubsub, "go-sdk:events:"+runID+":shard")
+
 	typeName := "go-sdk-wake-" + runID
 	partition := "go-sdk:wake:" + runID + ":partition"
 	sub, err := pubsub.SubscribeFlowWake(ctx, FlowWakeSubscriptionOptions{
@@ -136,5 +140,45 @@ func TestIntegrationNativePubSubAndFlowWakeEvents(t *testing.T) {
 	recordIntegrationCommand([]any{"UNSUBSCRIBE_EVENTS"})
 	if contains(unsub.Subscribed, "FLOW_WAKE") {
 		t.Fatalf("expected FLOW_WAKE to be unsubscribed: %#v", unsub)
+	}
+}
+
+// exerciseShardPubSub checks shard channels on servers that have SSUBSCRIBE
+// (FerricStore 0.12.17 and later); the CI images predate it.
+func exerciseShardPubSub(ctx context.Context, t *testing.T, client *Client, pubsub *PubSub, channel string) {
+	t.Helper()
+	ack, err := pubsub.SSubscribe(ctx, channel)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "unknown command") {
+		t.Logf("server has no sharded pub/sub: %v", err)
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.Kind != "ssubscribe" || ack.Channel != channel || ack.Count != 1 {
+		t.Fatalf("unexpected ssubscribe ack: %#v", ack)
+	}
+	// PUBLISH never reaches a shard subscriber, so the next message is SPUBLISH's.
+	requireNonNegative(t, must[int64](t)(client.Publish(ctx, channel, "plain")))
+	requireNonNegative(t, must[int64](t)(client.SPublish(ctx, channel, "shard")))
+	message, err := pubsub.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Kind != "smessage" || message.Channel != channel || asString(message.Payload) != "shard" {
+		t.Fatalf("unexpected shard message: %#v", message)
+	}
+	if _, err := client.PubSubShardChannels(ctx, channel); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.PubSubShardNumSub(ctx, channel); err != nil {
+		t.Fatal(err)
+	}
+	unack, err := pubsub.SUnsubscribe(ctx, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unack.Kind != "sunsubscribe" || unack.Channel != channel || unack.Count != 0 {
+		t.Fatalf("unexpected sunsubscribe ack: %#v", unack)
 	}
 }
