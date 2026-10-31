@@ -17,6 +17,7 @@ const (
 	topologyKeysSubcommandThird
 	topologyKeysHelpAwareThird
 	topologyKeysMemoryUsage
+	topologyKeysSort
 )
 
 type topologyCommandPolicy struct {
@@ -62,6 +63,9 @@ var topologyCommandPolicies = map[string]topologyCommandPolicy{
 	"ZINTER":         {keyMode: topologyKeysCountedRead, requireSameSlot: true},
 	"ZDIFF":          {keyMode: topologyKeysCountedRead, requireSameSlot: true},
 	"ZMPOP":          {keyMode: topologyKeysCountedRead, requireSameSlot: true},
+	"LMPOP":          {keyMode: topologyKeysCountedRead, requireSameSlot: true},
+	"LCS":            {keyMode: topologyKeysFirstTwo, requireSameSlot: true},
+	"SORT":           {keyMode: topologyKeysSort, requireSameSlot: true},
 	"PFCOUNT":        {keyMode: topologyKeysAll, requireSameSlot: true},
 	"SDIFF":          {keyMode: topologyKeysAll, requireSameSlot: true},
 	"SINTER":         {keyMode: topologyKeysAll, requireSameSlot: true},
@@ -220,6 +224,13 @@ var topologyCommandPolicies = map[string]topologyCommandPolicy{
 	"TTL":                     {keyMode: topologyKeysFirst},
 	"TYPE":                    {keyMode: topologyKeysFirst},
 	"UNLOCK":                  {keyMode: topologyKeysFirst},
+	"BF.INSERT":               {keyMode: topologyKeysFirst},
+	"BITFIELD_RO":             {keyMode: topologyKeysFirst},
+	"CF.INSERT":               {keyMode: topologyKeysFirst},
+	"CF.INSERTNX":             {keyMode: topologyKeysFirst},
+	"HEXPIREAT":               {keyMode: topologyKeysFirst},
+	"HPEXPIREAT":              {keyMode: topologyKeysFirst},
+	"SORT_RO":                 {keyMode: topologyKeysFirst},
 	"XADD":                    {keyMode: topologyKeysFirst},
 	"XACK":                    {keyMode: topologyKeysFirst},
 	"XAUTOCLAIM":              {keyMode: topologyKeysFirst},
@@ -323,8 +334,35 @@ func topologyKeysForMode(mode topologyKeyMode, args []any) ([]any, bool) {
 		if len(args) > 2 && commandPart(args[1]) == "USAGE" {
 			return args[2:3], true
 		}
+	case topologyKeysSort:
+		return sortKeys(args)
 	}
 	return nil, false
+}
+
+// sortKeys returns SORT's key and its STORE destination, skipping its other
+// options' values.
+func sortKeys(args []any) ([]any, bool) {
+	if len(args) < 2 {
+		return nil, false
+	}
+	keys := []any{args[1]}
+	for index := 2; index < len(args); {
+		switch commandPart(args[index]) {
+		case "STORE":
+			if index+1 < len(args) {
+				keys = append(keys, args[index+1])
+			}
+			index += 2
+		case "BY", "GET":
+			index += 2
+		case "LIMIT":
+			index += 3
+		default:
+			index++
+		}
+	}
+	return keys, true
 }
 
 func streamReadKeys(args []any) ([]any, bool) {

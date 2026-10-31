@@ -29,6 +29,29 @@ func TestTopologyRoutingKeyMatchesLatestSDKs(t *testing.T) {
 			t.Fatalf("%s should route by stream key, got key=%#v ok=%v", args[0], key, ok)
 		}
 	}
+	for _, args := range [][]any{
+		{"HMSET", "events", "field", "value"},
+		{"HEXPIREAT", "events", 1, "FIELDS", 1, "field"},
+		{"HPEXPIREAT", "events", 1, "FIELDS", 1, "field"},
+		{"HPEXPIRETIME", "events", "FIELDS", 1, "field"},
+		{"BITFIELD", "events", "GET", "u8", 0},
+		{"BITFIELD_RO", "events", "GET", "u8", 0},
+		{"BF.INSERT", "events", "ITEMS", "value"},
+		{"CF.INSERT", "events", "ITEMS", "value"},
+		{"CF.INSERTNX", "events", "ITEMS", "value"},
+		{"SORT_RO", "events", "ALPHA"},
+		{"SORT", "events", "BY", "nosort", "GET", "STORE", "LIMIT", 0, 1},
+		{"LMPOP", 1, "events", "LEFT"},
+		{"LCS", "events", "events"},
+	} {
+		if key, ok := routingKeyForCommand(args); !ok || asString(key) != "events" {
+			t.Fatalf("%s should route by its first key, got key=%#v ok=%v", args[0], key, ok)
+		}
+	}
+	if keys, ok := sortKeys([]any{"SORT", "events", "LIMIT", 0, 1, "STORE", "dest"}); !ok ||
+		len(keys) != 2 || asString(keys[1]) != "dest" {
+		t.Fatalf("SORT should route by its key and STORE destination, got %#v ok=%v", keys, ok)
+	}
 	if key, ok := routingKeyForCommand([]any{"KEY_INFO", "account:1"}); !ok || asString(key) != "account:1" {
 		t.Fatalf("KEY_INFO should route by its key, got key=%#v ok=%v", key, ok)
 	}
