@@ -19,6 +19,16 @@ func TestTopologyRoutingKeyMatchesLatestSDKs(t *testing.T) {
 	if key, ok := routingKeyForCommand([]any{"XACK", "events", "workers", "1-0"}); !ok || asString(key) != "events" {
 		t.Fatalf("XACK should route by stream key, got key=%#v ok=%v", key, ok)
 	}
+	for _, args := range [][]any{
+		{"XPENDING", "events", "workers"},
+		{"XCLAIM", "events", "workers", "consumer", 0, "1-0"},
+		{"XAUTOCLAIM", "events", "workers", "consumer", 0, "0-0"},
+		{"XSETID", "events", "1-0"},
+	} {
+		if key, ok := routingKeyForCommand(args); !ok || asString(key) != "events" {
+			t.Fatalf("%s should route by stream key, got key=%#v ok=%v", args[0], key, ok)
+		}
+	}
 	if key, ok := routingKeyForCommand([]any{"KEY_INFO", "account:1"}); !ok || asString(key) != "account:1" {
 		t.Fatalf("KEY_INFO should route by its key, got key=%#v ok=%v", key, ok)
 	}
