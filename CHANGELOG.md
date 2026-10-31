@@ -7,7 +7,6 @@
   `Client.SPublish`, `Client.PubSubShardChannels` and `Client.PubSubShardNumSub`.
   Shard messages arrive with `Kind` `"smessage"`, and SSUBSCRIBE
   acknowledgements count shard channels only, as the server's do.
-
 - Refresh current-server integration and documentation pins to the immutable
   FerricStore OSS 0.11.24 image. The 0.11.4 compatibility floor remains unchanged.
 - Refresh development and CI verification to Go 1.26.9 for the standard-library
