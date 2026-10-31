@@ -45,7 +45,7 @@ func parseNativePubSubMessage(value any) (PubSubMessage, error) {
 	kind = strings.ToLower(kind)
 	message := PubSubMessage{Kind: kind, Raw: value}
 	switch kind {
-	case "message":
+	case "message", "smessage":
 		message.Channel, err = requiredPubSubString(event.Payload, "channel")
 	case "pmessage":
 		message.Pattern, err = requiredPubSubString(event.Payload, "pattern")
@@ -157,13 +157,13 @@ func parseFlatPubSubMessage(items []any) (PubSubMessage, error) {
 	}
 	kind = strings.ToLower(kind)
 	switch kind {
-	case "message":
+	case "message", "smessage":
 		if len(items) != 3 {
-			return PubSubMessage{}, fmt.Errorf("message event expected 3 fields, got %d", len(items))
+			return PubSubMessage{}, fmt.Errorf("%s event expected 3 fields, got %d", kind, len(items))
 		}
 		channel, err := responseString(items[1], nil)
 		if err != nil {
-			return PubSubMessage{}, fmt.Errorf("message event has invalid channel: %w", err)
+			return PubSubMessage{}, fmt.Errorf("%s event has invalid channel: %w", kind, err)
 		}
 		return PubSubMessage{Kind: kind, Channel: channel, Payload: items[2]}, nil
 	case "pmessage":
@@ -179,7 +179,7 @@ func parseFlatPubSubMessage(items []any) (PubSubMessage, error) {
 			return PubSubMessage{}, fmt.Errorf("pmessage event has invalid channel: %w", err)
 		}
 		return PubSubMessage{Kind: kind, Pattern: pattern, Channel: channel, Payload: items[3]}, nil
-	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
+	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe", "ssubscribe", "sunsubscribe":
 		message, err := parsePubSubAcknowledgement(items, kind)
 		if err != nil {
 			return PubSubMessage{}, fmt.Errorf("invalid %s acknowledgement: %w", kind, err)
@@ -192,7 +192,7 @@ func parseFlatPubSubMessage(items []any) (PubSubMessage, error) {
 
 func isPubSubAcknowledgementKind(kind string) bool {
 	switch kind {
-	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe":
+	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe", "ssubscribe", "sunsubscribe":
 		return true
 	default:
 		return false
@@ -231,7 +231,7 @@ func pubSubMessageFromNative(value any) PubSubMessage {
 	}
 	message.Kind = asString(items[0])
 	switch message.Kind {
-	case "subscribe", "unsubscribe":
+	case "subscribe", "unsubscribe", "ssubscribe", "sunsubscribe":
 		if len(items) > 1 {
 			message.Channel = asString(items[1])
 		}
@@ -245,7 +245,7 @@ func pubSubMessageFromNative(value any) PubSubMessage {
 		if len(items) > 2 {
 			message.Count = asInt64(items[2])
 		}
-	case "message":
+	case "message", "smessage":
 		if len(items) > 1 {
 			message.Channel = asString(items[1])
 		}
@@ -355,7 +355,7 @@ func parsePubSubAcknowledgement(items []any, expectedKind string) (PubSubMessage
 	}
 	message := PubSubMessage{Kind: expectedKind, Count: count}
 	if items[1] == nil {
-		if expectedKind == "subscribe" || expectedKind == "psubscribe" {
+		if expectedKind == "subscribe" || expectedKind == "psubscribe" || expectedKind == "ssubscribe" {
 			return PubSubMessage{}, errors.New("subscription target is nil")
 		}
 		return message, nil

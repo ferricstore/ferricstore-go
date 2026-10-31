@@ -27,6 +27,7 @@ type pubSubState struct {
 	replayMu       sync.Mutex
 	channels       map[string]struct{}
 	patterns       map[string]struct{}
+	shardChannels  map[string]struct{}
 	eventReplays   []pubSubEventReplay
 	lastExecutor   *NativeExecutor
 	lastGeneration uint64
@@ -262,6 +263,30 @@ func (p *PubSub) PUnsubscribe(ctx context.Context, patterns ...string) (PubSubMe
 	return p.pubsubCommand(ctx, args...)
 }
 
+// SSubscribe subscribes to shard channels (SSUBSCRIBE). Shard channels are a
+// namespace apart from Subscribe's: only SPUBLISH reaches them, and their
+// messages arrive with Kind "smessage".
+func (p *PubSub) SSubscribe(ctx context.Context, channels ...string) (PubSubMessage, error) {
+	if len(channels) == 0 {
+		return PubSubMessage{}, errors.New("SSUBSCRIBE requires at least one channel")
+	}
+	args := []any{"SSUBSCRIBE"}
+	for _, channel := range channels {
+		args = append(args, channel)
+	}
+	return p.pubsubCommand(ctx, args...)
+}
+
+// SUnsubscribe unsubscribes from shard channels, or from all of them when
+// none is given.
+func (p *PubSub) SUnsubscribe(ctx context.Context, channels ...string) (PubSubMessage, error) {
+	args := []any{"SUNSUBSCRIBE"}
+	for _, channel := range channels {
+		args = append(args, channel)
+	}
+	return p.pubsubCommand(ctx, args...)
+}
+
 // SubscribeEvents subscribes to native protocol events such as FLOW_WAKE.
 func (p *PubSub) SubscribeEvents(ctx context.Context, events ...string) (EventSubscription, error) {
 	return p.eventSubscription(ctx, nativeOpSubscribeEvents, map[string]any{"events": eventArgs(events)})
@@ -357,7 +382,7 @@ func (p *PubSub) pubsubCommand(ctx context.Context, args ...any) (PubSubMessage,
 		}
 	}
 	if reconnected {
-		message.Count = p.trackedPubSubCount()
+		message.Count = p.trackedPubSubCount(asString(args[0]))
 	}
 	return message, nil
 }

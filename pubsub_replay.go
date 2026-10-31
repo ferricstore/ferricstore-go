@@ -63,10 +63,19 @@ func (p *PubSub) requireReplayFromStamp(stamp pubSubConnectionStamp) {
 	p.mu.Unlock()
 }
 
-func (p *PubSub) trackedPubSubCount() int64 {
+// trackedPubSubCount is the count a command's acknowledgement carries: as in
+// Redis, shard channels are counted apart from channels and patterns.
+func (p *PubSub) trackedPubSubCount(command string) int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if shardPubSubCommand(strings.ToUpper(command)) {
+		return int64(len(p.shardChannels))
+	}
 	return int64(len(p.channels) + len(p.patterns))
+}
+
+func shardPubSubCommand(name string) bool {
+	return name == "SSUBSCRIBE" || name == "SUNSUBSCRIBE"
 }
 
 func (p *PubSub) trackPubSubCommand(args []any) {
@@ -76,15 +85,22 @@ func (p *PubSub) trackPubSubCommand(args []any) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	name := strings.ToUpper(asString(args[0]))
-	subscribe := name == "SUBSCRIBE" || name == "PSUBSCRIBE"
+	subscribe := name == "SUBSCRIBE" || name == "PSUBSCRIBE" || name == "SSUBSCRIBE"
 	patternCommand := name == "PSUBSCRIBE" || name == "PUNSUBSCRIBE"
+	shardCommand := shardPubSubCommand(name)
 	target := p.channels
-	if patternCommand {
+	switch {
+	case patternCommand:
 		if p.patterns == nil && subscribe {
 			p.patterns = make(map[string]struct{})
 		}
 		target = p.patterns
-	} else if p.channels == nil && subscribe {
+	case shardCommand:
+		if p.shardChannels == nil && subscribe {
+			p.shardChannels = make(map[string]struct{})
+		}
+		target = p.shardChannels
+	case p.channels == nil && subscribe:
 		p.channels = make(map[string]struct{})
 		target = p.channels
 	}
@@ -101,9 +117,12 @@ func (p *PubSub) trackPubSubCommand(args []any) {
 		}
 	}
 	if len(target) == 0 {
-		if patternCommand {
+		switch {
+		case patternCommand:
 			p.patterns = nil
-		} else {
+		case shardCommand:
+			p.shardChannels = nil
+		default:
 			p.channels = nil
 		}
 	}
@@ -198,10 +217,11 @@ func (p *PubSub) reconnectAndReplayLocked(ctx context.Context) error {
 		}
 		channels := mapKeys(p.channels)
 		patterns := mapKeys(p.patterns)
+		shardChannels := mapKeys(p.shardChannels)
 		replays := append([]pubSubEventReplay(nil), p.eventReplays...)
 		p.mu.Unlock()
 
-		if err := p.replayTrackedState(ctx, exec, channels, patterns, replays); err != nil {
+		if err := p.replayTrackedState(ctx, exec, channels, patterns, shardChannels, replays); err != nil {
 			return err
 		}
 		if p.connectionStampCurrent(stamp) {
@@ -244,27 +264,24 @@ func (p *PubSub) ensureCurrentExecutor(ctx context.Context) (*NativeExecutor, er
 func (p *PubSub) replayTrackedState(
 	ctx context.Context,
 	exec *NativeExecutor,
-	channels, patterns []string,
+	channels, patterns, shardChannels []string,
 	replays []pubSubEventReplay,
 ) error {
-	if len(channels) > 0 {
-		args := make([]any, 1, len(channels)+1)
-		args[0] = "SUBSCRIBE"
-		for _, channel := range channels {
-			args = append(args, channel)
+	for _, tracked := range []struct {
+		command string
+		targets []string
+	}{
+		{"SUBSCRIBE", channels},
+		{"PSUBSCRIBE", patterns},
+		{"SSUBSCRIBE", shardChannels},
+	} {
+		if len(tracked.targets) == 0 {
+			continue
 		}
-		if err := replayTrackedRequest(ctx, exec, func() error {
-			_, err := exec.command(ctx, args...)
-			return err
-		}); err != nil {
-			return err
-		}
-	}
-	if len(patterns) > 0 {
-		args := make([]any, 1, len(patterns)+1)
-		args[0] = "PSUBSCRIBE"
-		for _, pattern := range patterns {
-			args = append(args, pattern)
+		args := make([]any, 1, len(tracked.targets)+1)
+		args[0] = tracked.command
+		for _, target := range tracked.targets {
+			args = append(args, target)
 		}
 		if err := replayTrackedRequest(ctx, exec, func() error {
 			_, err := exec.command(ctx, args...)
@@ -304,7 +321,8 @@ func replayTrackedRequest(ctx context.Context, exec *NativeExecutor, request fun
 func (p *PubSub) replayAfterExternalReconnect(ctx context.Context) error {
 	stamp := p.connectionStamp()
 	p.mu.Lock()
-	tracked := len(p.channels) > 0 || len(p.patterns) > 0 || len(p.eventReplays) > 0
+	tracked := len(p.channels) > 0 || len(p.patterns) > 0 || len(p.shardChannels) > 0 ||
+		len(p.eventReplays) > 0
 	changed := tracked && p.lastGeneration != 0 && stamp.generation != 0 &&
 		(stamp.exec != p.lastExecutor || stamp.generation != p.lastGeneration)
 	p.mu.Unlock()

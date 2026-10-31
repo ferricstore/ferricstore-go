@@ -77,6 +77,13 @@ func (c *Client) Publish(ctx context.Context, channel, message string) (int64, e
 	return nonNegativeInt64Response("PUBLISH", value, err)
 }
 
+// SPublish publishes to a shard channel (SPUBLISH), a namespace apart from
+// Publish's.
+func (c *Client) SPublish(ctx context.Context, channel, message string) (int64, error) {
+	value, err := c.typedReply(ctx, "SPUBLISH", channel, message)
+	return nonNegativeInt64Response("SPUBLISH", value, err)
+}
+
 func (c *Client) Subscribe(ctx context.Context, channels ...string) (any, error) {
 	if len(channels) == 0 {
 		return nil, errors.New("SUBSCRIBE requires at least one channel")
@@ -125,7 +132,29 @@ func (c *Client) PubSubChannels(ctx context.Context, pattern string) ([]string, 
 }
 
 func (c *Client) PubSubNumSub(ctx context.Context, channels ...string) (map[string]int64, error) {
-	args := []any{"PUBSUB", "NUMSUB"}
+	return c.pubSubCounts(ctx, "NUMSUB", channels)
+}
+
+// PubSubShardChannels lists the shard channels with subscribers (PUBSUB
+// SHARDCHANNELS), optionally only those matching pattern.
+func (c *Client) PubSubShardChannels(ctx context.Context, pattern string) ([]string, error) {
+	args := []any{"PUBSUB", "SHARDCHANNELS"}
+	if pattern != "" {
+		args = append(args, pattern)
+	}
+	value, err := c.typedReply(ctx, args...)
+	return stringArray(value, err)
+}
+
+// PubSubShardNumSub returns the subscriber count of each shard channel (PUBSUB
+// SHARDNUMSUB).
+func (c *Client) PubSubShardNumSub(ctx context.Context, channels ...string) (map[string]int64, error) {
+	return c.pubSubCounts(ctx, "SHARDNUMSUB", channels)
+}
+
+func (c *Client) pubSubCounts(ctx context.Context, subcommand string, channels []string) (map[string]int64, error) {
+	name := "PUBSUB " + subcommand
+	args := []any{"PUBSUB", subcommand}
 	for _, channel := range channels {
 		args = append(args, channel)
 	}
@@ -135,26 +164,26 @@ func (c *Client) PubSubNumSub(ctx context.Context, channels ...string) (map[stri
 	}
 	items, ok := value.([]any)
 	if !ok {
-		return nil, fmt.Errorf("expected PUBSUB NUMSUB response array, got %T", value)
+		return nil, fmt.Errorf("expected %s response array, got %T", name, value)
 	}
 	if len(items)%2 != 0 {
-		return nil, fmt.Errorf("expected PUBSUB NUMSUB channel/count pairs, got %d items", len(items))
+		return nil, fmt.Errorf("expected %s channel/count pairs, got %d items", name, len(items))
 	}
 	out := make(map[string]int64, len(items)/2)
 	for i := 0; i < len(items); i += 2 {
 		if items[i] == nil {
-			return nil, fmt.Errorf("invalid PUBSUB NUMSUB channel at pair %d: response is nil", i/2)
+			return nil, fmt.Errorf("invalid %s channel at pair %d: response is nil", name, i/2)
 		}
 		channel, err := responseString(items[i], nil)
 		if err != nil {
-			return nil, fmt.Errorf("invalid PUBSUB NUMSUB channel at pair %d: %w", i/2, err)
+			return nil, fmt.Errorf("invalid %s channel at pair %d: %w", name, i/2, err)
 		}
-		count, err := nonNegativeInt64Response("PUBSUB NUMSUB", items[i+1], nil)
+		count, err := nonNegativeInt64Response(name, items[i+1], nil)
 		if err != nil {
-			return nil, fmt.Errorf("invalid PUBSUB NUMSUB count for %q: %w", channel, err)
+			return nil, fmt.Errorf("invalid %s count for %q: %w", name, channel, err)
 		}
 		if _, exists := out[channel]; exists {
-			return nil, fmt.Errorf("duplicate PUBSUB NUMSUB channel %q", channel)
+			return nil, fmt.Errorf("duplicate %s channel %q", name, channel)
 		}
 		out[channel] = count
 	}
