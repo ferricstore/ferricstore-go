@@ -8,7 +8,9 @@
   Shard messages arrive with `Kind` `"smessage"`, and SSUBSCRIBE
   acknowledgements count shard channels only, as the server's do.
 - Refresh current-server integration and documentation pins to the immutable
-  FerricStore OSS 0.11.24 image. The 0.11.4 compatibility floor remains unchanged.
+  FerricStore OSS 0.12.17 image (from 0.11.24), so CI exercises sharded Pub/Sub
+  and the other commands 0.12.17 added. The 0.11.4 compatibility floor remains
+  unchanged.
 - Refresh development and CI verification to Go 1.26.9 for the standard-library
   HTTP security fixes required by Govulncheck.
 - Refresh development and CI verification to Go 1.26.10 for the `crypto/x509`
