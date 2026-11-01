@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.13.0 - 2026-11-01
+
+- Route the commands FerricStore 0.12.16 and 0.12.17 added by their keys:
+  ZUNION, ZINTER, ZDIFF and their STORE forms, ZINTERCARD, ZRANGESTORE,
+  ZRANGEBYLEX, ZREVRANGEBYLEX, ZLEXCOUNT, ZREMRANGEBYRANK/SCORE/LEX, ZMPOP,
+  the stream group commands XPENDING, XCLAIM, XAUTOCLAIM and XSETID, and
+  HMSET, TOUCH, LMPOP, LCS, SORT, SORT_RO, BITFIELD, BITFIELD_RO, HEXPIREAT,
+  HPEXPIREAT, HPEXPIRETIME, BF.INSERT, CF.INSERT and CF.INSERTNX.
 - Add sharded Pub/Sub: `PubSub.SSubscribe` and `PubSub.SUnsubscribe`, which
   reconnect replay restores like the other subscriptions, and
   `Client.SPublish`, `Client.PubSubShardChannels` and `Client.PubSubShardNumSub`.
