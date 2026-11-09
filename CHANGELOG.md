@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Test against the immutable FerricStore OSS 0.12.19 image (from 0.12.18).
+  The 0.11.4 compatibility floor remains unchanged.
+
 ## 0.13.1 - 2026-11-07
 
 - Test against the immutable FerricStore OSS 0.12.18 image (from 0.12.17).
