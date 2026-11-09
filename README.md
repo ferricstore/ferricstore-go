@@ -25,7 +25,7 @@ Set `FERRICSTORE_IMAGE=quay.io/ferricstore/ferricstore:<version>` when you want 
 
 ## Compatibility
 
-Go SDK 0.13.1 requires FerricStore 0.11.4 or newer for native TCP. The HTTP
+Go SDK 0.14.0 requires FerricStore 0.11.4 or newer for native TCP. The HTTP
 transport requires the stateless gateway shipped by FerricStore OSS 0.11.11 or
 newer. With FerricStore 0.11.24 or newer the native transport
 negotiates compact Stream mode 34 for homogeneous auto-ID `XADD` batches,
