@@ -53,7 +53,7 @@ func TestIntegrationWaitForChildrenJoinsAndReadsChildResults(t *testing.T) {
 			{ID: flow.ID() + ":ok", Type: childType, Payload: map[string]any{"fail": false}, PartitionKey: partition},
 			{ID: flow.ID() + ":bad", Type: childType, Payload: map[string]any{"fail": true}, PartitionKey: partition},
 		}, WaitForChildrenOptions{
-			GroupID: "items", WaitState: "waiting", Success: "joined", Failure: "child_failed",
+			GroupID: "lines", WaitState: "waiting", Success: "joined", Failure: "child_failed",
 			OnChildFailed: "ignore",
 		}), nil
 	})
@@ -65,7 +65,7 @@ func TestIntegrationWaitForChildrenJoinsAndReadsChildResults(t *testing.T) {
 		return CompleteWith(map[string]any{"rows": 7}), nil
 	})
 	parent.State("joined", func(ctx context.Context, flow WorkflowContext) (Outcome, error) {
-		group, err := flow.ChildResults(ctx, "items")
+		group, err := flow.ChildResults(ctx, "lines")
 		if err != nil {
 			return nil, err
 		}
