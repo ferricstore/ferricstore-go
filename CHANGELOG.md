@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `examples/fanout` sets `WaitState`. FerricStore requires it when a parent
+  waits for its children, so the example failed with "child creation failed".
+
 - Test against the immutable FerricStore OSS 0.12.19 image (from 0.12.18).
   The 0.11.4 compatibility floor remains unchanged.
 

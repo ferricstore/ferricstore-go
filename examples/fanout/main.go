@@ -47,16 +47,20 @@ func main() {
 		PartitionKey: job.PartitionKey,
 		LeaseToken:   job.LeaseToken,
 		FencingToken: ferricstore.Int64(job.FencingToken),
-		Wait:         "all",
-		Success:      "join",
-		Failure:      "failed",
+		// The parent waits in "waiting_for_parts" without a lease. FerricStore
+		// moves it to "join" once every part completes, or to "failed" at the
+		// first failed part.
+		Wait:      "all",
+		WaitState: "waiting_for_parts",
+		Success:   "join",
+		Failure:   "failed",
 		Children: []ferricstore.ChildSpec{
 			{ID: "report:1:part:1", Type: "report-part", Payload: map[string]any{"part": 1}, PartitionKey: job.PartitionKey},
 			{ID: "report:1:part:2", Type: "report-part", Payload: map[string]any{"part": 2}, PartitionKey: job.PartitionKey},
 		},
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "child creation failed")
+		fmt.Fprintln(os.Stderr, "child creation failed:", err)
 		os.Exit(1)
 	}
 	fmt.Println("spawned report children")
