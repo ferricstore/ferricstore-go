@@ -52,6 +52,8 @@ Default behavior matches the Python SDK for normal client usage: one native prot
 | `stuck` | `Stuck` | Covered |
 | `history` | `History` | Covered |
 | `spawn_children` | `SpawnChildren` | Covered |
+| `ctx.wait_for_children` | `WaitForChildren` outcome | Covered |
+| `child_results` | `ChildResults` | Covered |
 | `signal` | `Signal` | Covered |
 | `flow_signal` | `FlowSignal` | Covered |
 | `value_put`, `put_value` | `ValuePut`, `PutValue` | Covered |

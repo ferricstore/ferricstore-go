@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add `WaitForChildren`, a workflow outcome that creates child Flows and parks
+  the parent in one fenced command, and `Client.ChildResults` and
+  `WorkflowContext.ChildResults`, which read a child group's statuses and every
+  child's result or error in one value read. Fan-in needs FerricStore 0.11.19
+  or newer.
+- `examples/fanout` is a complete fan-out and fan-in workflow built on them,
+  and an integration test runs it against the server.
 - `examples/fanout` sets `WaitState`. FerricStore requires it when a parent
   waits for its children, so the example failed with "child creation failed".
 

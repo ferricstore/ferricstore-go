@@ -376,6 +376,48 @@ Generations must be in `0..9_007_199_254_740_991`. FIFO ordering is enforced
 by FerricStore per `(type, state, partition_key)`, so worker concurrency can
 remain greater than one to process independent partitions concurrently.
 
+### Fan-out and fan-in
+
+A handler returns `WaitForChildren` to create child Flows and park the parent
+in one fenced command. The parent waits in `WaitState` without a lease or a
+worker. FerricStore moves it to `Success` once the group resolves, or to
+`Failure` at the first failed child (unless `OnChildFailed` is `"ignore"`).
+The handler for the success state reads every child's status and result with
+`ChildResults`:
+
+```go
+report.State("split", func(ctx context.Context, w ferricstore.WorkflowContext) (ferricstore.Outcome, error) {
+	return ferricstore.WaitForChildren([]ferricstore.ChildSpec{
+		{ID: w.ID() + ":part:1", Type: "report-part", Payload: map[string]any{"part": 1}},
+		{ID: w.ID() + ":part:2", Type: "report-part", Payload: map[string]any{"part": 2}},
+	}, ferricstore.WaitForChildrenOptions{
+		GroupID:   "parts",
+		WaitState: "waiting_for_parts",
+		Success:   "join",
+		Failure:   "failed",
+	}), nil
+})
+
+report.State("join", func(ctx context.Context, w ferricstore.WorkflowContext) (ferricstore.Outcome, error) {
+	parts, err := w.ChildResults(ctx, "parts")
+	if err != nil {
+		return nil, err
+	}
+	results := make([]any, 0, len(parts.Children))
+	for _, child := range parts.Children {
+		results = append(results, child.Result)
+	}
+	return ferricstore.CompleteWith(map[string]any{"parts": results}), nil
+})
+```
+
+Return `WaitForChildren` rather than calling `SpawnChildren` and then
+transitioning: a fast child can finish before the transition commits.
+`Wait` is `"all"` (the default) or `"any"`. Children are ordered by id, and
+each one's `Status` is `running`, `completed`, `failed`, or `cancelled`.
+Fan-in needs FerricStore 0.11.19 or newer. See
+[`examples/fanout`](examples/fanout/main.go) for the complete program.
+
 ## Flow Query Planner
 
 FerricStore 0.10.0 replaces the collection read commands with bounded FQL1.

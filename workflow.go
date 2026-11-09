@@ -447,6 +447,8 @@ func (w *WorkflowWorker) apply(
 			StateMeta:    value.StateMeta,
 			NamedValues:  value.NamedValues,
 		})
+	case WaitForChildrenResult:
+		err = w.applyWaitForChildren(ctx, job, value)
 	case AppliedOutcome:
 		if err = value.validate(job); err == nil {
 			// STEP_CONTINUE renews the claim so a handler can chain more durable
@@ -487,6 +489,10 @@ func workflowOutcomeValue(outcome Outcome) (Outcome, error) {
 			return *value, nil
 		}
 	case *AppliedOutcome:
+		if value != nil {
+			return *value, nil
+		}
+	case *WaitForChildrenResult:
 		if value != nil {
 			return *value, nil
 		}
