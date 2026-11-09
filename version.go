@@ -2,7 +2,7 @@ package ferricstore
 
 const (
 	// SDKVersion is the semantic version of this beta SDK contract.
-	SDKVersion = "0.13.1"
+	SDKVersion = "0.14.0"
 	// MinimumServerVersion is the oldest FerricStore server supported by this SDK.
 	MinimumServerVersion = "0.11.4"
 	// NativeProtocolVersion remains v1 for FerricStore 0.11.x.

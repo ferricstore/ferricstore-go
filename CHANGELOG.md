@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0 - 2026-11-09
+
 - Add `WaitForChildren`, a workflow outcome that creates child Flows and parks
   the parent in one fenced command, and `Client.ChildResults` and
   `WorkflowContext.ChildResults`, which read a child group's statuses and every
