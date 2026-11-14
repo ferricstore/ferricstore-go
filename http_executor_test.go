@@ -258,6 +258,19 @@ func TestHTTPExecutorUsesStructuredFlowDescriptors(t *testing.T) {
 	if encoded["command"] != "FLOW.VALUE.PUT" || encoded["opcode"] != float64(nativeOpFlowValuePut) {
 		t.Fatalf("FLOW.VALUE.PUT descriptor = %#v", encoded)
 	}
+
+	// The text FLOW.SPAWN_CHILDREN has no syntax for child values.
+	if _, err := exec.Do(
+		context.Background(),
+		"FLOW.SPAWN_CHILDREN", "parent-1", "GROUP", "parts", "WAIT", "all", "NOW", int64(100),
+		"ITEMS_EXT", int64(1), "child-1", "-", "part", "payload", int64(1), "rows", "3", int64(0),
+	); err != nil {
+		t.Fatal(err)
+	}
+	encoded = received[2]["commands"].([]any)[0].(map[string]any)
+	if encoded["command"] != "FLOW.SPAWN_CHILDREN" || encoded["opcode"] != float64(nativeOpFlowSpawnChildren) {
+		t.Fatalf("FLOW.SPAWN_CHILDREN descriptor = %#v", encoded)
+	}
 }
 
 func TestHTTPExecutorUsesStructuredFlowCreateForExtendedOptions(t *testing.T) {

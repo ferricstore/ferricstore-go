@@ -124,3 +124,92 @@ func TestIntegrationFanoutExampleRuns(t *testing.T) {
 		t.Fatalf("fan-out example output = %q", output)
 	}
 }
+
+func TestIntegrationWaitForChildrenWritesChildValues(t *testing.T) {
+	ctx, cancel := integrationContext(t)
+	defer cancel()
+	client := integrationClient(JSONCodec{})
+	defer client.Close()
+
+	// One case per spawn encoding: shared values only, per-child values, and
+	// per-child attributes. Over HTTP each must reach the server as a structured
+	// command, since the text form has no syntax for values or attributes.
+	cases := []struct {
+		name       string
+		children   func(id string) []ChildSpec
+		attributes map[string]string
+	}{
+		{name: "shared", children: func(id string) []ChildSpec {
+			return []ChildSpec{{ID: id + ":a", Payload: 1}, {ID: id + ":b", Payload: 2}}
+		}},
+		{name: "per-child", children: func(id string) []ChildSpec {
+			return []ChildSpec{
+				{ID: id + ":a", Payload: 1, Values: map[string]any{"rows": 3}},
+				{ID: id + ":b", Payload: 2, Values: map[string]any{"rows": 4}},
+			}
+		}},
+		{name: "mapped", attributes: map[string]string{"region": "eu"}, children: func(id string) []ChildSpec {
+			return []ChildSpec{
+				{ID: id + ":a", Payload: 1, Values: map[string]any{"rows": 3}, Attributes: map[string]any{"region": "eu"}},
+				{ID: id + ":b", Payload: 2, Values: map[string]any{"rows": 4}, Attributes: map[string]any{"region": "eu"}},
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runID := integrationSuffix("child-values-" + tc.name)
+			partition := "go-sdk:child-values:" + runID
+			parentType := "go-sdk-child-values-parent-" + runID
+			childType := "go-sdk-child-values-child-" + runID
+			parent := NewWorkflowClient(client).Workflow(parentType, "dispatch")
+			parent.State("dispatch", func(_ context.Context, flow WorkflowContext) (Outcome, error) {
+				children := tc.children(flow.ID())
+				for index := range children {
+					children[index].Type = childType
+					children[index].PartitionKey = partition
+				}
+				return WaitForChildren(children, WaitForChildrenOptions{
+					GroupID: "parts", WaitState: "waiting", Success: "joined", Failure: "failed_children",
+					Values: map[string]any{"tenant": "acme"},
+				}), nil
+			})
+
+			id := "go-sdk:child-values:" + runID
+			if _, err := parent.Start(ctx, id, nil, CreateOptions{PartitionKey: partition}); err != nil {
+				t.Fatalf("start parent: %v", err)
+			}
+			worker := parent.Worker("go-sdk-child-values", []string{"dispatch"}, WorkerOptions{PartitionKey: partition})
+			if _, err := worker.RunOnce(ctx); err != nil {
+				t.Fatalf("dispatch: %v", err)
+			}
+			record, err := client.Get(ctx, id, partition, nil)
+			if err != nil || record == nil || record.State != "waiting" {
+				t.Fatalf("parent = %#v, %v; want waiting for children", record, err)
+			}
+
+			// One value per read: servers before 0.12.21 return only the first
+			// of several VALUE options in a text FLOW.GET.
+			readChild := func(childID, value string) *FlowRecord {
+				got, err := client.Get(ctx, childID, partition, []string{value})
+				if err != nil || got == nil {
+					t.Fatalf("read child %s: %#v, %v", childID, got, err)
+				}
+				return got
+			}
+			for index, child := range tc.children(id) {
+				if got := readChild(child.ID, "tenant"); got.Values["tenant"] != "acme" {
+					t.Fatalf("child %s tenant = %#v; want shared value", child.ID, got.Values)
+				}
+				got := readChild(child.ID, "rows")
+				if child.Values != nil && got.Values["rows"] != float64(3+index) {
+					t.Fatalf("child %s rows = %#v; want its own value", child.ID, got.Values)
+				}
+				for name, want := range tc.attributes {
+					if asString(got.Attributes[name]) != want {
+						t.Fatalf("child %s attributes = %#v; want %s=%v", child.ID, got.Attributes, name, want)
+					}
+				}
+			}
+		})
+	}
+}
