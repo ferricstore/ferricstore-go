@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.1 - 2026-11-14
+
 - Over HTTP, `SpawnChildren` and `WaitForChildren` send `FLOW.SPAWN_CHILDREN`
   as a structured command, like `FLOW.CREATE`. The text form has no syntax for
   values or child attributes, so a fan-out with `Values`, per-child `Values` or

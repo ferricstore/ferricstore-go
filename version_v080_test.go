@@ -7,7 +7,7 @@ import (
 )
 
 func TestV011PackageAndServerContractVersions(t *testing.T) {
-	if SDKVersion != "0.14.0" {
+	if SDKVersion != "0.14.1" {
 		t.Fatalf("SDKVersion = %q", SDKVersion)
 	}
 	if MinimumServerVersion != "0.11.4" {
