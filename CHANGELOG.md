@@ -7,6 +7,8 @@
   values or child attributes, so a fan-out with `Values`, per-child `Values` or
   `Attributes` failed over HTTP with `ERR syntax error`, `ERR flow items are
   required` or `ERR protocol error`. The native protocol was not affected.
+- Build, test and release with Go 1.26.11, which fixes GO-2026-6859 in
+  `net/http`. The module still requires Go 1.24 or newer.
 
 ## 0.14.0 - 2026-11-09
 
