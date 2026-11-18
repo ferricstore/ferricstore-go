@@ -21,7 +21,7 @@ jobs:
       matrix:
         go-version: ["1.24.x", "1.25.x", "1.26.11"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
@@ -42,7 +42,7 @@ jobs:
     name: GolangCI-Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.11"
@@ -56,7 +56,7 @@ jobs:
     name: Fuzz, Stress, and Performance Gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.11"
@@ -74,7 +74,7 @@ jobs:
     name: Package Dry Run
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.11"
@@ -105,7 +105,7 @@ jobs:
       FERRICSTORE_IMAGE: ${{ matrix.image }}
       FERRICSTORE_GO_TEST_TAGS: ${{ matrix.go-test-tags }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.11"
@@ -123,7 +123,7 @@ jobs:
     env:
       FERRICSTORE_IMAGE: quay.io/ferricstore/ferricstore:0.12.19@sha256:91364b8a9f1e20fc530154068c9a0dedbf11b2d134b92692b258feeb784eff7d
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.11"
